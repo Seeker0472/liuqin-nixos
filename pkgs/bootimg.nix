@@ -21,6 +21,7 @@
 { lib
 , stdenvNoCC
 , fetchurl
+, zstd
 , dtc
 , gzip
 , gnugrep
@@ -32,31 +33,37 @@
 , dtbName ? "qcom/sm8475-xiaomi-liuqin.dtb"
 , ablOverlayDts ? ../dts/liuqin-abl-boot-overlay.dts
 # /chosen/bootargs the kernel actually reads; ABL concatenates its own
-# bootargs after it. Must match what the running system expects.
-, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
+# bootargs after it. Must match what the running system expects; the DTS
+# /chosen/bootargs is authoritative for the kernel, so it must equal this.
+, bootargs ? "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init initcall_debug ignore_loglevel clk_ignore_unused pd_ignore_unused rootwait mtdoops.dump_oops=1 hung_task_panic=1 softlockup_panic=1 panic=15"
 , headerCmdline ? bootargs
 , ramdisk ? null
 }:
 
 let
-  stockDtbo = fetchurl {
-    url = "https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases/download/liuqin-stock-dtb-refs/stock-dtbo-entries.tar.zst";
-    # PLACEHOLDER: fill with the real hash of the stock DTBO entry set.
-    hash = lib.fakeHash;
-  };
-  stockBaseDtbs = fetchurl {
-    url = "https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases/download/liuqin-stock-dtb-refs/stock-base-dtbs.tar.zst";
-    hash = lib.fakeHash;
-  };
+  # Stock ABL artifacts extracted from the operator's own device images
+  # (liuqin-audit/evidence/dtbo + the stock base DTB). They are device-only
+  # data: they never change for a given stock bootloader, so they are
+  # imported as fixed-output paths. Point LIUQIN_STOCK_DTBO / _DTBS at the
+  # tar.zst archives produced from the stock dump (see docs/PORTING-NOTES.md).
+  stockDtbo = import ../data/stock-dtbo-entries.nix;
+  stockBaseDtbs = import ../data/stock-base-dtbs.nix;
 in
 stdenvNoCC.mkDerivation {
   pname = "liuqin-bootimg";
   version = kernel.version;
+  dontUnpack = true;
 
-  nativeBuildInputs = [ dtc gzip gnugrep gawk coreutils findutils mkbootimg ];
+  nativeBuildInputs = [ dtc gzip gnugrep gawk coreutils findutils mkbootimg zstd ];
 
   buildPhase = ''
     runHook preBuild
+
+    stockDtboDir=$PWD/stock-dtbo
+    stockDtbDir=$PWD/stock-dtbs
+    mkdir -p "$stockDtboDir" "$stockDtbDir"
+    tar --zstd -xf ${stockDtbo} -C "$stockDtboDir"
+    tar --zstd -xf ${stockBaseDtbs} -C "$stockDtbDir"
 
     image=${kernel}/Image
     test -r "$image"
@@ -72,12 +79,12 @@ stdenvNoCC.mkDerivation {
     # 3: synthesize the __symbols__ union overlay. dtc decodes with -@ so
     # __symbols__ and __fixups__ survive the round trip.
     : > symbols.list
-    for overlay in ${stockDtbo}/entry.*; do
+    for overlay in $stockDtboDir/entry.*.dtb; do
       dtc -I dtb -O dts -@ "$overlay" 2>/dev/null \
         | awk '/__fixups__ \{/,/\t\};/' \
         | grep -oP '^\s*\K[A-Za-z0-9_]+(?=\s*=)' >> symbols.list
     done
-    for base in ${stockBaseDtbs}/dtb-*.dtb; do
+    for base in $stockDtbDir/dtb-*.dtb; do
       dtc -I dtb -O dts -@ "$base" 2>/dev/null \
         | awk '/__symbols__ \{/,/\t\};/' \
         | grep -oP '^\s*\K[A-Za-z0-9_]+(?=\s*=)' >> symbols.list
@@ -87,6 +94,8 @@ stdenvNoCC.mkDerivation {
     echo "symbols exported: $count"
     # Guard the union size like the downstream --expect-symbols did.
     test "$count" -gt 200
+    echo "stock dtbo entries: $(ls $stockDtboDir | wc -l), base dtbs: $(ls $stockDtbDir | wc -l)"
+
 
     # The sink node plus one symbol that forces __symbols__ to exist even if
     # the mainline base ever ships one empty.
@@ -105,36 +114,77 @@ stdenvNoCC.mkDerivation {
     } > symbols-add.dts
 
     # Decompile the merged DTB, splice the sink+symbols in before the final
-    # root brace, and recompile with -@. Using dtc text round-trip here is
-    # exactly what abl-symbols.py did; this derivation keeps the same
-    # verification discipline (decode the output and check).
+    # root brace, and recompile with -@. If the base already carries a
+    # __symbols__ node (fdtoverlay from an -@ overlay can create one),
+    # append our symbols to it instead of failing.
     dtc -I dtb -O dts boot-1.dtb > boot-1.dts
-    if grep -q '__symbols__' boot-1.dts; then
-      echo "error: boot DTB already has __symbols__" >&2
-      exit 1
-    fi
-    # Append the sink node and __symbols__ block to the root level: insert
-    # before the trailing "};" of the root node.
-    awk -v add=symbols-add.dts '
-      BEGIN { while ((getline line < add) > 0) extra = extra "\n" line }
-      # Root closes at the last "};" line.
-      /^\};$/ { last = NR; lines[NR] = $0; next }
-      { lines[NR] = $0 }
-      END {
-        for (i = 1; i <= NR; i++) {
-          if (i == last) printf "%s\n", substr(extra, 2)
-          print lines[i]
+    if grep -q '__symbols__ {' boot-1.dts; then
+      # Merge into the existing __symbols__ block, skipping names the base
+      # already exports to avoid duplicate-property errors.
+      grep -A100000 '^	__symbols__ {' boot-1.dts | grep -oP '^		\K[A-Za-z0-9_]+(?= = )' | sort -u > existing.sorted
+      comm -23 symbols.sorted existing.sorted > symbols.new
+      {
+        echo '/dts-v1/;'
+        echo '/ {'
+        echo '	liuqin-abl-overlay-sink {'
+        echo '		phandle = <0xdead0000>;'
+        echo '	};'
+        echo '	__symbols__ {'
+        while read -r sym; do
+          echo "		$sym = \"/liuqin-abl-overlay-sink\";"
+        done < symbols.new
+        echo '	};'
+        echo '};'
+      } > symbols-add.dts
+      awk -v add=symbols-add.dts '
+        BEGIN { while ((getline line < add) > 0) {
+                  if (line ~ /^	__symbols__/) inSym = 1
+                  else if (inSym && line ~ /^	};/) inSym = 0
+                  else if (inSym) extra = extra line "\n"
+                } }
+        /^	__symbols__ \{/ { inBlock = 1 }
+        inBlock && /^	\};/ {
+          printf "%s", extra
+          inBlock = 0
         }
-      }
-    ' boot-1.dts > boot-2.dts
+        { print }
+      ' boot-1.dts > boot-2.dts
+      # Add the sink node too (before the final root brace).
+      awk '
+        /^	liuqin-abl-overlay-sink \{/ { have = 1 }
+        /^\};$/ { last = NR; lines[NR] = $0; next }
+        { lines[NR] = $0 }
+        END {
+          for (i = 1; i <= NR; i++) {
+            if (i == last && !have) print "\tliuqin-abl-overlay-sink {\n\t\tphandle = <0xdead0000>;\n\t};"
+            print lines[i]
+          }
+        }
+      ' boot-2.dts > boot-2b.dts
+      mv boot-2b.dts boot-2.dts
+    else
+      # Append sink node and __symbols__ block before the trailing root brace.
+      awk -v add=symbols-add.dts '
+        BEGIN { while ((getline line < add) > 0) extra = extra "\n" line }
+        /^\};$/ { last = NR; lines[NR] = $0; next }
+        { lines[NR] = $0 }
+        END {
+          for (i = 1; i <= NR; i++) {
+            if (i == last) printf "%s\n", substr(extra, 2)
+            print lines[i]
+          }
+        }
+      ' boot-1.dts > boot-2.dts
+    fi
     dtc -@ -I dts -O dtb -o boot.dtb boot-2.dts
 
-    # Verify: every requested symbol resolves to the sink, and the ABL
-    # metadata survived.
+    # Verify: every requested symbol exists in the final __symbols__ (either
+    # pre-existing in the base or injected pointing at the sink), and the
+    # ABL metadata survived.
     dtc -I dtb -O dts boot.dtb > boot-final.dts
     missing=0
     while read -r sym; do
-      grep -qF "	$sym = \"/liuqin-abl-overlay-sink\";" boot-final.dts || {
+      grep -qP "^		\Q$sym\E = " boot-final.dts || {
         echo "missing symbol: $sym" >&2
         missing=1
       }
@@ -142,8 +192,7 @@ stdenvNoCC.mkDerivation {
     test "$missing" = 0
     grep -qF 'xiaomi,miboard-id = <0x10 0x00>;' boot-final.dts
     grep -qF 'qcom,board-id = <0x10008 0x00>;' boot-final.dts
-    grep -qF 'compatible = "qcom,capep";' boot-final.dts || \
-      grep -q 'compatible = .*qcom,capep' boot-final.dts
+    grep -qF 'qcom,msm-id = <0x213 0x10000 0x21c 0x10000 0x212 0x10000>;' boot-final.dts
 
     # The kernel reads /chosen/bootargs; the header cmdline is independently
     # audited. Assert the DT bootargs text.
