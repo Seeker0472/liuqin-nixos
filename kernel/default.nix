@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+#
+# Linux 7.2.5 for Xiaomi Pad 6 Pro (liuqin, SM8475), built with the nixpkgs
+# buildLinux generate-config flow: arm64 defconfig -> common-config + liuqin
+# answers (./config.nix) -> local patches (../patches/kernel).
+#
+# Note: linuxManualConfig (pkgs.linuxManualConfig) only compiles a kernel
+# from an already-generated .config; the defconfig+structured answers flow
+# lives in buildLinux, which is what this uses. The generate-config step is
+# an ImportFromDerivation, allowed explicitly.
+{ lib
+, fetchurl
+, buildLinux
+, ...
+}@args:
+
+let
+  version = "7.2.5";
+
+  src = fetchurl {
+    url = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${version}.tar.xz";
+    hash = "sha256-Vd3w34Ml2drZb8/3vZOXfSLj9QrwZSdXKvWbd8djK3g=";
+  };
+
+  # Everything in ../patches/kernel, in filename order. Each patch file's
+  # header records its provenance; keep that metadata with the patch.
+  kernelPatches =
+    map
+      (name: {
+        name = lib.removeSuffix ".patch" name;
+        patch = ../patches/kernel + "/${name}";
+      })
+      (builtins.sort (a: b: a < b) (
+        builtins.attrNames (
+          lib.filterAttrs (n: t: t == "regular" && lib.hasSuffix ".patch" n)
+            (builtins.readDir ../patches/kernel)
+        )
+      ));
+
+  structuredExtraConfig = import ./config.nix { inherit lib; };
+in
+buildLinux {
+  inherit version src kernelPatches structuredExtraConfig;
+  modDirVersion = version;
+  # nixpkgs common-config carries the generic desktop/server set
+  # (namespaces, cgroups, DM, common filesystems and USB peripherals);
+  # the answers in ./config.nix layer on top of it.
+  enableCommonConfig = false;
+  autoModules = false;
+  # Modules are enabled explicitly via structuredExtraConfig; autoModules
+  # would answer "m" to bool questions (PSI et al.) and wedge
+  # generate-config.pl's repeated-question guard.
+  allowImportFromDerivation = true;
+  defconfig = "defconfig"; # ARCH=arm64 defconfig
+}

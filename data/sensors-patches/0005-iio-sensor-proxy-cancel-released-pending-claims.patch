@@ -1,0 +1,27 @@
+From: liuqin integration <noreply@localhost>
+Subject: [PATCH] complete pending claims when their owner releases
+
+--- a/src/iio-sensor-proxy.c
++++ b/src/iio-sensor-proxy.c
+@@ -426,6 +426,21 @@
+ 
+ 	g_hash_table_remove (ht, sender);
+ 
++	/* Release can arrive while the first reading is still pending.  Once
++	 * the last client stops polling, that reading may never arrive.
++	 */
++	GPtrArray *pending = data->sensor_startup_dbus_invocations_delayed[driver_type];
++	for (guint i = pending->len; i > 0; i--) {
++		GDBusMethodInvocation *invocation = g_ptr_array_index (pending, i - 1);
++
++		if (g_strcmp0 (g_dbus_method_invocation_get_sender (invocation), sender) != 0)
++			continue;
++		g_ptr_array_remove_index_fast (pending, i - 1);
++		g_dbus_method_invocation_return_dbus_error (invocation,
++			"net.hadess.SensorProxy.Error.Cancelled",
++			"Sensor released before the first reading");
++	}
++
+ 	if (driver_type_exists (data, driver_type) &&
+ 	    g_hash_table_size (ht) == 0) {
+ 		SensorDevice *sensor_device = DEVICE_FOR_TYPE(driver_type);

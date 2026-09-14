@@ -1,0 +1,202 @@
+# SPDX-License-Identifier: MIT
+#
+# liuqin kernel configuration, expressed as nixpkgs structuredExtraConfig.
+#
+# Base: the kernel's own arm64 defconfig (the generate-config.pl flow in
+# nixpkgs builds the .config by answering `make defconfig` first, then
+# applies these answers on top), plus nixpkgs common-config (the desktop
+# compatibility set: namespaces, cgroups, DM, CIFS/NTFS3, USB storage,
+# sound sequencer, etc.) with PREFER_BUILTIN=1 so =m answers become =y.
+#
+# Sources: merged and deduplicated from xiaomipad-6pro-mainline
+# device/configs/{liuqin-desktop,liuqin-keyboard,liuqin-sensors,liuqin-firstboot}.config,
+# minus the snapd-only entries and minus options that nixpkgs common-config
+# already asserts. Options introduced by the patches in ../patches/kernel
+# (HID_NANOSIC, TOUCHSCREEN_NT36523_SPI, DRM_PANEL_NOVATEK_NT36532,
+# SERIAL_EARLYCON_SIMPLEFB) are answered here explicitly.
+{ lib, kernelLib ? lib.kernel }:
+
+let
+  inherit (lib) mkForce;
+in
+
+with kernelLib;
+
+{
+  # --- Core platform: SM8475 / Qualcomm bring-up ---
+  ARCH_QCOM = lib.mkForce yes;
+  SCSI_UFS_QCOM = lib.mkForce yes;
+  PHY_QCOM_QMP = lib.mkForce yes;
+  PHY_QCOM_QMP_UFS = lib.mkForce yes;
+  PHY_QCOM_QMP_PCIE = lib.mkForce yes;
+  PHY_SNPS_EUSB2 = lib.mkForce yes;
+  I2C_QCOM_GENI = lib.mkForce yes;
+  SPI = lib.mkForce yes;
+  SPI_QCOM_GENI = lib.mkForce yes;
+  QCOM_GPI_DMA = lib.mkForce yes;
+  QCOM_LLCC = lib.mkForce yes;
+  QCOM_OCMEM = lib.mkForce yes;
+  QCOM_SOCINFO = lib.mkForce yes;
+  QCOM_STATS = lib.mkForce module;
+  RTC_DRV_PM8XXX = lib.mkForce module;
+  NVMEM_SPMI_SDAM = lib.mkForce module;
+  NVMEM_REBOOT_MODE = lib.mkForce module;
+
+  # Remote processors / DSP / RPMsg (ADSP, CDSP, SLPI for sensors).
+  QCOM_Q6V5_PAS = lib.mkForce module;
+  QCOM_MDT_LOADER = lib.mkForce module;
+  QCOM_PDR_HELPERS = lib.mkForce module;
+  QCOM_PD_MAPPER = lib.mkForce yes;
+  QCOM_APR = lib.mkForce module;
+  QCOM_FASTRPC = lib.mkForce module;
+  QCOM_PMIC_GLINK = lib.mkForce module;
+  QCOM_SYSMON = lib.mkForce module;
+  QRTR = lib.mkForce yes;
+  QRTR_SMD = lib.mkForce yes;
+  QRTR_MHI = lib.mkForce module;
+  MHI_BUS = lib.mkForce module;
+  RPMSG_QCOM_GLINK_SMEM = lib.mkForce module;
+
+  # Power, charging, Type-C.
+  POWER_RESET_QCOM_PON = lib.mkForce module;
+  INPUT_PM8941_PWRKEY = lib.mkForce module;
+  BATTERY_QCOM_BATTMGR = lib.mkForce module;
+  TYPEC = lib.mkForce module;
+  TYPEC_UCSI = lib.mkForce module;
+  UCSI_PMIC_GLINK = lib.mkForce module;
+  POWER_SEQUENCING = lib.mkForce yes;
+  POWER_SEQUENCING_QCOM_WCN = lib.mkForce module;
+
+  # CPU frequency/idle governors used by the downstream desktop config.
+  CPU_FREQ_GOV_POWERSAVE = lib.mkForce module;
+  CPU_FREQ_GOV_CONSERVATIVE = lib.mkForce module;
+  CPU_IDLE_GOV_TEO = lib.mkForce yes;
+  PSI = lib.mkForce yes;
+
+  # Display: MSM DRM + Novatek DSI panel + KTZ8866 backlight.
+  DRM = lib.mkForce module;
+  DRM_KMS_HELPER = lib.mkForce module;
+  DRM_DISPLAY_HELPER = lib.mkForce module;
+  DRM_DISPLAY_DSC_HELPER = lib.mkForce yes;
+  DRM_MSM = lib.mkForce module;
+  DRM_MSM_KMS = lib.mkForce yes;
+  DRM_MSM_MDSS = lib.mkForce yes;
+  DRM_MSM_DPU = lib.mkForce yes;
+  DRM_MSM_DSI = lib.mkForce yes;
+  DRM_MSM_DSI_7NM_PHY = lib.mkForce yes;
+  DRM_MIPI_DSI = lib.mkForce yes;
+  DRM_PANEL = lib.mkForce yes;
+  DRM_PANEL_NOVATEK_NT36532 = lib.mkForce module; # from patch 0004
+  DRM_FBDEV_EMULATION = lib.mkForce yes;
+  DRM_CLIENT_LOG = lib.mkForce yes; # console=drm_log late boot console
+  DRM_CLIENT_DEFAULT_LOG = lib.mkForce yes;
+  BACKLIGHT_CLASS_DEVICE = lib.mkForce module;
+  BACKLIGHT_KTZ8866 = lib.mkForce module;
+  FB_SIMPLE = lib.mkForce module;
+  FONTS = lib.mkForce yes;
+  FONT_8x16 = yes;
+  FONT_TER16x32 = yes;
+  SM_DISPCC_8450 = lib.mkForce module;
+  SM_GPUCC_8450 = lib.mkForce module;
+
+  # Input: touchscreen (SPI Novatek, patch 0003), keyboard cover HID
+  # (patch 0002), uinput/uhid for desktop tooling.
+  INPUT_EVDEV = lib.mkForce module;
+  INPUT_UINPUT = lib.mkForce module;
+  UHID = lib.mkForce module;
+  HID_MULTITOUCH = lib.mkForce module;
+  HID_NANOSIC = lib.mkForce module; # from patch 0002
+  TOUCHSCREEN_NT36523_SPI = lib.mkForce module; # from patch 0003
+
+  # BT's optional deps/selects must be built in so BT=y sticks
+  # (RFKILL=m caps BT at m and generate-config.pl dies on the re-ask).
+  INPUT = lib.mkForce yes;
+  LEDS_CLASS = lib.mkForce yes;
+  LEDS_TRIGGERS = lib.mkForce yes;
+
+  HID = lib.mkForce yes;
+  HIDRAW = lib.mkForce yes;
+  HID_GENERIC = lib.mkForce yes;
+
+  USB = lib.mkForce yes;
+
+  # BT_RFCOMM_TTY is asked as a bool under BT_RFCOMM=m; answering y makes
+  # kconfig re-ask the parent tree and generate-config.pl dies. Keep it off.
+  BT_RFCOMM_TTY = lib.mkForce no;
+
+  # RPMSG drivers menu only shows when the bus core selects it.
+  QCOM_RPROC_COMMON = lib.mkForce module;
+
+  MAILBOX = lib.mkForce yes;
+  RPMSG = lib.mkForce yes;
+  QCOM_SMEM = lib.mkForce yes;
+  RPMSG_QCOM_SMD = lib.mkForce yes;
+
+  # BT=y select chain must be built in too (otherwise Kconfig rejects the
+  # upgrade of BT from m to y and generate-config.pl loops).
+  CRC16 = lib.mkForce yes;
+  CRYPTO = lib.mkForce yes;
+  CRYPTO_LIB_AES = lib.mkForce yes;
+  CRYPTO_ECDH = lib.mkForce yes;
+
+  # Early console over the ABL simple-framebuffer (patch 0008); the
+  # matching kernel param earlycon=simplefb is debug-gated in the NixOS
+  # module.
+  SERIAL_EARLYCON_SIMPLEFB = lib.mkForce yes;
+
+  # Pstore (mtdoops/hung-task diagnostics come from the debug cmdline).
+  PSTORE = lib.mkForce yes;
+  PSTORE_CONSOLE = lib.mkForce yes;
+  PSTORE_PMSG = lib.mkForce yes;
+  PSTORE_RAM = lib.mkForce yes;
+
+  # Wireless: ath11k (QCA6490 WLAN) + Qualcomm Bluetooth over UART.
+  CFG80211 = lib.mkForce module;
+  MAC80211 = lib.mkForce module;
+  ATH11K = lib.mkForce module;
+  ATH11K_PCI = lib.mkForce module;
+  ATH11K_DEBUG = lib.mkForce yes;
+  PCI_PWRCTRL = lib.mkForce yes;
+  PCI_PWRCTRL_PWRSEQ = lib.mkForce module;
+  BT = lib.mkForce module;
+  BT_LE = lib.mkForce yes;
+  BT_RFCOMM = lib.mkForce module;
+  BT_BNEP = lib.mkForce module;
+  BT_HIDP = lib.mkForce module;
+  BT_HCIUART = lib.mkForce module;
+  BT_HCIUART_QCA = lib.mkForce yes;
+  BT_QCA = lib.mkForce module;
+  RFKILL = lib.mkForce module;
+
+  # Audio: audioreach over SoundWire + CS35L41 speaker amps (patch 0005).
+  SOUND = lib.mkForce module;
+  SND = lib.mkForce module;
+  SND_SOC = lib.mkForce module;
+  SOUNDWIRE = lib.mkForce module;
+  SND_SOC_QCOM = lib.mkForce module;
+  SND_SOC_SC8280XP = lib.mkForce module;
+  SND_SOC_CS35L41_I2C = lib.mkForce module;
+
+  # Media: iris V4L2 decoder (patch 0007).
+  MEDIA_SUPPORT = lib.mkForce module;
+  VIDEO_QCOM_IRIS = lib.mkForce module;
+
+  # Boot-image/initrd plumbing NixOS needs on this board.
+  FW_LOADER = lib.mkForce yes;
+  FW_LOADER_COMPRESS = lib.mkForce yes;
+  FW_LOADER_COMPRESS_ZSTD = lib.mkForce yes;
+  BLK_DEV_INITRD = lib.mkForce yes;
+  DEVTMPFS = lib.mkForce yes;
+  DEVTMPFS_MOUNT = lib.mkForce yes;
+  OVERLAY_FS = lib.mkForce module;
+  SQUASHFS = lib.mkForce module;
+  SQUASHFS_XZ = lib.mkForce yes;
+  SQUASHFS_ZSTD = lib.mkForce yes;
+  SQUASHFS_LZO = lib.mkForce yes;
+  USB_CONFIGFS = lib.mkForce module;
+  USB_CONFIGFS_NCM = lib.mkForce yes;
+  USB_CONFIGFS_ECM = lib.mkForce yes;
+
+  # serial-flash for the persist partition and friends.
+  MTD_SPI_NOR = lib.mkForce module;
+}

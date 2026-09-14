@@ -1,0 +1,5 @@
+/result
+/result-*
+/out/
+*.img
+__pycache__/

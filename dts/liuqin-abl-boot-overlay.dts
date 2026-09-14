@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+/plugin/;
+
+/*
+ * Bootloader-only metadata used by Qualcomm ABL to select the single liuqin
+ * DTB. Keep this out of the upstream-style board DTS.
+ *
+ * The qcom IDs alone do not tell the stock DTBO entries apart: eight of them
+ * (entry.2, .15, .18, .19, .23, .28, .34, .43) carry byte-identical
+ * qcom,msm-id and qcom,board-id and differ only in the Xiaomi-private
+ * xiaomi,miboard-id. ABL reads the board's own value -- the exact binary
+ * contains "MiBoardid = %x", "xiaomi,miboard-id" and "xiaomi,miboard-id does
+ * not match", i.e. a real rejection path -- and this device reports
+ * hwid.project=16 on its own kernel command line, i.e. 0x10, which is
+ * entry.15, the liuqin overlay already identified here by payload hash.
+ *
+ * We declare 0x10 defensively so that any comparison ABL makes against a base
+ * DTB agrees with the entry it will select. It is *not* known to be required
+ * on a base DTB: none of the 14 stock base DTBs in the vendor_boot dtb table
+ * declares the property at all, and the device boots stock Android every day.
+ * Treat this as belt-and-braces, not as a precondition for matching.
+ */
+/ {
+	fragment@0 {
+		target-path = "/";
+
+		__overlay__ {
+			qcom,msm-id = <531 0x10000 540 0x10000 530 0x10000>;
+			qcom,board-id = <0x10008 0>;
+			xiaomi,miboard-id = <0x10 0>;
+		};
+	};
+};

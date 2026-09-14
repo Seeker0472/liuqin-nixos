@@ -1,0 +1,75 @@
+From: liuqin integration <noreply@localhost>
+Subject: [PATCH] serialize reentrant SSC accelerometer polling transitions
+
+diff --git a/src/drv-ssc-accel.c b/src/drv-ssc-accel.c
+index 4130657..01273a2 100644
+--- a/src/drv-ssc-accel.c
++++ b/src/drv-ssc-accel.c
+@@ -22,6 +22,8 @@
+ typedef struct DrvData {
+ 	SSCSensorAccelerometer *sensor;
+ 	gulong measurement_id;
++	gboolean polling_requested;
++	gboolean polling_changing;
+ 	AccelVec3 *mount_matrix;
+ 	AccelLocation location;
+ 	AccelScale scale;
+@@ -103,31 +105,35 @@ ssc_accelerometer_set_polling (SensorDevice *sensor_device, gboolean state)
+ {
+ 	DrvData *drv_data = (DrvData *) sensor_device->priv;
+ 	g_autoptr(GError) error = NULL;
+-	if (state) {
+-		if (drv_data->measurement_id)
+-			return;
+-
+-		/* Start listening for measurements */
+-		drv_data->measurement_id = g_signal_connect (drv_data->sensor,
+-					                     "measurement",
+-							     G_CALLBACK (measurement_cb),
+-							     sensor_device);
+-		/* Enable sensor */
+-		if (!ssc_sensor_accelerometer_open_sync (drv_data->sensor, NULL, &error)) {
+-			g_warning ("Opening SSC accelerometer sensor failed: %s", error->message);
+-			return;
++	drv_data->polling_requested = state;
++	/* libssc's sync calls iterate the same main context that dispatches
++	 * Claim/Release. Coalesce re-entrant requests until this transition
++	 * completes; a nested close must not cancel an open's first report.
++	 */
++	if (drv_data->polling_changing)
++		return;
++
++	drv_data->polling_changing = TRUE;
++	while (!!drv_data->measurement_id != drv_data->polling_requested) {
++		if (drv_data->polling_requested) {
++			drv_data->measurement_id = g_signal_connect (drv_data->sensor,
++			                                           "measurement",
++			                                           G_CALLBACK (measurement_cb),
++			                                           sensor_device);
++			if (!ssc_sensor_accelerometer_open_sync (drv_data->sensor, NULL, &error)) {
++				g_clear_signal_handler (&drv_data->measurement_id, drv_data->sensor);
++				g_warning ("Opening SSC accelerometer sensor failed: %s", error->message);
++				break;
++			}
++		} else {
++			g_clear_signal_handler (&drv_data->measurement_id, drv_data->sensor);
++			if (!ssc_sensor_accelerometer_close_sync (drv_data->sensor, NULL, &error)) {
++				g_warning ("Closing SSC accelerometer sensor failed: %s", error->message);
++				break;
++			}
+ 		}
+-	} else {
+-		if (!drv_data->measurement_id)
+-			return;
+-
+-		/* Stop listening for measurements */
+-		g_clear_signal_handler (&drv_data->measurement_id, drv_data->sensor);
+-
+-		/* Disable sensor */
+-		if (!ssc_sensor_accelerometer_close_sync (drv_data->sensor, NULL, &error))
+-			g_warning ("Closing SSC accelerometer sensor failed: %s", error->message);
+ 	}
++	drv_data->polling_changing = FALSE;
+ }
+ 
+ static void

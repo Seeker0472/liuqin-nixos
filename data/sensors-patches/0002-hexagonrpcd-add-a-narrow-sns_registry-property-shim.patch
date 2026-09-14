@@ -1,0 +1,666 @@
+From c16e7bc3cce78ed37c3d9d815f75100add6ff7af Mon Sep 17 00:00:00 2001
+From: Erwin <yzddmr7@gmail.com>
+Date: Sun, 30 Aug 2026 00:13:22 +0800
+Subject: [PATCH] hexagonrpcd: add a narrow sns_registry property shim
+
+The liuqin sensor ROM opens sns_registry and invokes method 0 while consuming sns_reg_config. Its exact skel ABI uses two input buffers and one output buffer, with an eight-byte primary input holding the property-name and property-value buffer lengths. The ROM implementation refuses output buffers shorter than Android PROPERTY_VALUE_MAX (92 bytes).
+
+Expose only the two property names present in the pinned ROM sns_reg_config and return an empty value for both. Reject every other method, property, or scalar shape and clear response storage on all application-level rejection paths. This deliberately avoids implementing a generic Android property service.
+
+Propagate reverse-listener failures out of hexagonrpcd so a service manager can distinguish a torn-down tunnel from a successful exit. Cover the recovered ROM wire encoding, both allowlisted names, non-empty near misses, short outputs, unsupported methods, and scalar-shape deviations with a host test.
+
+Signed-off-by: Erwin <yzddmr7@gmail.com>
+
+diff --git a/hexagonrpcd/interface/sns_registry.c b/hexagonrpcd/interface/sns_registry.c
+new file mode 100644
+index 0000000..a048cdf
+--- /dev/null
++++ b/hexagonrpcd/interface/sns_registry.c
+@@ -0,0 +1,36 @@
++/*
++ * Qualcomm sensors registry property interface - method definitions
++ *
++ * Copyright (C) 2026 HexagonRPC Contributors
++ *
++ * This file is part of HexagonRPC.
++ *
++ * HexagonRPC is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <libhexagonrpc/hexagonrpc.h>
++
++#include "sns_registry.h"
++
++/*
++ * Exact QAIC wire shape recovered from the liuqin ROM skel:
++ *
++ *   inbuf[0] = { uint32_t prop_name_len, uint32_t prop_value_len }
++ *   inbuf[1] = NUL-terminated property name
++ *   outbuf[0] = property value, prop_value_len bytes
++ */
++static const struct hrpc_arg_def_interp4 sns_registry_get_property_args[] = {
++	{ HRPC_ARG_BLOB_SEQ, sizeof(char) },
++	{ HRPC_ARG_OUT_BLOB_SEQ, sizeof(char) },
++};
++
++const struct hrpc_method_def_interp4 sns_registry_get_property_def = {
++	.msg_id = 0,
++	.n_args = HRPC_ARRAY_SIZE(sns_registry_get_property_args),
++	.args = sns_registry_get_property_args,
++	.n_inner_types = 0,
++	.inner_types = NULL,
++};
+diff --git a/hexagonrpcd/interface/sns_registry.h b/hexagonrpcd/interface/sns_registry.h
+new file mode 100644
+index 0000000..d09fa9a
+--- /dev/null
++++ b/hexagonrpcd/interface/sns_registry.h
+@@ -0,0 +1,23 @@
++/*
++ * Qualcomm sensors registry property interface - API
++ *
++ * Copyright (C) 2026 HexagonRPC Contributors
++ *
++ * This file is part of HexagonRPC.
++ *
++ * HexagonRPC is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifndef INTERFACE_SNS_REGISTRY_H
++#define INTERFACE_SNS_REGISTRY_H
++
++#include <libhexagonrpc/hexagonrpc.h>
++
++#define SNS_REGISTRY_GET_PROPERTY_SC REMOTE_SCALARS_MAKE(0, 2, 1)
++
++extern const struct hrpc_method_def_interp4 sns_registry_get_property_def;
++
++#endif /* INTERFACE_SNS_REGISTRY_H */
+diff --git a/hexagonrpcd/listener.c b/hexagonrpcd/listener.c
+index 3414974..20d72b7 100644
+--- a/hexagonrpcd/listener.c
++++ b/hexagonrpcd/listener.c
+@@ -489,13 +489,13 @@ err_free_outbufs:
+ 	return ret;
+ }
+ 
+-static int invoke_requested_procedure(size_t n_ifaces,
+-				      struct fastrpc_interface **ifaces,
+-				      uint32_t handle,
+-				      uint32_t sc,
+-			              uint32_t *result,
+-				      const struct fastrpc_io_buffer *decoded,
+-				      struct fastrpc_io_buffer **returned)
++int fastrpc_invoke_requested_procedure(size_t n_ifaces,
++				       struct fastrpc_interface **ifaces,
++				       uint32_t handle,
++				       uint32_t sc,
++				       uint32_t *result,
++				       const struct fastrpc_io_buffer *decoded,
++				       struct fastrpc_io_buffer **returned)
+ {
+ 	const struct fastrpc_function_impl *impl;
+ 	uint32_t method = REMOTE_SCALARS_METHOD(sc);
+@@ -539,6 +539,13 @@ static int invoke_requested_procedure(size_t n_ifaces,
+ 		return 1;
+ 	}
+ 
++	if (impl->strict_sc && sc != impl->expected_sc) {
++		fprintf(stderr, "Unexpected scalar shape: %08x (expected %08x)\n",
++			sc, impl->expected_sc);
++		*result = AEE_EBADPARM;
++		return 1;
++	}
++
+ 	ret = count_sizes4(impl->def, REMOTE_SCALARS_INBUFS(sc),
+ 			   REMOTE_SCALARS_OUTBUFS(sc), decoded);
+ 	if (ret) {
+@@ -589,9 +596,9 @@ int run_fastrpc_listener(int fd,
+ 		if (returned != NULL)
+ 			iobuf_free(n_outbufs, returned);
+ 
+-		ret = invoke_requested_procedure(n_ifaces, ifaces,
+-						 handle, sc, &result,
+-						 decoded, &returned);
++		ret = fastrpc_invoke_requested_procedure(n_ifaces, ifaces,
++							 handle, sc, &result,
++							 decoded, &returned);
+ 		if (ret)
+ 			break;
+ 
+diff --git a/hexagonrpcd/listener.h b/hexagonrpcd/listener.h
+index 8938b87..38e333c 100644
+--- a/hexagonrpcd/listener.h
++++ b/hexagonrpcd/listener.h
+@@ -23,6 +23,7 @@
+ #define LISTENER_H
+ 
+ #include <libhexagonrpc/hexagonrpc.h>
++#include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+@@ -30,6 +31,8 @@
+ 
+ struct fastrpc_function_impl {
+ 	const struct hrpc_method_def_interp4 *def;
++	uint32_t expected_sc;
++	bool strict_sc;
+ 	uint32_t (*impl)(void *data,
+ 			 const struct fastrpc_io_buffer *inbufs,
+ 			 struct fastrpc_io_buffer *outbufs);
+@@ -47,6 +50,14 @@ extern const struct fastrpc_interface localctl_interface;
+ extern const struct fastrpc_interface apps_mem_interface;
+ extern const struct fastrpc_interface apps_std_interface;
+ 
++int fastrpc_invoke_requested_procedure(size_t n_ifaces,
++				       struct fastrpc_interface **ifaces,
++				       uint32_t handle,
++				       uint32_t sc,
++				       uint32_t *result,
++				       const struct fastrpc_io_buffer *decoded,
++				       struct fastrpc_io_buffer **returned);
++
+ int run_fastrpc_listener(int fd,
+ 			 size_t n_ifaces,
+ 			 struct fastrpc_interface **ifaces);
+diff --git a/hexagonrpcd/meson.build b/hexagonrpcd/meson.build
+index 11244ef..8ae0aae 100644
+--- a/hexagonrpcd/meson.build
++++ b/hexagonrpcd/meson.build
+@@ -5,6 +5,7 @@ executable('hexagonrpcd',
+   'interface/adsp_listener.c',
+   'interface/apps_mem.c',
+   'interface/apps_std.c',
++  'interface/sns_registry.c',
+   'hexagonfs.c',
+   'hexagonfs_mapped.c',
+   'hexagonfs_plat_subtype_name.c',
+@@ -14,6 +15,7 @@ executable('hexagonrpcd',
+   'localctl.c',
+   'rpcd.c',
+   'rpcd_builder.c',
++  'sns_registry.c',
+   c_args : cflags,
+   include_directories : include,
+   install : true,
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index 38d5c00..f3e2780 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -43,6 +43,7 @@
+ #include "listener.h"
+ #include "localctl.h"
+ #include "rpcd_builder.h"
++#include "sns_registry.h"
+ 
+ static int register_fastrpc_listener(int fd)
+ {
+@@ -187,18 +188,22 @@ static int start_clients(size_t n_progs, const char **progs, pid_t *pids)
+ 	return 0;
+ }
+ 
+-static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
++static int start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+ {
+ 	struct fastrpc_interface **ifaces;
+ 	struct hexagonfs_dirent *root_dir;
+-	size_t n_ifaces = 3;
++	size_t n_ifaces = SNS_REGISTRY + 1;
+ 	int ret;
+ 
+-	ifaces = malloc(sizeof(struct fastrpc_interface) * n_ifaces);
++	ifaces = calloc(n_ifaces, sizeof(*ifaces));
+ 	if (ifaces == NULL)
+-		return NULL;
++		return AEE_ENOMEMORY;
+ 
+ 	root_dir = construct_root_dir(device_dir, dsp);
++	if (root_dir == NULL) {
++		free(ifaces);
++		return AEE_ENOMEMORY;
++	}
+ 
+ 	/*
+ 	 * The apps_remotectl interface patiently waits for this function to
+@@ -210,23 +215,24 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
+ 	// Dynamic interfaces with no hardcoded handle
+ 	ifaces[1] = fastrpc_apps_std_init(root_dir);
+ 	ifaces[2] = fastrpc_apps_mem_init(fd);
++	ifaces[SNS_REGISTRY] = (struct fastrpc_interface *) &sns_registry_interface;
++
++	if (ifaces[REMOTECTL] == NULL || ifaces[1] == NULL || ifaces[2] == NULL) {
++		ret = AEE_ENOMEMORY;
++		goto err_deinit;
++	}
+ 
+ 	ret = register_fastrpc_listener(fd);
+ 	if (ret)
+-		goto err;
++		goto err_deinit;
+ 
+-	run_fastrpc_listener(fd, n_ifaces, ifaces);
++	ret = run_fastrpc_listener(fd, n_ifaces, ifaces);
+ 
++err_deinit:
+ 	fastrpc_localctl_deinit(ifaces[REMOTECTL]);
+-
+ 	free(ifaces);
+ 
+-	return NULL;
+-
+-err:
+-	free(ifaces);
+-
+-	return NULL;
++	return ret;
+ }
+ 
+ static char *read_sysfs_file(const char *path, struct stat *file_stat)
+@@ -433,7 +439,9 @@ int main(int argc, char* argv[])
+ 	if (ret)
+ 		goto err_close_dev;
+ 
+-	start_reverse_tunnel(fd, device_dir, dsp);
++	ret = start_reverse_tunnel(fd, device_dir, dsp);
++	if (ret)
++		fprintf(stderr, "FastRPC listener exited abnormally: %d\n", ret);
+ 
+ 	terminate_clients(n_progs, pids);
+ 
+@@ -441,7 +449,7 @@ int main(int argc, char* argv[])
+ 	free(pids);
+ 	free(progs);
+ 
+-	return 0;
++	return ret ? 4 : 0;
+ 
+ err_close_dev:
+ 	close(fd);
+diff --git a/hexagonrpcd/sns_registry.c b/hexagonrpcd/sns_registry.c
+new file mode 100644
+index 0000000..af68193
+--- /dev/null
++++ b/hexagonrpcd/sns_registry.c
+@@ -0,0 +1,90 @@
++/*
++ * Qualcomm sensors registry property shim
++ *
++ * Copyright (C) 2026 HexagonRPC Contributors
++ *
++ * This file is part of HexagonRPC.
++ *
++ * HexagonRPC is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <endian.h>
++#include <libhexagonrpc/error.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "interface/sns_registry.h"
++#include "listener.h"
++#include "sns_registry.h"
++
++#define SNS_PROPERTY_VALUE_MAX 92
++
++static const char property0[] = "persist.vendor.sensors.enable.property";
++static const char property1[] = "persist.vendor.sensors.enable.property1";
++
++static int property_is_allowed(const void *name, size_t len)
++{
++	return (len == sizeof(property0) && !memcmp(name, property0, len))
++	    || (len == sizeof(property1) && !memcmp(name, property1, len));
++}
++
++static uint32_t sns_registry_get_property(void *data,
++					  const struct fastrpc_io_buffer *inbufs,
++					  struct fastrpc_io_buffer *outbufs)
++{
++	const uint32_t *first_in = inbufs[0].p;
++	size_t prop_name_len;
++	size_t prop_value_len;
++
++	/* Never reflect uninitialized heap contents, including on rejection. */
++	memset(outbufs[0].p, 0, outbufs[0].s);
++
++	if (inbufs[0].s != 2 * sizeof(uint32_t))
++		return AEE_EBADPARM;
++
++	prop_name_len = le32toh(first_in[0]);
++	prop_value_len = le32toh(first_in[1]);
++
++	if (prop_name_len != inbufs[1].s
++	 || prop_value_len != outbufs[0].s
++	 || prop_name_len == 0
++	 || ((const char *) inbufs[1].p)[prop_name_len - 1] != '\0')
++		return AEE_EBADPARM;
++
++	if (prop_value_len < SNS_PROPERTY_VALUE_MAX) {
++		fprintf(stderr, "sns_registry output is too small: %zu\n",
++			prop_value_len);
++		return AEE_EBUFFERTOOSMALL;
++	}
++
++	if (!property_is_allowed(inbufs[1].p, prop_name_len)) {
++		fprintf(stderr, "sns_registry rejected a non-whitelisted property\n");
++		return AEE_EUNSUPPORTED;
++	}
++
++	/*
++	 * Both exact-ROM gates are intentionally unset on GNU/Linux.  Returning
++	 * an empty C string preserves that state without exposing a generic
++	 * Android property bridge to the sensor DSP.
++	 */
++	return AEE_SUCCESS;
++}
++
++static const struct fastrpc_function_impl sns_registry_procs[] = {
++	{
++		.def = &sns_registry_get_property_def,
++		.expected_sc = SNS_REGISTRY_GET_PROPERTY_SC,
++		.strict_sc = true,
++		.impl = sns_registry_get_property,
++	},
++};
++
++const struct fastrpc_interface sns_registry_interface = {
++	.name = "sns_registry",
++	.n_procs = HRPC_ARRAY_SIZE(sns_registry_procs),
++	.procs = sns_registry_procs,
++};
+diff --git a/hexagonrpcd/sns_registry.h b/hexagonrpcd/sns_registry.h
+new file mode 100644
+index 0000000..c29325b
+--- /dev/null
++++ b/hexagonrpcd/sns_registry.h
+@@ -0,0 +1,23 @@
++/*
++ * Qualcomm sensors registry property shim
++ *
++ * Copyright (C) 2026 HexagonRPC Contributors
++ *
++ * This file is part of HexagonRPC.
++ *
++ * HexagonRPC is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifndef SNS_REGISTRY_H
++#define SNS_REGISTRY_H
++
++#include "listener.h"
++
++#define SNS_REGISTRY 3
++
++extern const struct fastrpc_interface sns_registry_interface;
++
++#endif /* SNS_REGISTRY_H */
+diff --git a/tests/meson.build b/tests/meson.build
+index fabfbce..a646f26 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -42,8 +42,20 @@ test_registry_version_contract = executable('test_registry_version_contract',
+   include_directories : include,
+ )
+ 
++test_sns_registry = executable('test_sns_registry',
++  'test_sns_registry.c',
++  '../hexagonrpcd/interface/adsp_listener.c',
++  '../hexagonrpcd/interface/sns_registry.c',
++  '../hexagonrpcd/iobuffer.c',
++  '../hexagonrpcd/listener.c',
++  '../hexagonrpcd/sns_registry.c',
++  c_args : cflags,
++  include_directories : include,
++)
++
+ test('iobuffer', test_iobuffer)
+ test('hexagonfs', test_hexagonfs, args : [sample_file])
+ test('hexagonrpc', test_hexagonrpc)
+ test('registry-version-contract', test_registry_version_contract,
+   args : [meson.current_build_dir()])
++test('sns-registry', test_sns_registry)
+diff --git a/tests/test_sns_registry.c b/tests/test_sns_registry.c
+new file mode 100644
+index 0000000..2f30331
+--- /dev/null
++++ b/tests/test_sns_registry.c
+@@ -0,0 +1,222 @@
++#include <endian.h>
++#include <libhexagonrpc/error.h>
++#include <libhexagonrpc/hexagonrpc.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "../hexagonrpcd/interface/sns_registry.h"
++#include "../hexagonrpcd/iobuffer.h"
++#include "../hexagonrpcd/listener.h"
++#include "../hexagonrpcd/sns_registry.h"
++
++#define PROPERTY_VALUE_MAX 92
++
++static const char property0[] = "persist.vendor.sensors.enable.property";
++static const char property1[] = "persist.vendor.sensors.enable.property1";
++
++static void fail(const char *message)
++{
++	fprintf(stderr, "test_sns_registry: %s\n", message);
++	exit(1);
++}
++
++/* listener.c references these inline client calls, but dispatch-only tests
++ * must never issue a host FastRPC ioctl. */
++int hexagonrpc(const struct hrpc_method_def_interp4 *def,
++	       int fd, uint32_t handle, ...)
++{
++	fail("dispatch-only test attempted a FastRPC ioctl");
++	return -1;
++}
++
++static size_t encode_input_wire(void *dest, size_t capacity,
++				const char *name, uint32_t value_len)
++{
++	uint32_t name_len = strlen(name) + 1;
++	uint32_t primary[2] = { htole32(name_len), htole32(value_len) };
++	uint32_t wire_len;
++	char *wire = dest;
++	size_t off = 0;
++
++	if (capacity < 24 + name_len)
++		fail("input wire buffer is too small");
++
++	wire_len = htole32(sizeof(primary));
++	memcpy(&wire[off], &wire_len, sizeof(wire_len));
++	off += sizeof(wire_len);
++	memset(&wire[off], 0, 4);
++	off += 4;
++	memcpy(&wire[off], primary, sizeof(primary));
++	off += sizeof(primary);
++
++	wire_len = htole32(name_len);
++	memcpy(&wire[off], &wire_len, sizeof(wire_len));
++	off += sizeof(wire_len);
++	memset(&wire[off], 0, 4);
++	off += 4;
++	memcpy(&wire[off], name, name_len);
++	off += name_len;
++
++	return off;
++}
++
++static struct fastrpc_io_buffer *decode_input_wire(uint32_t sc,
++						    const void *wire,
++						    size_t wire_len)
++{
++	struct fastrpc_decoder_context *ctx;
++	struct fastrpc_io_buffer *decoded;
++
++	ctx = inbuf_decode_start(sc);
++	if (ctx == NULL)
++		fail("could not allocate decoder");
++	if (inbuf_decode(ctx, wire_len, wire))
++		fail("could not decode ROM-format request");
++	if (!inbuf_decode_is_complete(ctx))
++		fail("ROM-format request is incomplete");
++	decoded = inbuf_decode_finish(ctx);
++	if (decoded == NULL)
++		fail("decoder returned no buffers");
++
++	return decoded;
++}
++
++static uint32_t invoke_property(const char *name, uint32_t value_len,
++				uint32_t sc, int *dispatch_ret,
++				struct fastrpc_io_buffer **returned_out)
++{
++	struct fastrpc_interface *ifaces[] = {
++		(struct fastrpc_interface *) &sns_registry_interface,
++	};
++	struct fastrpc_io_buffer *decoded;
++	struct fastrpc_io_buffer *returned = NULL;
++	unsigned char wire[256] = { 0 };
++	uint32_t result = UINT32_MAX;
++	size_t wire_len;
++
++	wire_len = encode_input_wire(wire, sizeof(wire), name, value_len);
++	decoded = decode_input_wire(sc, wire, wire_len);
++	*dispatch_ret = fastrpc_invoke_requested_procedure(
++		HRPC_ARRAY_SIZE(ifaces), ifaces, 0, sc, &result,
++		decoded, &returned);
++	iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
++	*returned_out = returned;
++
++	return result;
++}
++
++static void assert_zero_output(const struct fastrpc_io_buffer *returned,
++				       uint32_t expected_len)
++{
++	const unsigned char *value;
++	size_t i;
++
++	if (returned == NULL || returned[0].s != expected_len)
++		fail("unexpected decoded output size");
++	value = returned[0].p;
++	for (i = 0; i < returned[0].s; i++) {
++		if (value[i] != 0)
++			fail("property shim leaked a non-empty output byte");
++	}
++}
++
++static void test_allowed_property(const char *name, uint32_t value_len)
++{
++	struct fastrpc_io_buffer *returned;
++	unsigned char encoded[256] = { 0 };
++	uint32_t encoded_len;
++	uint32_t result;
++	int dispatch_ret;
++	size_t wire_size;
++	size_t i;
++
++	result = invoke_property(name, value_len,
++				 SNS_REGISTRY_GET_PROPERTY_SC,
++				 &dispatch_ret, &returned);
++	if (dispatch_ret || result != AEE_SUCCESS)
++		fail("allowed property did not succeed");
++	assert_zero_output(returned, value_len);
++
++	wire_size = outbufs_calculate_size(1, returned);
++	if (wire_size != 8 + value_len || wire_size > sizeof(encoded))
++		fail("unexpected encoded output wire size");
++	outbufs_encode(1, returned, encoded);
++	memcpy(&encoded_len, encoded, sizeof(encoded_len));
++	if (le32toh(encoded_len) != value_len)
++		fail("encoded output length does not match ROM ABI");
++	for (i = 4; i < wire_size; i++) {
++		if (encoded[i] != 0)
++			fail("encoded empty string contains non-zero bytes");
++	}
++
++	iobuf_free(1, returned);
++}
++
++static void test_rejected_property(void)
++{
++	struct fastrpc_io_buffer *returned;
++	uint32_t result;
++	int dispatch_ret;
++
++	result = invoke_property("persist.vendor.sensors.enable.property.extra",
++				 PROPERTY_VALUE_MAX,
++				 SNS_REGISTRY_GET_PROPERTY_SC,
++				 &dispatch_ret, &returned);
++	if (dispatch_ret || result != AEE_EUNSUPPORTED)
++		fail("non-whitelisted property was not rejected");
++	assert_zero_output(returned, PROPERTY_VALUE_MAX);
++	iobuf_free(1, returned);
++}
++
++static void test_short_output(void)
++{
++	struct fastrpc_io_buffer *returned;
++	uint32_t result;
++	int dispatch_ret;
++
++	result = invoke_property(property0, PROPERTY_VALUE_MAX - 1,
++				 SNS_REGISTRY_GET_PROPERTY_SC,
++				 &dispatch_ret, &returned);
++	if (dispatch_ret || result != AEE_EBUFFERTOOSMALL)
++		fail("sub-92-byte output was not rejected");
++	assert_zero_output(returned, PROPERTY_VALUE_MAX - 1);
++	iobuf_free(1, returned);
++}
++
++static void test_rejected_method_and_shape(void)
++{
++	struct fastrpc_io_buffer *returned;
++	uint32_t result;
++	uint32_t sc;
++	int dispatch_ret;
++
++	sc = REMOTE_SCALARS_MAKE(1, 2, 1);
++	result = invoke_property(property0, PROPERTY_VALUE_MAX, sc,
++				 &dispatch_ret, &returned);
++	if (!dispatch_ret || result != AEE_EUNSUPPORTED || returned != NULL)
++		fail("method 1 was not rejected by the one-method interface");
++
++	sc = REMOTE_SCALARS_MAKE(0, 2, 2);
++	result = invoke_property(property0, PROPERTY_VALUE_MAX, sc,
++				 &dispatch_ret, &returned);
++	if (!dispatch_ret || result != AEE_EBADPARM || returned != NULL)
++		fail("non-ROM scalar shape was not rejected");
++}
++
++int main(void)
++{
++	if (sns_registry_interface.n_procs != 1
++	 || sns_registry_get_property_def.msg_id != 0
++	 || SNS_REGISTRY_GET_PROPERTY_SC != REMOTE_SCALARS_MAKE(0, 2, 1))
++		fail("interface is not the exact one-method ROM ABI");
++
++	test_allowed_property(property0, PROPERTY_VALUE_MAX);
++	test_allowed_property(property1, 128);
++	test_rejected_property();
++	test_short_output();
++	test_rejected_method_and_shape();
++
++	return 0;
++}
+-- 
+2.43.0
+

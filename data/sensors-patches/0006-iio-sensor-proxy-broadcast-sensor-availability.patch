@@ -1,0 +1,56 @@
+From: liuqin integration <noreply@localhost>
+Subject: [PATCH] announce sensor availability to observers before claims
+
+--- a/src/iio-sensor-proxy.c
++++ b/src/iio-sensor-proxy.c
+@@ -336,6 +336,41 @@
+ 				       props_changed, NULL);
+ }
+ 
++/* Availability is public, unlike readings sent only to claimants. A
++ * restarted proxy must let observers discover sensors before they claim.
++ */
++static void
++send_dbus_availability_event (SensorData *data, PropertiesMask mask)
++{
++	static const struct {
++		PropertiesMask mask;
++		DriverType type;
++		const char *name;
++	} properties[] = {
++		{ PROP_HAS_ACCELEROMETER, DRIVER_TYPE_ACCEL, "HasAccelerometer" },
++		{ PROP_HAS_AMBIENT_LIGHT, DRIVER_TYPE_LIGHT, "HasAmbientLight" },
++		{ PROP_HAS_PROXIMITY, DRIVER_TYPE_PROXIMITY, "HasProximity" },
++		{ PROP_HAS_COMPASS, DRIVER_TYPE_COMPASS, "HasCompass" },
++	};
++	GVariantBuilder builder;
++
++	if (!(mask & (PROP_HAS_ACCELEROMETER | PROP_HAS_AMBIENT_LIGHT |
++	              PROP_HAS_PROXIMITY | PROP_HAS_COMPASS)))
++		return;
++	g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sv}"));
++	for (guint i = 0; i < G_N_ELEMENTS (properties); i++) {
++		if (mask & properties[i].mask)
++			g_variant_builder_add (&builder, "{sv}", properties[i].name,
++				g_variant_new_boolean (driver_type_exists (data, properties[i].type)));
++	}
++	g_dbus_connection_emit_signal (data->connection, NULL,
++		(mask & PROP_ALL) ? SENSOR_PROXY_DBUS_PATH : SENSOR_PROXY_COMPASS_DBUS_PATH,
++		"org.freedesktop.DBus.Properties", "PropertiesChanged",
++		g_variant_new ("(s@a{sv}@as)",
++			(mask & PROP_ALL) ? SENSOR_PROXY_IFACE_NAME : SENSOR_PROXY_COMPASS_IFACE_NAME,
++			g_variant_builder_end (&builder), g_variant_new_strv (NULL, 0)), NULL);
++}
++
+ static void
+ send_dbus_event (SensorData     *data,
+ 		 PropertiesMask  mask)
+@@ -348,6 +383,8 @@
+ 	g_assert (mask != 0);
+ 	g_assert (data->connection);
+ 	g_assert ((mask & PROP_ALL) == 0 || (mask & PROP_ALL_COMPASS) == 0);
++
++	send_dbus_availability_event (data, mask);
+ 
+ 	/* Make a list of the events each client for each sensor
+ 	 * is interested in */

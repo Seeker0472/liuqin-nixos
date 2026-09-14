@@ -1,0 +1,154 @@
+From a702cc5781c896970925d1e6a9e43a5f66fceaba Mon Sep 17 00:00:00 2001
+From: Erwin <yzddmr7@gmail.com>
+Date: Sat, 29 Aug 2026 21:09:07 +0800
+Subject: [PATCH] hexagonrpcd: expose the SSC registry version sibling
+
+Qualcomm sensor firmware opens sns_reg_version through a parent traversal
+from the mapped registry directory. Map the version file as the registry
+directory sibling and cover the exact firmware path with a host test.
+
+Use SNS_REG_VERSION rather than the SNS_REG_CONFIG typo in the draft
+upstream change.
+
+Signed-off-by: Erwin <yzddmr7@gmail.com>
+---
+ hexagonrpcd/rpcd_builder.c             | 15 ++++++--
+ tests/meson.build                      | 13 +++++++
+ tests/test_registry_version_contract.c | 47 ++++++++++++++++++++++++++
+ 3 files changed, 72 insertions(+), 3 deletions(-)
+ create mode 100644 tests/test_registry_version_contract.c
+
+diff --git a/hexagonrpcd/rpcd_builder.c b/hexagonrpcd/rpcd_builder.c
+index d374958..1d28b0a 100644
+--- a/hexagonrpcd/rpcd_builder.c
++++ b/hexagonrpcd/rpcd_builder.c
+@@ -30,6 +30,7 @@
+ #define DSP_LIBS		"/dsp/"
+ #define SENSORS_CONFIG		"/sensors/config/"
+ #define SENSORS_REGISTRY	"/sensors/registry/"
++#define SNS_REG_VERSION		"/sensors/sns_reg_version"
+ #define SNS_REG_CONFIG		"/sensors/sns_reg.conf"
+ #define SYSFS_SOCINFO		"/socinfo/"
+ 
+@@ -111,7 +112,8 @@ static struct hexagonfs_dirent *hfs_map_or_empty(const char *name, const char *p
+  */
+ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ {
+-	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_config, *socinfo;
++	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_version,
++	     *sns_reg_config, *socinfo;
+ 	size_t n_prefix;
+ 	struct hexagonfs_dirent *persist_dir, *vendor_dir;
+ 
+@@ -120,6 +122,7 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 	acdbdata = malloc(n_prefix + strlen(ACDBDATA) + 1);
+ 	sns_cfg = malloc(n_prefix + strlen(SENSORS_CONFIG) + 1);
+ 	sns_reg = malloc(n_prefix + strlen(SENSORS_REGISTRY) + 1);
++	sns_reg_version = malloc(n_prefix + strlen(SNS_REG_VERSION) + 1);
+ 	sns_reg_config = malloc(n_prefix + strlen(SNS_REG_CONFIG) + 1);
+ 	socinfo = malloc(n_prefix + strlen(SYSFS_SOCINFO) + 1);
+ 
+@@ -140,6 +143,11 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 		strcat(sns_reg, SENSORS_REGISTRY);
+ 	}
+ 
++	if (sns_reg_version != NULL) {
++		strcpy(sns_reg_version, prefix);
++		strcat(sns_reg_version, SNS_REG_VERSION);
++	}
++
+ 	if (sns_reg_config != NULL) {
+ 		strcpy(sns_reg_config, prefix);
+ 		strcat(sns_reg_config, SNS_REG_CONFIG);
+@@ -162,8 +170,9 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 	 */
+ 	persist_dir = hfs_mkdir("persist", 1,
+ 				hfs_mkdir("sensors", 1,
+-					hfs_mkdir("registry", 1,
+-						hfs_map("registry", sns_reg)
++					hfs_mkdir("registry", 2,
++						hfs_map("registry", sns_reg),
++						hfs_map("sns_reg_version", sns_reg_version)
+ 					)
+ 				)
+ 		      );
+diff --git a/tests/meson.build b/tests/meson.build
+index 70fd8ee..fabfbce 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -31,6 +31,19 @@ test_hexagonrpc = executable('test_hexagonrpc',
+   include_directories : include,
+ )
+ 
++test_registry_version_contract = executable('test_registry_version_contract',
++  'test_registry_version_contract.c',
++  '../hexagonrpcd/rpcd_builder.c',
++  '../hexagonrpcd/hexagonfs.c',
++  '../hexagonrpcd/hexagonfs_mapped.c',
++  '../hexagonrpcd/hexagonfs_plat_subtype_name.c',
++  '../hexagonrpcd/hexagonfs_virt_dir.c',
++  c_args : cflags,
++  include_directories : include,
++)
++
+ test('iobuffer', test_iobuffer)
+ test('hexagonfs', test_hexagonfs, args : [sample_file])
+ test('hexagonrpc', test_hexagonrpc)
++test('registry-version-contract', test_registry_version_contract,
++  args : [meson.current_build_dir()])
+diff --git a/tests/test_registry_version_contract.c b/tests/test_registry_version_contract.c
+new file mode 100644
+index 0000000..d29bcd1
+--- /dev/null
++++ b/tests/test_registry_version_contract.c
+@@ -0,0 +1,47 @@
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "../hexagonrpcd/hexagonfs.h"
++#include "../hexagonrpcd/rpcd_builder.h"
++
++int main(int argc, char **argv)
++{
++	struct hexagonfs_fd *fds[HEXAGONFS_MAX_FD] = { 0 };
++	struct hexagonfs_dirent *root;
++	char sensors[4096], registry[4096], version[4096];
++	int rootfd, fd, hostfd, n;
++
++	if (argc != 2)
++		return 2;
++	if (mkdir(argv[1], 0700) && access(argv[1], F_OK))
++		return 3;
++	n = snprintf(sensors, sizeof(sensors), "%s/sensors", argv[1]);
++	if (n < 0 || (size_t)n >= sizeof(sensors))
++		return 4;
++	n = snprintf(version, sizeof(version), "%s/sns_reg_version", sensors);
++	if (n < 0 || (size_t)n >= sizeof(version))
++		return 4;
++	if (mkdir(sensors, 0700) && access(sensors, F_OK))
++		return 5;
++	n = snprintf(registry, sizeof(registry), "%s/registry", sensors);
++	if (n < 0 || (size_t)n >= sizeof(registry))
++		return 5;
++	if (mkdir(registry, 0700) && access(registry, F_OK))
++		return 6;
++	hostfd = open(version, O_WRONLY | O_CREAT | O_TRUNC, 0600);
++	if (hostfd < 0 || write(hostfd, "version=12\0", 11) != 11 || close(hostfd))
++		return 7;
++
++	root = construct_root_dir(argv[1], "sdsp");
++	rootfd = hexagonfs_open_root(fds, root);
++	if (rootfd < 0)
++		return 8;
++
++	fd = hexagonfs_openat(fds, rootfd, rootfd,
++			      "/mnt/vendor/persist/sensors/registry/registry/../sns_reg_version");
++	printf("sns_reg_version_open=%d\n", fd);
++	return fd < 0;
++}
+-- 
+2.43.0
+

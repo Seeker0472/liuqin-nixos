@@ -1,0 +1,416 @@
+# SPDX-License-Identifier: MIT
+#
+# Hardware integration: display/backlight, input firmware in the initrd,
+# audio UCM2, WLAN/BT private identity, sensors stack, and the small
+# GNOME-facing containment units. All helpers are Nix store paths; state
+# directories and systemd units are declared here.
+{ config, lib, pkgs, ... }:
+
+let
+  cfg = config.hardware.liuqin;
+
+  stateDir = "/var/lib/liuqin-private";
+in
+{
+  config = lib.mkIf cfg.enable {
+    # --- Firmware the patched drivers request from userspace --------------
+    # nvt_ts probes on the SPI bus very early and request_firmware() must
+    # succeed there; the panel/keyboard/GPU/DSP payloads below come from the
+    # operator's stock ROM dump (requireFile placeholders until pinned).
+    hardware.firmware = [ pkgs.liuqinFirmware ];
+    hardware.enableRedistributableFirmware = lib.mkDefault true;
+
+    # The touchscreen (nvt_ts) request_firmware() fires during probe, before
+    # switch_root, so the firmware tree must be in the initrd too.
+    boot.initrd.systemd.contents."/lib/firmware".source =
+      "${pkgs.liuqinFirmware}/lib/firmware";
+
+    # --- Backlight ---------------------------------------------------------
+    # systemd-backlight restores whatever the last session left; on a panel
+    # whose boot evidence is the backlight itself, force a known-good level
+    # once, before the display manager.
+    systemd.services.liuqin-backlight-default = {
+      description = "Restore the liuqin normal-desktop backlight default";
+      wantedBy = [ "graphical.target" ];
+      wants = [ "systemd-backlight@backlight:ktz8866-backlight.service" ];
+      after = [ "systemd-backlight@backlight:ktz8866-backlight.service" ];
+      before = [ "display-manager.service" ];
+      path = [ pkgs.coreutils ];
+      script = ''
+        set -eu
+        backlight=/sys/class/backlight/ktz8866-backlight
+        case " $(cat /proc/cmdline) " in
+          *" androidboot.mode=charger "*) exit 0 ;;
+        esac
+        [ -d "$backlight" ]
+        [ "$(cat "$backlight/max_brightness")" = 2047 ]
+        echo 1500 > "$backlight/brightness"
+        echo 0 > "$backlight/bl_power"
+        [ "$(cat "$backlight/actual_brightness")" = 1500 ]
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+    };
+
+    # --- Audio: UCM2 for the audioreach card ------------------------------
+    # The alsa-ucm-conf package in nixpkgs is extended with the device files
+    # via the overlay (see overlay.nix). PipeWire (GNOME default) stays on.
+
+    # --- WLAN private MAC (ath11k QCA6490) --------------------------------
+    # The factory MAC lives on the persist partition and is provisioned
+    # into root-only state by liuqin-persist-provision.service below; this
+    # unit refuses to let NetworkManager see the factory-zero address.
+    systemd.services.liuqin-wlan-mac = {
+      description = "liuqin private WLAN MAC admission";
+      before = [ "NetworkManager.service" "network-pre.target" ];
+      after = [ "systemd-udev-settle.service" ];
+      wants = [ "systemd-udev-settle.service" ];
+      path = with pkgs; [ iproute2 coreutils gnugrep gawk ];
+      script = ''
+        set -eu
+        state=${stateDir}/wlan-mac
+        [ -f "$state" ] && [ ! -L "$state" ]
+        [ "$(stat -c '%a:%u:%g' "$state")" = '600:0:0' ]
+        mac=$(head -n1 "$state" | tr 'A-F' 'a-f')
+        printf '%s\n' "$mac" | grep -Eq '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'
+        case $mac in
+          00:00:00:00:00:00|ff:ff:ff:ff:ff:ff) exit 1 ;;
+        esac
+        iface=
+        for i in $(seq 1 30); do
+          for node in /sys/class/net/*; do
+            [ -e "$node/device/vendor" ] || continue
+            [ "$(cat "$node/device/vendor")" = 0x17cb ] || continue
+            [ "$(cat "$node/device/device")" = 0x1103 ] || continue
+            iface=''${node##*/}
+            break
+          done
+          [ -n "$iface" ] && break
+          sleep 1
+        done
+        [ -n "$iface" ]
+        ip link set dev "$iface" down
+        ip link set dev "$iface" address "$mac"
+        [ "$(cat "/sys/class/net/$iface/address")" = "$mac" ]
+        ip link set dev "$iface" up
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = 45;
+      };
+    };
+    systemd.services.NetworkManager = {
+      requires = [ "liuqin-wlan-mac.service" ];
+      after = [ "liuqin-wlan-mac.service" ];
+    };
+
+    # --- Bluetooth public address -----------------------------------------
+    systemd.services.liuqin-bt-preconfigure = {
+      description = "liuqin QCA6490 public Bluetooth address";
+      path = with pkgs; [ bluez coreutils gnugrep gawk util-linux ];
+      script = ''
+        set -eu
+        state=${stateDir}/bluetooth-address
+        [ -f "$state" ] && [ ! -L "$state" ]
+        [ "$(stat -c '%a:%u:%g' "$state")" = '600:0:0' ]
+        addr=$(head -n1 "$state" | tr 'a-f' 'A-F')
+        printf '%s\n' "$addr" | grep -Eq '^([0-9A-F]{2}:){5}[0-9A-F]{2}$'
+        case $addr in
+          00:00:00:00:00:00|FF:FF:FF:FF:FF:FF|00:00:00:00:5A:AD) exit 1 ;;
+        esac
+        # Wait (bounded) for the controller; the rampatch/NVM download over
+        # UART finishes on its own schedule.
+        for i in $(seq 1 30); do
+          config=$(printf '%s' "" | btmgmt config 2>&1 || true)
+          case $config in
+            *"Unconfigured index list with 1 item"*)
+              idx=$(printf '%s\n' "$config" | awk '/^hci[0-9]+:[[:space:]]+Unconfigured controller/ { line=$1; sub(/^hci/,"",line); sub(/:$/,"",line); print line; exit }')
+              [ -n "$idx" ]
+              printf '%s' "" | btmgmt --index "$idx" public-addr "$addr"
+              exit 0
+              ;;
+          esac
+          info=$(printf '%s' "" | btmgmt --index 0 info 2>&1 || true)
+          case $info in
+            *"addr $addr"*) exit 0 ;;
+            *"addr 00:00:00:00:5A:AD"*)
+              printf '%s' "" | btmgmt --index 0 power off || true
+              printf '%s' "" | btmgmt --index 0 public-addr "$addr"
+              printf '%s' "" | btmgmt --index 0 power on || true
+              exit 0
+              ;;
+          esac
+          sleep 1
+        done
+        echo "liuqin-bt-preconfigure: controller never reached a usable state" >&2
+        exit 1
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+    };
+    systemd.services.bluetooth = {
+      requires = [ "liuqin-bt-preconfigure.service" ];
+      after = [ "liuqin-bt-preconfigure.service" ];
+    };
+
+    # --- Provision private per-device state from the persist partition -----
+    # Reads persist (sda21) read-only exactly once per boot and installs the
+    # WLAN MAC, BT address, speaker calibration and sensor registry into
+    # root-only state. Everything below is device-unique; none of it may
+    # enter the Nix store or the repo.
+    systemd.services.liuqin-persist-provision = {
+      description = "Provision liuqin per-device data from the persist partition";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-slpi.service" ];
+      after = [ "local-fs.target" ];
+      path = with pkgs; [ coreutils util-linux gnugrep findutils ];
+      script = ''
+        set -eu
+        part=/dev/disk/by-partlabel/persist
+        private=${stateDir}
+        mnt=$(mktemp -d)
+        trap 'umount "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true' EXIT
+        mount -o ro "$part" "$mnt"
+
+        install -d -m 0700 -o root -g root "$private"
+
+        # WLAN MAC: text "wlan0=AABBCCDDEEFF" -> colon-separated.
+        raw=$(cat "$mnt/wlan/wlan_mac.bin")
+        hex=$(printf '%s' "$raw" | grep -oP '(?<=wlan0=)[0-9A-Fa-f]{12}')
+        printf '%s\n' "$(printf '%s' "$hex" | sed 's/../&:/g; s/:$//' | tr 'A-F' 'a-f')" \
+          > "$private/wlan-mac"
+        chmod 0600 "$private/wlan-mac"
+
+        # Bluetooth address: 6 raw bytes in order -> colon-separated text.
+        od -An -tx1 -v "$mnt/bluetooth/.bt_nv.bin" | tr -d ' \n' \
+          | sed 's/../&:/g; s/:$//' > "$private/bluetooth-address"
+        printf '\n' >> "$private/bluetooth-address"
+        chmod 0600 "$private/bluetooth-address"
+
+        # CS35L41 per-channel calibration -> four firmware blobs the kernel
+        # requests by channel name.
+        if [ -f "$mnt/audio/crus_calr.bin" ]; then
+          channels="TL TR BL BR"
+          i=0
+          for ch in $channels; do
+            dd if="$mnt/audio/crus_calr.bin" bs=4 skip=$i count=1 \
+              of="/var/lib/liuqin-private/cs35l41-liuqin-$ch-calr.bin" status=none
+            i=$((i + 1))
+          done
+        fi
+
+        # SSC sensor registry (fastrpc-readable).
+        install -d -m 0750 -o fastrpc -g fastrpc /var/lib/liuqin-sensors/registry
+        if [ -d "$mnt/sensors/registry/registry" ]; then
+          install -m 0640 -o fastrpc -g fastrpc \
+            "$mnt/sensors/registry/registry/"* /var/lib/liuqin-sensors/registry/
+          (cd /var/lib/liuqin-sensors/registry && sha256sum * > SHA256SUMS)
+          chown fastrpc:fastrpc /var/lib/liuqin-sensors/registry/SHA256SUMS
+        fi
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      unitConfig.ConditionPathExists = "/dev/disk/by-partlabel/persist";
+    };
+
+    users.users.fastrpc = {
+      isSystemUser = true;
+      group = "fastrpc";
+      description = "Qualcomm FastRPC daemon";
+    };
+    users.groups.fastrpc = { };
+    systemd.tmpfiles.rules = [
+      "d /var/lib/liuqin-sensors 0750 fastrpc fastrpc -"
+      "d /var/lib/liuqin-sensors/registry 0750 fastrpc fastrpc -"
+      "d /run/liuqin-sensors 0755 root root -"
+    ];
+
+    # fastrpc-sdsp: sensor-proxy may see it, and the SSC sample gate starts.
+    services.udev.extraRules = ''
+      SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp", GROUP="fastrpc", MODE="0660", \
+        ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel", TAG+="systemd", \
+        ENV{SYSTEMD_WANTS}+="liuqin-sensor-stack.target"
+      # Portrait panel, landscape-mounted accelerometer (four-pose proven):
+      SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp", ENV{ACCEL_MOUNT_MATRIX}="-1,0,0;0,-1,0;0,0,1"
+    '';
+
+    # --- Sensors: SLPI lifecycle, hexagonrpcd, sample gate, sensor proxy --
+    systemd.targets.liuqin-sensor-stack = {
+      description = "liuqin Qualcomm SSC sensor stack";
+      requires = [ "liuqin-hexagonrpcd-sdsp.service" ];
+      wants = [ "liuqin-ssc-sample-gate.service" ];
+      after = [ "liuqin-hexagonrpcd-sdsp.service" ];
+    };
+
+    systemd.services.liuqin-slpi = {
+      description = "liuqin sensor processor lifecycle";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-udevd.service" "systemd-tmpfiles-setup.service" ];
+      before = [ "liuqin-hexagonrpcd-sdsp.service" ];
+      path = with pkgs; [ coreutils util-linux ];
+      script = ''
+        set -eu
+        for remote in /sys/class/remoteproc/remoteproc*; do
+          [ "$(cat "$remote/name")" = slpi ] || continue
+          runuser -u fastrpc -- test -r /var/lib/liuqin-sensors/registry/SHA256SUMS
+          state=$(cat "$remote/state")
+          [ "$state" != running ] || exit 0
+          [ "$state" = offline ] || exit 1
+          echo start > "$remote/state"
+          exit 0
+        done
+        echo "SLPI remote processor is unavailable" >&2
+        exit 1
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "20s";
+      };
+    };
+
+    systemd.services.liuqin-hexagonrpcd-sdsp = {
+      description = "liuqin SLPI FastRPC reverse tunnel";
+      requires = [ "liuqin-slpi.service" ];
+      after = [ "liuqin-slpi.service" ];
+      before = [ "liuqin-ssc-sample-gate.service" ];
+      unitConfig.ConditionPathExists = "/dev/fastrpc-sdsp";
+      serviceConfig = {
+        Type = "simple";
+        User = "fastrpc";
+        Group = "fastrpc";
+        ExecStart = "${pkgs.liuqinHexagonrpc}/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R ${pkgs.liuqinSensorsConfig}/share/qcom/sm8450/Xiaomi/liuqin";
+        Restart = "on-failure";
+        RestartSec = "2s";
+        TimeoutStopSec = "5s";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = false;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictAddressFamilies = "AF_UNIX AF_LOCAL";
+        ReadOnlyPaths = [
+          "${pkgs.liuqinSensorsConfig}/share/qcom/sm8450/Xiaomi/liuqin"
+          "/var/lib/liuqin-sensors/registry"
+        ];
+        DevicePolicy = "closed";
+        DeviceAllow = "/dev/fastrpc-sdsp rw";
+      };
+      wantedBy = [ "liuqin-sensor-stack.target" ];
+      unitConfig.StartLimitIntervalSec = "30s";
+      unitConfig.StartLimitBurst = 3;
+    };
+
+    systemd.services.liuqin-ssc-sample-gate = {
+      description = "liuqin SSC real accelerometer sample gate";
+      requires = [ "liuqin-hexagonrpcd-sdsp.service" ];
+      after = [ "liuqin-hexagonrpcd-sdsp.service" ];
+      before = [ "iio-sensor-proxy.service" ];
+      wantedBy = [ "liuqin-sensor-stack.target" ];
+      path = with pkgs; [ coreutils gnugrep pkgs.liuqinLibssc ];
+      script = ''
+        set -eu
+        [ -c /dev/fastrpc-sdsp ]
+        state_dir=/run/liuqin-sensors
+        mkdir -p "$state_dir"
+        attempt=1
+        while [ "$attempt" -le 4 ]; do
+          if timeout --signal=TERM --kill-after=2s 8s \
+            ssccli --sensor=accelerometer --timeout=3 > "$state_dir/ssc.log" 2>&1 \
+            && grep -q '^Accelerometer sensor measurement: X=' "$state_dir/ssc.log"; then
+            grep -c '^Accelerometer sensor measurement: X=' "$state_dir/ssc.log" \
+              > "$state_dir/accelerometer-ready"
+            exit 0
+          fi
+          attempt=$((attempt + 1))
+          sleep 1
+        done
+        echo "no real accelerometer measurement after four bounded attempts" >&2
+        exit 1
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "42s";
+      };
+    };
+
+    # iio-sensor-proxy (patched) only once a real sample exists, and admit
+    # the QMI-over-QRTR address family libssc needs.
+    systemd.services.iio-sensor-proxy = {
+      requires = [ "liuqin-ssc-sample-gate.service" ];
+      after = [ "liuqin-ssc-sample-gate.service" ];
+      serviceConfig = {
+        ExecStart = [ "" "${pkgs.liuqinIioSensorProxy}/libexec/iio-sensor-proxy" ];
+        RestrictAddressFamilies = "AF_UNIX AF_LOCAL AF_NETLINK AF_QIPCRTR";
+      };
+    };
+
+    # gnome-shell only claims the accelerometer when the SensorProxy name
+    # appears inside a live greeter session; re-announce after graphical
+    # boot and verify a claim landed.
+    systemd.services.liuqin-sensor-proxy-refresh = {
+      description = "Re-announce iio-sensor-proxy to the greeter's gnome-shell";
+      after = [ "graphical.target" ];
+      wants = [ "graphical.target" ];
+      wantedBy = [ "graphical.target" ];
+      path = with pkgs; [ coreutils gawk procps systemd ];
+      script = ''
+        set -u
+        round=1
+        while [ $round -le 5 ]; do
+          systemctl restart iio-sensor-proxy.service || :
+          sleep 4
+          pid=$(pgrep -f iio-sensor-proxy | head -1 || :)
+          if [ -n "$pid" ]; then
+            a=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null || echo 0)
+            sleep 4
+            b=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null || echo 0)
+            if [ "''${b:-0}" -gt "''${a:-0}" ]; then
+              exit 0
+            fi
+          fi
+          round=$((round + 1))
+          sleep 10
+        done
+        exit 1
+      '';
+      serviceConfig.Type = "oneshot";
+    };
+
+    # --- Gunyah node containment ------------------------------------------
+    # ABL's DTBO injects /hypervisor (compatible "qcom,gunyah-vm") into the
+    # live tree; systemd-detect-virt keys off it and sends GSD down VM code
+    # paths. The kernel never binds a driver to the node, so a bind mount of
+    # an empty directory over the devicetree export restores an honest
+    # "none" for userspace readers.
+    systemd.services.liuqin-hide-gunyah-node = {
+      description = "Hide the ABL-injected Gunyah /hypervisor node from userspace";
+      wantedBy = [ "sysinit.target" ];
+      unitConfig = {
+        DefaultDependencies = false;
+        Conflicts = "shutdown.target";
+        Before = [ "sysinit.target" "shutdown.target" ];
+        ConditionPathExists = "/sys/firmware/devicetree/base/hypervisor";
+      };
+      path = [ pkgs.util-linux pkgs.coreutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /run/liuqin-empty";
+        ExecStart = "${pkgs.util-linux}/bin/mount --bind /run/liuqin-empty /sys/firmware/devicetree/base/hypervisor";
+        ExecStop = "${pkgs.util-linux}/bin/umount /sys/firmware/devicetree/base/hypervisor";
+      };
+    };
+  };
+}
