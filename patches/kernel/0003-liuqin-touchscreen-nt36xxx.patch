@@ -9,10 +9,14 @@ Adjustments for v7.2.5:
   manually (the downstream squashed patch never touched these files
   because they were already wired up in the 6.17 tree it was diffed
   against).
+- drivers/input/touchscreen/nt36523/nt36xxx.c: v7.2.5 removed the
+  long-deprecated linux/of_gpio.h; nvt_parse_dt() now looks up the
+  reset/irq GPIOs through the gpiod API (gpiod_get/desc_to_gpio)
+  instead of of_get_named_gpio_flags()/of_get_named_gpio().
 
 --- a/drivers/input/touchscreen/Kconfig
 +++ b/drivers/input/touchscreen/Kconfig
-@@ -12,6 +12,8 @@
+@@ -12,6 +12,8 @@ menuconfig INPUT_TOUCHSCREEN
  
  if INPUT_TOUCHSCREEN
  
@@ -23,7 +27,7 @@ Adjustments for v7.2.5:
  	depends on MFD_88PM860X
 --- a/drivers/input/touchscreen/Makefile
 +++ b/drivers/input/touchscreen/Makefile
-@@ -69,6 +69,7 @@
+@@ -69,6 +69,7 @@ obj-$(CONFIG_TOUCHSCREEN_MMS114)	+= mms114.o
  obj-$(CONFIG_TOUCHSCREEN_MSG2638)	+= msg2638.o
  obj-$(CONFIG_TOUCHSCREEN_MTOUCH)	+= mtouch.o
  obj-$(CONFIG_TOUCHSCREEN_NOVATEK_NVT_TS)	+= novatek-nvt-ts.o
@@ -31,7 +35,8 @@ Adjustments for v7.2.5:
  obj-$(CONFIG_TOUCHSCREEN_HP600)		+= hp680_ts_input.o
  obj-$(CONFIG_TOUCHSCREEN_HP7XX)		+= jornada720_ts.o
  obj-$(CONFIG_TOUCHSCREEN_IPAQ_MICRO)	+= ipaq-micro-ts.o
---- a/drivers/input/touchscreen/nt36523/Kconfig
+new file mode 100644
+--- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/Kconfig
 @@ -0,0 +1,11 @@
 +#
@@ -45,7 +50,8 @@ Adjustments for v7.2.5:
 +	  Say Y here if you have a Novatek NT36523 no flash touchscreen connected
 +	  to your system by SPI bus.
 +	  If unsure, say N.
---- a/drivers/input/touchscreen/nt36523/Makefile
+new file mode 100644
+--- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/Makefile
 @@ -0,0 +1,7 @@
 +#
@@ -55,9 +61,10 @@ Adjustments for v7.2.5:
 +obj-$(CONFIG_TOUCHSCREEN_NT36523_SPI) += nt36523_ts.o
 +nt36523_ts-y := nt36xxx.o \
 +	nt36xxx_fw_update.o
---- a/drivers/input/touchscreen/nt36523/nt36xxx.c
+new file mode 100644
+--- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx.c
-@@ -0,0 +1,2307 @@
+@@ -0,0 +1,2325 @@
 +/*
 + * Copyright (C) 2010 - 2018 Novatek, Inc.
 + * Copyright (C) 2021 XiaoMi, Inc.
@@ -84,7 +91,7 @@ Adjustments for v7.2.5:
 +#include <linux/proc_fs.h>
 +#include <linux/input/mt.h>
 +#include <linux/debugfs.h>
-+#include <linux/of_gpio.h>
++#include <linux/gpio/consumer.h>
 +#include <linux/of_irq.h>
 +
 +#include "nt36xxx.h"
@@ -771,10 +778,28 @@ Adjustments for v7.2.5:
 +	int32_t ret = 0;
 +
 +#if NVT_TOUCH_SUPPORT_HW_RST
-+	ts->reset_gpio = of_get_named_gpio_flags(np, "novatek,reset-gpio", 0, &ts->reset_flags);
++	{
++		struct gpio_desc *reset_gpiod = gpiod_get(dev, "novatek,reset", GPIOD_ASIS);
++
++		if (IS_ERR(reset_gpiod)) {
++			ts->reset_gpio = PTR_ERR(reset_gpiod);
++		} else {
++			ts->reset_gpio = desc_to_gpio(reset_gpiod);
++			gpiod_put(reset_gpiod);
++		}
++	}
 +	NVT_LOG("novatek,reset-gpio=%d\n", ts->reset_gpio);
 +#endif
-+	ts->irq_gpio = of_get_named_gpio(np, "novatek,irq-gpio", 0);
++	{
++		struct gpio_desc *irq_gpiod = gpiod_get(dev, "novatek,irq", GPIOD_ASIS);
++
++		if (IS_ERR(irq_gpiod)) {
++			ts->irq_gpio = PTR_ERR(irq_gpiod);
++		} else {
++			ts->irq_gpio = desc_to_gpio(irq_gpiod);
++			gpiod_put(irq_gpiod);
++		}
++	}
 +	NVT_LOG("novatek,irq-gpio=%d\n", ts->irq_gpio);
 +
 +	ts->pen_support = of_property_read_bool(np, "novatek,pen-support");
@@ -2365,7 +2390,8 @@ Adjustments for v7.2.5:
 +
 +MODULE_DESCRIPTION("Novatek Touchscreen Driver");
 +MODULE_LICENSE("GPL");
---- a/drivers/input/touchscreen/nt36523/nt36xxx.h
+new file mode 100644
+--- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx.h
 @@ -0,0 +1,276 @@
 +/*
@@ -2644,7 +2670,8 @@ Adjustments for v7.2.5:
 +#endif /* #if NVT_TOUCH_ESD_PROTECT */
 +
 +#endif /* _LINUX_NVT_TOUCH_H */
---- a/drivers/input/touchscreen/nt36523/nt36xxx_fw_update.c
+new file mode 100644
+--- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx_fw_update.c
 @@ -0,0 +1,923 @@
 +/*
@@ -3570,7 +3597,8 @@ Adjustments for v7.2.5:
 +	mutex_unlock(&ts->lock);
 +}
 +#endif /* BOOT_UPDATE_FIRMWARE */
---- a/drivers/input/touchscreen/nt36523/nt36xxx_mem_map.h
+new file mode 100644
+--- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx_mem_map.h
 @@ -0,0 +1,670 @@
 +/*
