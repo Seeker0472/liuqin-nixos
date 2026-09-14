@@ -520,7 +520,7 @@ Adjustments for v7.2.5:
 +};
 --- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
-@@ -0,0 +1,1498 @@
+@@ -0,0 +1,1496 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
 +
@@ -2017,6 +2017,7 @@ Adjustments for v7.2.5:
 +
 +	status = "okay";
 +};
+diff --git a/MAINTAINERS b/MAINTAINERS
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -18547,6 +18547,20 @@
