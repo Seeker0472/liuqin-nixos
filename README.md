@@ -19,7 +19,8 @@ host-side installer that operates the device over fastboot.
 ## Repository layout
 
 ```
-flake.nix            outputs: packages, overlay, NixOS module, nixosConfiguration
+flake.nix            outputs: packages, overlay, NixOS module, lib helpers,
+                     example nixosConfiguration
 overlay.nix          pkgs.liuqin* overlay (kernel, bootimg, device packages)
 kernel/
   default.nix        linuxManualConfig: linux 7.2.5 + patches/kernel/*
@@ -67,7 +68,51 @@ pkgs.liuqinKernel + liuqinFirmware + overlay device packages
    -> .#bootimg-nixos (boot.img with the NixOS initrd and cmdline)
 ```
 
-## Build
+## Use from your own flake
+
+This repository is a hardware-support layer (BSP), not your system
+configuration. Keep your machine config in your own flake and reference
+this one as an input:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    liuqin.url = "git+file:///path/to/liuqin-nixos";
+    liuqin.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { self, nixpkgs, liuqin }:
+    let
+      images = liuqin.lib.mkLiuqinImages self.nixosConfigurations.mypad;
+    in
+    {
+      # mkLiuqinSystem injects nixosModules.liuqin, the liuqin overlay and
+      # the unfree predicate for the firmware payloads; your modules carry
+      # hostname/users/desktop/storage layout.
+      nixosConfigurations.mypad = liuqin.lib.mkLiuqinSystem {
+        modules = [ ./my-machine.nix ];
+      };
+
+      # Deployable artifacts built from YOUR configuration:
+      packages.x86_64-linux = {
+        bootimg = images.bootimg;          # boot.img (cross-compiled)
+        rootfsImage = images.rootfsImage;  # ext4 rootfs for userdata
+      };
+    };
+}
+```
+
+`my-machine.nix` is a normal NixOS module with `hardware.liuqin.enable =
+true;` plus whatever you want (users, GNOME, `hardware.liuqin.storage.*`
+layout, timezone). `config/example.nix` in this repository is exactly such
+a module and doubles as the smoke-test configuration behind the flake's
+own packages and eval check.
+
+`lib.mkLiuqinImages` also returns `rootMarkerCheck`; see
+`lib.mkLiuqinImages` in flake.nix for the full contract.
+
+## Build (this repository's example configuration)
 
 ```sh
 nix build .#kernel          # cross-compiled x86_64 -> aarch64 (slow first time)
