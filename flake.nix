@@ -93,6 +93,14 @@
           libraries = [ ];
           flakeIgnore = [ "E501" "E265" ];
         } (builtins.readFile ./tools/install.py);
+        # Host-arch copy of the tmpfiles marker byte-consistency check from
+        # modules/liuqin/initrd-guard.nix: runs the exact systemd.tmpfiles
+        # rule through systemd-tmpfiles --create --root and requires the
+        # result to be byte-identical to the guard marker. Also asserted
+        # into the aarch64 system closure via an activation script.
+        root-marker-check =
+          self.nixosConfigurations.liuqin.config.hardware.liuqin.rootMarkerCheck
+            pkgsHost;
       };
 
       nixosModules.liuqin = import ./modules/liuqin;

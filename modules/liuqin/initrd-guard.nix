@@ -24,6 +24,37 @@ let
   # stage-2 tmpfiles can never satisfy a fresh install.
   markerContent = "LIUQIN_NIXOS_ROOT_V1\n";
   markerSha256 = builtins.hashString "sha256" markerContent;
+  markerSize = builtins.stringLength markerContent;
+  # tmpfiles arguments are single-line: the trailing newline must be the
+  # literal two-character escape \n (tmpfiles expands it when writing).
+  # Interpolating markerContent verbatim would embed a raw newline and
+  # silently truncate the written file to 20 bytes instead of 21.
+  markerArgument = lib.replaceStrings [ "\n" ] [ "\\n" ] markerContent;
+
+  # Build-time consistency check: run the exact tmpfiles rule below through
+  # systemd-tmpfiles and require a byte-identical result to markerContent,
+  # so a rule/marker drift fails the build instead of the initrd guard.
+  # A function of a package set so the flake can build a host-arch copy
+  # (packages.x86_64-linux.root-marker-check) without cross-compiling.
+  mkMarkerCheck = hp: hp.runCommand "liuqin-root-marker-check" { } ''
+    mkdir -p root/etc
+    rule=$(printf '%s\n' ${lib.escapeShellArg "f+ /etc/liuqin-nixos-root 0644 root root - ${markerArgument}"})
+    printf '%s\n' "$rule" > rule.conf
+    # Guard against the exact drift this check exists for: the rule argument
+    # must carry the literal \n escape, not a raw newline.
+    [ "$(wc -l < rule.conf)" = 1 ]
+    # The sandbox build user is not root, so the rule's chown to root fails
+    # (fchownat EINVAL) after the file is already written; only the exit
+    # status is tolerated, the content/mode checks below must still pass.
+    ${hp.systemd}/bin/systemd-tmpfiles --create --root=$PWD/root \
+      $PWD/rule.conf || true
+    [ -f root/etc/liuqin-nixos-root ] && [ ! -L root/etc/liuqin-nixos-root ]
+    [ "$(stat -c %a root/etc/liuqin-nixos-root)" = 644 ]
+    printf '%s' ${lib.escapeShellArg markerContent} > expected
+    cmp expected root/etc/liuqin-nixos-root
+    touch $out
+  '';
+  markerCheck = mkMarkerCheck pkgs;
 
   guardScript = pkgs.writeShellScript "liuqin-storage-guard" ''
     set -eu
@@ -108,7 +139,7 @@ let
     if [ -f "$marker" ] && [ ! -L "$marker" ]; then
       meta=$(stat -c '%a %u %g %s' "$marker" 2>/dev/null || true)
       sum=$(sha256sum "$marker" | cut -d' ' -f1)
-      if [ "$meta" = "644 0 0 21" ] && [ "$sum" = "${markerSha256}" ]; then
+      if [ "$meta" = "644 0 0 ${toString markerSize}" ] && [ "$sum" = "${markerSha256}" ]; then
         marker_ok=1
       else
         echo "liuqin-storage-guard: marker meta '$meta' sha256 '$sum' rejected" >&2
@@ -151,6 +182,18 @@ in
     '';
   };
 
+  options.hardware.liuqin.rootMarkerCheck = lib.mkOption {
+    type = lib.types.functionTo lib.types.package;
+    default = mkMarkerCheck;
+    readOnly = true;
+    description = ''
+      Function from a package set to a derivation that runs the systemd
+      tmpfiles marker rule through systemd-tmpfiles --create --root and
+      requires byte-identical output to rootMarkerContent. The flake builds
+      it on the host architecture as packages.x86_64-linux.root-marker-check.
+    '';
+  };
+
   config = lib.mkIf cfg.enable {
     # The guard hard-codes /dev/sda35 (immutable GPT geometry checks); a
     # different rootDevice would silently bypass it. Fail evaluation instead.
@@ -171,8 +214,14 @@ in
     # Fresh installs get the file from the rootfs image itself; tmpfiles is
     # the drift repair, not the initial provisioning.
     systemd.tmpfiles.rules = [
-      "f+ /etc/liuqin-nixos-root 0644 root root - ${markerContent}"
+      "f+ /etc/liuqin-nixos-root 0644 root root - ${markerArgument}"
     ];
+
+    # Force the byte-consistency check into the system closure so it is
+    # built and verified with every system build (system-path activation
+    # script dependency, not a package symlink).
+    system.activationScripts.liuqinRootMarkerCheck =
+      lib.stringAfter [ ] "true # depends on ${markerCheck}";
 
     # Never hand out a root shell in the initrd: a guard failure drops to
     # emergency.target, and that must not be a sidestep around the checks.
