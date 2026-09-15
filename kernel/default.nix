@@ -39,7 +39,10 @@ let
 
   structuredExtraConfig = import ./config.nix { inherit lib; };
 in
-buildLinux {
+# buildLinux's generic.nix whitelists its known arguments; postBuild is not
+# one of them and would be dropped silently, so the fw_path_para assertion
+# is attached with overrideAttrs where every mkDerivation attr survives.
+(buildLinux {
   inherit version src kernelPatches structuredExtraConfig;
   modDirVersion = version;
   # nixpkgs common-config carries the generic desktop/server set
@@ -58,15 +61,16 @@ buildLinux {
   # "unused option".
   ignoreConfigErrors = true;
   defconfig = "defconfig"; # ARCH=arm64 defconfig
-
+}).overrideAttrs (old: {
   # firmware_class.path=/var/lib/firmware (boot.kernelParams) only works when
   # the kernel was built with the fw_path_para command-line parameter; assert
   # the symbol string survived into vmlinux so a config regression fails the
   # build instead of silently breaking CS35L41 calibration loading at boot.
-  postBuild = ''
-    strings vmlinux | grep -q fw_path_para || {
+  postBuild = (old.postBuild or "") + ''
+    echo "postBuild: asserting fw_path_para survived into vmlinux"
+    strings "$buildRoot/vmlinux" | grep -q fw_path_para || {
       echo "error: vmlinux lacks fw_path_para; firmware_class.path would be a no-op" >&2
       exit 1
     }
   '';
-}
+})
