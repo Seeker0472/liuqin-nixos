@@ -10,9 +10,25 @@ let
   cfg = config.hardware.liuqin;
 
   stateDir = "/var/lib/liuqin-private";
+
+  sscConfig = pkgs.liuqinSensorsConfig.override {
+    inherit (cfg.sensors) sscConfigHash;
+  };
 in
 {
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.sensors.enable -> cfg.sensors.sscConfigHash != null;
+        message = ''
+          hardware.liuqin.sensors.sscConfigHash is unset. Extract
+          vendor/etc/sensors/config from your stock ROM dump
+          (docs/PORTING-NOTES.md), add the archive with
+          `nix-store --add-fixed sha256 liuqin-ssc-config.tar.zst`, and set
+          the option to its sha256 (SRI form).
+        '';
+      }
+    ];
     # --- Firmware the patched drivers request from userspace --------------
     # nvt_ts probes on the SPI bus very early and request_firmware() must
     # succeed there; the panel/keyboard/GPU/DSP payloads below come from the
@@ -195,12 +211,15 @@ in
     # Reads persist (sda21) read-only exactly once per boot and installs the
     # WLAN MAC, BT address, speaker calibration and sensor registry into
     # root-only state. Everything below is device-unique; none of it may
-    # enter the Nix store or the repo.
+    # enter the Nix store or the repo. Missing or malformed per-device data
+    # fails the unit closed (matching the downstream
+    # provision-liuqin-from-persist.sh checks: exact byte counts and a
+    # >100-file registry floor).
     systemd.services.liuqin-persist-provision = {
       description = "Provision liuqin per-device data from the persist partition";
       wantedBy = [ "multi-user.target" ];
       before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-slpi.service" ];
-      after = [ "local-fs.target" ];
+      after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
       path = with pkgs; [ coreutils util-linux gnugrep findutils ];
       script = ''
         set -eu
@@ -212,6 +231,12 @@ in
 
         install -d -m 0700 -o root -g root "$private"
 
+        # Fail closed when the persist payload set is incomplete.
+        [ -f "$mnt/wlan/wlan_mac.bin" ]
+        [ -f "$mnt/bluetooth/.bt_nv.bin" ]
+        [ -f "$mnt/audio/crus_calr.bin" ]
+        [ -d "$mnt/sensors/registry/registry" ]
+
         # WLAN MAC: text "wlan0=AABBCCDDEEFF" -> colon-separated.
         raw=$(cat "$mnt/wlan/wlan_mac.bin")
         hex=$(printf '%s' "$raw" | grep -oP '(?<=wlan0=)[0-9A-Fa-f]{12}')
@@ -220,31 +245,44 @@ in
         chmod 0600 "$private/wlan-mac"
 
         # Bluetooth address: 6 raw bytes in order -> colon-separated text.
-        od -An -tx1 -v "$mnt/bluetooth/.bt_nv.bin" | tr -d ' \n' \
-          | sed 's/../&:/g; s/:$//' > "$private/bluetooth-address"
-        printf '\n' >> "$private/bluetooth-address"
+        bt_hex=$(od -An -tx1 -N6 "$mnt/bluetooth/.bt_nv.bin" | tr -d ' \n')
+        [ ''${#bt_hex} -eq 12 ]
+        printf '%s\n' "$(printf '%s' "$bt_hex" | sed 's/../&:/g; s/:$//')" \
+          > "$private/bluetooth-address"
         chmod 0600 "$private/bluetooth-address"
 
-        # CS35L41 per-channel calibration -> four firmware blobs the kernel
-        # requests by channel name.
-        if [ -f "$mnt/audio/crus_calr.bin" ]; then
-          channels="TL TR BL BR"
-          i=0
-          for ch in $channels; do
-            dd if="$mnt/audio/crus_calr.bin" bs=4 skip=$i count=1 \
-              of="/var/lib/liuqin-private/cs35l41-liuqin-$ch-calr.bin" status=none
-            i=$((i + 1))
-          done
-        fi
+        # CS35L41 per-channel calibration (4x4 bytes, order TL TR BL BR).
+        # The kernel requests cirrus/cs35l41-liuqin-<ch>-calr.bin through
+        # the firmware loader. /lib/firmware on the running system is the
+        # store-linked kernel-firmware tree (read-only), so the loader is
+        # pointed at an extra writable dir via firmware_class.path (see
+        # kernelParams in default.nix) and the blobs land in
+        # /var/lib/firmware/cirrus/ with the exact 16-byte check.
+        calr_size=$(wc -c < "$mnt/audio/crus_calr.bin" | tr -d ' ')
+        [ "$calr_size" = 16 ]
+        install -d -m 0755 /var/lib/firmware/cirrus
+        channels="TL TR BL BR"
+        i=0
+        for ch in $channels; do
+          dd if="$mnt/audio/crus_calr.bin" bs=4 skip=$i count=1 \
+            of="/var/lib/firmware/cirrus/cs35l41-liuqin-$ch-calr.bin" status=none
+          chmod 0600 "/var/lib/firmware/cirrus/cs35l41-liuqin-$ch-calr.bin"
+          i=$((i + 1))
+        done
 
-        # SSC sensor registry (fastrpc-readable).
+        # SSC sensor registry (fastrpc-readable); refuse implausibly small
+        # sets like the downstream >100-file floor.
         install -d -m 0750 -o fastrpc -g fastrpc /var/lib/liuqin-sensors/registry
-        if [ -d "$mnt/sensors/registry/registry" ]; then
+        count=0
+        for f in "$mnt/sensors/registry/registry/"*; do
+          [ -f "$f" ] || continue
           install -m 0640 -o fastrpc -g fastrpc \
-            "$mnt/sensors/registry/registry/"* /var/lib/liuqin-sensors/registry/
-          (cd /var/lib/liuqin-sensors/registry && sha256sum * > SHA256SUMS)
-          chown fastrpc:fastrpc /var/lib/liuqin-sensors/registry/SHA256SUMS
-        fi
+            "$f" /var/lib/liuqin-sensors/registry/
+          count=$((count + 1))
+        done
+        [ "$count" -gt 100 ]
+        (cd /var/lib/liuqin-sensors/registry && sha256sum * > SHA256SUMS)
+        chown fastrpc:fastrpc /var/lib/liuqin-sensors/registry/SHA256SUMS
       '';
       serviceConfig = {
         Type = "oneshot";
@@ -263,6 +301,10 @@ in
       "d /var/lib/liuqin-sensors 0750 fastrpc fastrpc -"
       "d /var/lib/liuqin-sensors/registry 0750 fastrpc fastrpc -"
       "d /run/liuqin-sensors 0755 root root -"
+      # Extra firmware_loader path (firmware_class.path) for the per-device
+      # CS35L41 calibration blobs the provision unit writes.
+      "d /var/lib/firmware 0755 root root -"
+      "d /var/lib/firmware/cirrus 0755 root root -"
     ];
 
     # fastrpc-sdsp: sensor-proxy may see it, and the SSC sample gate starts.
@@ -333,7 +375,7 @@ in
         Type = "simple";
         User = "fastrpc";
         Group = "fastrpc";
-        ExecStart = "${pkgs.liuqinHexagonrpc}/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R ${pkgs.liuqinSensorsConfig}/share/qcom/sm8450/Xiaomi/liuqin";
+        ExecStart = "${pkgs.liuqinHexagonrpc}/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R ${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin";
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStopSec = "5s";
@@ -347,7 +389,7 @@ in
         ProtectControlGroups = true;
         RestrictAddressFamilies = "AF_UNIX AF_LOCAL";
         ReadOnlyPaths = [
-          "${pkgs.liuqinSensorsConfig}/share/qcom/sm8450/Xiaomi/liuqin"
+          "${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin"
           "/var/lib/liuqin-sensors/registry"
         ];
         DevicePolicy = "closed";
@@ -449,7 +491,8 @@ in
       polkit.addRule(function(action, subject) {
           if (action.id == "org.freedesktop.systemd1.manage-units" &&
               action.lookup("unit") == "iio-sensor-proxy.service" &&
-              action.lookup("verb") == "restart") {
+              action.lookup("verb") == "restart" &&
+              subject.local) {
               return polkit.Result.YES;
           }
       });
