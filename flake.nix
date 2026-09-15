@@ -60,7 +60,7 @@
         # Host-side installer; runs on x86_64 against fastboot.
         installer = pkgsHost.writers.writePython3Bin "liuqin-install" {
           libraries = [ ];
-          flakeIgnore = [ "E501" ];
+          flakeIgnore = [ "E501" "E265" ];
         } (builtins.readFile ./tools/install.py);
       };
 
