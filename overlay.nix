@@ -30,7 +30,8 @@ in
   # libssc at the pinned downstream commit.
   liuqinLibssc = final.callPackage ./pkgs/libssc.nix { };
 
-  # iio-sensor-proxy with the liuqin SSC patches.
+  # iio-sensor-proxy with the liuqin SSC patches (4 of 6; 0001/0002 target
+  # hexagonrpcd and are applied there in pkgs/hexagonrpc.nix).
   liuqinIioSensorProxy = prev.iio-sensor-proxy.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [
       ./data/sensors-patches/0003-iio-sensor-proxy-start-preclaimed-coldplug-sensor.patch
