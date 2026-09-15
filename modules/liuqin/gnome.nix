@@ -80,7 +80,8 @@ in
         ExecStart = "${power-keyd}/libexec/liuqin-power-keyd";
         Restart = "always";
         RestartSec = 1;
-        TimeoutStopSec = 7;        UMask = "0077";
+        TimeoutStopSec = 7;
+        UMask = "0077";
         RuntimeDirectory = "liuqin-power-keyd";
         RuntimeDirectoryMode = "0755";
         NoNewPrivileges = true;

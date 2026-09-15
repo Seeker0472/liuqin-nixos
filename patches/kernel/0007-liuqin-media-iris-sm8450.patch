@@ -8,7 +8,10 @@ Adjustments for v7.2.5:
   iris_platform_vpu3x.c against the new struct iris_platform_data
   (firmware_desc with a new vpu20_p4 gen2 descriptor, no ubwc_config /
   dec_*_prop members) and the caps/clk-reset tables moved into the new
-  iris_platform_sm8450.h.
+  iris_platform_sm8450.h.  The sm8450 fwname uses the downstream signed
+  firmware name "qcom/vpu/vpu20_4v.mbn" (matches the vendored
+  data/liuqin-firmware-vpu.tar.zst blob and downstream
+  iris_platform_gen2.c), not upstream's vpu20_p4.mbn.
 - iris_platform_common.h: extern decl added (const-qualified in v7.2.5)
   and resume_without_payload added after no_aon.
 - iris_hfi_gen2_command.c: the upstream function layout changed;
@@ -199,7 +202,7 @@ Adjustments for v7.2.5:
 +static const struct iris_firmware_desc iris_vpu20_p4_gen2_desc = {
 +	.firmware_data = &iris_hfi_gen2_data,
 +	.get_vpu_buffer_size = iris_vpu_buf_size,
-+	.fwname = "qcom/vpu/vpu20_p4.mbn",
++	.fwname = "qcom/vpu/vpu20_4v.mbn",
 +};
 +
  static const struct iris_firmware_desc iris_vpu30_p4_s6_gen2_desc = {

@@ -2683,7 +2683,7 @@ new file mode 100644
 new file mode 100644
 --- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx_fw_update.c
-@@ -0,0 +1,947 @@
+@@ -0,0 +1,953 @@
 +/*
 + * Copyright (C) 2010 - 2022 Novatek, Inc.
 + *
@@ -2930,6 +2930,9 @@ new file mode 100644
 +				pos = end - 0x10;
 +			}
 +
++			if (pos + 16 > fwsize)
++				return -EINVAL;
++
 +			bin_map[list].SRAM_addr = byte_to_word(&fwdata[pos]);
 +			bin_map[list].size = byte_to_word(&fwdata[pos+4]);
 +			bin_map[list].BIN_addr = byte_to_word(&fwdata[pos+8]);
@@ -2960,6 +2963,9 @@ new file mode 100644
 +		if (list >= (ilm_dlm_num + info_sec_num)) {
 +			/* overlay info located at DLM (list = 1) start addr */
 +			pos = bin_map[1].BIN_addr + (0x10 * (list- ilm_dlm_num - info_sec_num));
++
++			if (pos + 16 > fwsize)
++				return -EINVAL;
 +
 +			bin_map[list].SRAM_addr = byte_to_word(&fwdata[pos]);
 +			bin_map[list].size = byte_to_word(&fwdata[pos+4]);
@@ -3155,8 +3161,8 @@ new file mode 100644
 +//		NVT_LOG("[%d][%s] SRAM (0x%08X), SIZE (0x%08X), BIN (0x%08X)\n",
 +//				list, name, SRAM_addr, size, BIN_addr);
 +
-+		/* Check data size */
-+		if ((BIN_addr + size) > fwsize) {
++		/* Check data size (size is read as size+1 below) */
++		if ((BIN_addr + size) >= fwsize) {
 +			NVT_ERR("access range (0x%08X to 0x%08X) is larger than bin size!\n",
 +					BIN_addr, BIN_addr + size);
 +			ret = -EINVAL;
@@ -3197,7 +3203,7 @@ new file mode 100644
 +	int32_t ret = 0;
 +
 +	/*
-+	 * partition is derived from the firmware header; fwbuf is only
++	 * partition is derived from the firmware header; rbuf is only
 +	 * NVT_READ_LEN bytes, so reject reads that would overflow it.
 +	 */
 +	if (partition > ((2*1024) - 1) / 4) {
