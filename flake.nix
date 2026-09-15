@@ -20,6 +20,7 @@
           "liuqin-firmware-bt.tar.zst"
           "liuqin-firmware-wlan-board.tar.zst"
           "liuqin-firmware-topology.tar.zst"
+          "liuqin-firmware-vpu.tar.zst"
         ];
 
       pkgsHost = import nixpkgs { system = "x86_64-linux"; };

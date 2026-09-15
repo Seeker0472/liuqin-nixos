@@ -7,7 +7,7 @@
 # archives once with the commands in docs/PORTING-NOTES.md, place them in
 # the Nix store via `nix-store --add-fixed sha256 <file>` (or
 # `nix-prefetch-file`), then the fixed hashes below pin them.
-{ lib, runCommand, requireFile, zstd }:
+{ lib, runCommand, requireFile, zstd, linux-firmware }:
 
 let
   touch = requireFile {
@@ -34,6 +34,11 @@ let
     name = "liuqin-firmware-wlan-board.tar.zst";
     hash = "sha256-rKrzSMo2k0VLuC5m8dXN99IFHT6hab4m9h8s2HV6yvs=";
     message = "ath11k/WCN6855 hw2.0/hw2.1 board data + updates/ tuples (from the downstream release ramdisk).";
+  };
+  vpu = requireFile {
+    name = "liuqin-firmware-vpu.tar.zst";
+    hash = "sha256-UJ0voVU4dM3A2wH7M83A0lE6EaC9X9Xl0gibI3woYf4=";
+    message = "qcom/vpu/vpu20_4v.mbn iris2 VPU firmware (from the operator stock ROM vendor firmware; downstream pins sha256 3567fd45 for its OS2.0.6.0 copy - this archive carries the blob from liuqin-mainline-blobs/extracted, sha256 cc27f8e3).";
   };
   topology = requireFile {
     name = "liuqin-firmware-topology.tar.zst";
@@ -66,19 +71,35 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   # WLAN: ath11k/ plus the updates/ preference tuples.
   tar --zstd -xf ${wlanBoard} -C $fw
 
+  # VPU: the iris driver (patch 0007) requests qcom/vpu/vpu20_4v.mbn.
+  tar --zstd -xf ${vpu} -C $fw
+
   # Audio topology: the sound card requests qcom/sm8450/<CardLongName>-tplg.bin.
   mkdir -p $fw/qcom/sm8450
   tar --zstd -xf ${topology} -C $fw/qcom/sm8450
 
+  # regulatory.db comes from nixpkgs linux-firmware (redistributable), not
+  # from the device dump.
+  install -Dm0644 ${linux-firmware}/lib/firmware/regulatory.db $fw/regulatory.db
+  install -Dm0644 ${linux-firmware}/lib/firmware/regulatory.db.p7s $fw/regulatory.db.p7s
+
   # Assert the contract paths the kernel actually requests.
   for required in \
     novatek/liuqin/novatek_nt36532_m81_fw_csot.bin \
+    novatek/liuqin/novatek_nt36532_m81_fw_tm.bin \
     qcom/sm8475/liuqin/adsp.mbn \
     qcom/sm8475/liuqin/cdsp.mbn \
     qcom/sm8475/liuqin/slpi.mbn \
     qcom/sm8475/liuqin/a730_zap.mbn \
     qcom/a730_sqe.fw \
-    qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin; do
+    qcom/gmu_gen70000.bin \
+    ath11k/WCN6855/hw2.0/amss.bin.zst \
+    updates/ath11k/WCN6855/hw2.0/amss.bin \
+    updates/ath11k/WCN6855/hw2.1/amss.bin \
+    qcom/vpu/vpu20_4v.mbn \
+    qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin \
+    regulatory.db \
+    regulatory.db.p7s; do
     test -r "$fw/$required" || { echo "firmware missing: $required" >&2; exit 1; }
   done
 ''
