@@ -21,7 +21,13 @@ Ten patches, applied in filename order on linux 7.2.5:
 * 0006 PON/battmgr/PMIC glink
 * 0007 iris video decoder for SM8450 (vpu20_4v firmware;
   .resume_without_payload = true, matching downstream
-  iris_platform_gen2.c — Iris2 firmware predates the RESUME payload)
+  iris_platform_gen2.c — Iris2 firmware predates the RESUME payload).
+  Clock contract checked: the sm8450 platform data reuses the 3-entry
+  sm8550_clk_table (iface/core/vcodec0_core), and the DTS iris node
+  supplies exactly those three clocks, so iris_get_clk_by_type() matches
+  every entry — no -EINVAL on enable. (devm_clk_bulk_get_all() takes
+  whatever the DT provides, so a 2-clock DTS would not -ENOENT at probe;
+  it would instead fail later at clock-enable for the missing type.)
 * 0008 misc: of/ubwc/earlycon-simplefb
 * 0009 I2C eUSB2 repeater backport
 * 0010 pinctrl-sm8475 TLMM (verbatim from linux-sm8450-liuqin, GPL-2.0);
@@ -81,15 +87,52 @@ Ten patches, applied in filename order on linux 7.2.5:
 
 Kept: product/unlocked/slot checks, userdata geometry gate
 (471789528*512), boot partition size gate, backup-before-flash, serial
-binding, checksum verification of the rootfs, never switching slots.
+binding, checksum verification of every input before flashing, never
+switching slots.
 
 Changed: the downstream installer boots a RAM installer over `fastboot
-boot` and runs install-root.sh over telnet/USB networking. That requires
-the downstream initramfs. This repo's installer is fastboot-only: backups
-use `fastboot fetch` (and stop cleanly if the bootloader lacks it), rootfs
-formatting uses `fastboot format:ext4:LIUQIN_ROOT`, and flashing uses
-`fastboot flash boot_a`. Writing the rootfs *contents* (untarring into the
-mounted userdata) is not yet implemented — see "Open items" in the README.
+boot` and untars the rootfs inside it over telnet/USB networking. That
+requires the downstream initramfs, and fastboot itself has no channel to
+push a tarball for on-device extraction. This repo's installer is
+fastboot-only end to end:
+
+* rootfs deployment: `nix build .#rootfsImage` produces a pre-built ext4
+  image (nixpkgs make-ext4-fs) of the full NixOS closure, with the
+  `/etc/liuqin-nixos-root` guard marker baked in at image build time (the
+  initrd guard reads it before sysroot is mounted, so stage-2 tmpfiles can
+  only ever repair it, never provision it). The installer flashes it
+  verbatim with `fastboot flash userdata`; the image carries the
+  `LIUQIN_ROOT` label, so no `fastboot format` step is needed.
+* backups use `fastboot fetch` and stop cleanly if the bootloader lacks
+  it. Truncation is caught by comparing the fetched size against the
+  reported partition size; that is weaker than the downstream flow, which
+  also sha256-verifies every fetched partition against a manifest. The
+  fetched images are still hashed into SHA256SUMS after the fact, so any
+  corruption is at least detectable later, but a silent in-transit
+  corruption would be backed up as-is.
+* guard-failure recovery: on a guard failure the initrd drops to
+  emergency.target with `emergencyAccess = false` — deliberately no root
+  shell, since that would sidestep the storage identity checks. The guard
+  prints explicit instructions (re-flash the rootfs image over fastboot),
+  and a correctly-labelled but empty userdata gets a dedicated message.
+  Re-flashing over fastboot is the ONLY recovery channel; keep a host
+  with fastboot access available before installing.
+
+## Sink phandle and __symbols__ semantics
+
+pkgs/bootimg.nix synthesizes the __symbols__ union overlay with an inert
+sink node `liuqin-abl-overlay-sink` carrying `phandle = <0xdead0000>`.
+That phandle is never dereferenced: ABL resolves its overlay fixups
+through the __symbols__ string table (label -> node path) only, and never
+walks the sink node. Semantic difference from downstream abl-symbols.py:
+labels the base DTB already exports keep pointing at their real nodes in
+the nix build (1302 of them on the current 7.2.5 DTB), while the
+downstream tool points every symbol at the sink. This is safe because the
+symbol table only tells ABL *where* each label lives; pointing a label at
+its true node is strictly more accurate than pointing it at a sink, and
+the runtime Gunyah RM DTBO only needs its fixups to resolve, not to find
+meaningful content behind them. The final DTB asserts every one of the
+1469 union symbols resolves.
 
 ## Proprietary payload inputs (not redistributable)
 
@@ -110,9 +153,12 @@ mounted userdata) is not yet implemented — see "Open items" in the README.
   (exactly 1469 symbols; the downstream 44/14/1781 numbers come from the
   larger OS2.0.6.0.VMYCNXM analysis tree). The boot header cmdline is
   deliberately empty (downstream native build does the same; the kernel
-  reads /chosen/bootargs from the DT, ABL appends its own), and
-  earlycon=simplefb + keep_bootcon live in the base kernelParams rather
-  than the debug gate, matching device/native-bootargs.txt.
+  reads /chosen/bootargs from the DT, ABL appends its own), and the DT
+  bootargs match the downstream product default: earlycon=simplefb stays
+  in the base kernelParams, while keep_bootcon is removed from the base
+  string and gated behind hardware.liuqin.boot.debug (downstream
+  build-bootimg.sh:40-44: it keeps simplefb0 drawing into the bootloader
+  framebuffer all session, which a desktop compositor cannot draw over).
 * pkgs/sensors-config.nix: vendor/etc/sensors/config (SSC registry
   inputs). Extraction: unpack the stock ROM super image, then
   vendor/etc/sensors/config; downstream build-liuqin-sensors-stack.sh

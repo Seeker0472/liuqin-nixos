@@ -38,8 +38,11 @@
 # with fdtoverlay before packaging, mirroring the downstream
 # tools/build-liuqin-native-boot.sh cmdline-overlay step, and the final DT
 # is asserted to hold exactly this. The default matches the downstream
-# build-bootimg.sh product default.
-, bootargs ? "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
+# lib/build-bootimg.sh product default (line 44): keep_bootcon was removed
+# there on purpose (lines 40-44: it keeps simplefb0 writing into the
+# bootloader framebuffer all session, which a desktop compositor cannot
+# draw over); in this repo it lives behind hardware.liuqin.boot.debug.
+, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
   # The downstream native build deliberately ships an empty header cmdline:
   # ABL concatenates its own bootargs after the header value and the kernel
   # already reads /chosen/bootargs from the DT; duplicating them in the
@@ -130,7 +133,12 @@ stdenvNoCC.mkDerivation {
 
 
     # The sink node plus one symbol that forces __symbols__ to exist even if
-    # the mainline base ever ships one empty.
+    # the mainline base ever ships one empty. The sink's phandle 0xdead0000
+    # is never dereferenced: ABL only consults the __symbols__ string table
+    # (label -> node path) to resolve its overlay fixups; it never walks the
+    # sink node itself. Symbols the base DTB already exports keep pointing
+    # at their real nodes here, whereas the downstream abl-symbols.py points
+    # every symbol at the sink (see docs/PORTING-NOTES.md).
     {
       echo '/dts-v1/;'
       echo '/ {'

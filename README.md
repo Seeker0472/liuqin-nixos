@@ -35,6 +35,9 @@ tools/install.py     host-side fastboot installer (the only Python)
 patches/kernel/      ten patches applying cleanly to linux 7.2.5
 ```
 
+`packages.rootfsImage` (flake.nix) additionally builds the deployable ext4
+rootfs image with nixpkgs' make-ext4-fs.
+
 ## Derivation graph
 
 ```
@@ -74,13 +77,27 @@ archives from their own stock ROM dump; see docs/PORTING-NOTES.md.
 On an x86_64 host with the device in fastboot:
 
 ```sh
-nix run .#installer -- --serial SERIAL --boot result-bootimg/boot.img \
-    --rootfs rootfs.tar.gz --backup ./backup-dir --write-rootfs
+nix build .#bootimg-nixos  # boot.img with the NixOS initrd
+nix build .#rootfsImage    # pre-built ext4 rootfs image for userdata
+nix run .#installer -- --serial SERIAL --boot result/boot.img \
+    --rootfs result-2/ext4-fs.img \
+    --sha256-boot "$(sha256sum result/boot.img | cut -d' ' -f1)" \
+    --sha256-rootfs "$(sha256sum result-2/ext4-fs.img | cut -d' ' -f1)" \
+    --backup ./backup-dir --write-rootfs
 ```
 
 The installer verifies product/unlocked/slot-A/userdata-geometry, backs up
-boot_a/boot_b/persist first, formats userdata as ext4 `LIUQIN_ROOT`, and
+boot_a/boot_b/persist first, flashes the ext4 rootfs image to userdata with
+`fastboot flash` (overwriting the whole partition — the image carries the
+ext4 label `LIUQIN_ROOT` and the `/etc/liuqin-nixos-root` guard marker the
+initrd storage guard requires before mounting the root read-write), and
 flashes boot_a. It never switches slots.
+
+**Recovery:** if the initrd storage guard fails (wrong label, missing or
+invalid marker, empty filesystem), the initrd has no shell by design
+(`boot.initrd.systemd.emergencyAccess = false`). The only recovery channel
+is fastboot: re-flash `.#rootfsImage` (and, if needed, `.#bootimg-nixos`)
+with the installer.
 
 ## Open items
 
@@ -88,9 +105,11 @@ flashes boot_a. It never switches slots.
   archive (set hardware.liuqin.sensors.sscConfigHash; see
   docs/PORTING-NOTES.md). The firmware payloads and the stock DTBO/base
   DTB sets are pinned to real hashes.
-* The installer formats userdata but does not yet untar the rootfs into it
-  (the downstream flow untarred inside a RAM installer; the fastboot-only
-  equivalent is `fastboot flash` of a sparse ext4 image, TODO).
+* Rootfs deployment is solved: `.#rootfsImage` is a pre-built ext4 image of
+  the NixOS closure (with the guard marker baked in) flashed verbatim via
+  `fastboot flash userdata` — the fastboot-only equivalent of the
+  downstream RAM-installer untar. There is no tarball channel; fastboot has
+  no way to push a tarball for on-device extraction.
 * `nix build .#kernel` is a full aarch64 kernel cross-build; expect a long
   first build. Evaluation and the small device packages are verified; the
   kernel build itself is validated by the same nixpkgs generate-config flow
