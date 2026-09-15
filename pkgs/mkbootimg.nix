@@ -33,8 +33,11 @@ stdenvNoCC.mkDerivation {
     echo '06b54dd9a07c5281778e29e234e76f6e3faee8bf0c904a5ef88fdee30eeed12e  unpack_bootimg.py' | sha256sum -c --quiet
     install -Dm0755 mkbootimg.py $out/bin/mkbootimg.py
     install -Dm0755 unpack_bootimg.py $out/bin/unpack_bootimg.py
-    # mkbootimg imports the in-tree gki/ module at runtime.
+    # mkbootimg imports the in-tree gki/ module at runtime; the gki
+    # testdata/ subdirectory ships test-only private keys (avb test keys),
+    # which must not be present on the device closure.
     cp -r gki $out/bin/
+    rm -rf $out/bin/gki/testdata
     substituteInPlace $out/bin/mkbootimg.py --replace-fail '#!/usr/bin/env python3' '#!${python3}/bin/python3'
     substituteInPlace $out/bin/unpack_bootimg.py --replace-fail '#!/usr/bin/env python3' '#!${python3}/bin/python3'
     runHook postInstall

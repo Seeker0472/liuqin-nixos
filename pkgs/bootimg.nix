@@ -39,8 +39,12 @@
 # tools/build-liuqin-native-boot.sh cmdline-overlay step, and the final DT
 # is asserted to hold exactly this. The default matches the downstream
 # build-bootimg.sh product default.
-, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
-, headerCmdline ? bootargs
+, bootargs ? "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
+  # The downstream native build deliberately ships an empty header cmdline:
+  # ABL concatenates its own bootargs after the header value and the kernel
+  # already reads /chosen/bootargs from the DT; duplicating them in the
+  # header would pass every argument twice.
+, headerCmdline ? ""
 , ramdisk ? null
 }:
 
@@ -108,8 +112,10 @@ stdenvNoCC.mkDerivation {
     sort -u symbols.list > symbols.sorted
     count=$(wc -l < symbols.sorted)
     echo "symbols exported: $count"
-    # Guard the union size like the downstream --expect-symbols did.
-    test "$count" -gt 200
+    # Exact contract, like the downstream --expect-symbols: the union of
+    # every label exported by the 38 stock DTBO entries plus the single
+    # stock base DTB (liuqin-audit/evidence/dtbo) is exactly 1469 symbols.
+    test "$count" = 1469
 
     # Input-count assertions, mirroring build-bootimg.sh:107-118. The
     # downstream hard count is 44 DTBO entries / 14 base DTBs from the
@@ -227,11 +233,25 @@ stdenvNoCC.mkDerivation {
     # Assert the simple-framebuffer earlycon contract survived the rewrites.
     for required in \
       'compatible = "simple-framebuffer";' \
+      'reg = <0x00 0xb8000000 0x00 0x2b00000>;' \
       'width = <0x708>;' \
       'height = <0xb40>;' \
+      'stride = <0x1c20>;' \
       'format = "a8r8g8b8";'; do
       grep -qF "$required" boot-final.dts || {
         echo "error: boot DTB lost the framebuffer property: $required" >&2
+        exit 1
+      }
+    done
+
+    # /chosen must keep the cell counts and ranges earlycon depends on
+    # (build-bootimg.sh:200-210 equivalent).
+    for required in \
+      '#address-cells = <0x02>;' \
+      '#size-cells = <0x02>;' \
+      'ranges;'; do
+      awk '/^\tchosen \{/,/^\t\};/' boot-final.dts | grep -qF "$required" || {
+        echo "error: /chosen lost the cell counts or ranges the earlycon needs ($required)" >&2
         exit 1
       }
     done
