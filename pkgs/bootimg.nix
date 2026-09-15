@@ -60,6 +60,10 @@ let
   stockDtbo = import ../data/stock-dtbo-entries.nix;
   stockBaseDtbs = import ../data/stock-base-dtbs.nix;
 in
+# bootargs is interpolated verbatim into a double-quoted DTS string below;
+# a quote or backslash would corrupt the generated overlay (or worse).
+assert lib.assertMsg (builtins.match ''.*["\\].*'' bootargs == null)
+  "bootimg.nix: bootargs must not contain double quotes or backslashes";
 stdenvNoCC.mkDerivation {
   pname = "liuqin-bootimg";
   version = kernel.version;

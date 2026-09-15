@@ -190,12 +190,18 @@ def main():
               "erase userdata and install.", flush=True)
         return
 
+    # Flash boot_a before userdata: boot_a is small and quick, so if a
+    # userdata failure follows, the unbootable window is a failed boot.img
+    # while the old rootfs still survives; both orders are recoverable only
+    # via fastboot (the new initrd guard would refuse the old rootfs), but
+    # this order keeps the destructive userdata erase as the last step.
+    print("Writing the boot image to boot_a...", flush=True)
+    fastboot(args.serial, "flash", "boot_a", str(args.boot))
+
     print("Flashing the ext4 rootfs image to userdata "
           "(overwrites the whole partition)...", flush=True)
     fastboot(args.serial, "flash", "userdata", str(args.rootfs), timeout=1800)
 
-    print("Writing the boot image to boot_a...", flush=True)
-    fastboot(args.serial, "flash", "boot_a", str(args.boot))
     fastboot(args.serial, "reboot")
     print("Installation commands completed. The rootfs was deployed as a "
           "pre-built ext4 image carrying the guard marker; the initrd "
