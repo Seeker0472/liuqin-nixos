@@ -792,13 +792,10 @@ Adjustments for v7.2.5:
  
  	psy_cfg.drv_data = battmgr;
  	psy_cfg.fwnode = dev_fwnode(&adev->dev);
-@@ -1725,6 +2118,12 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+@@ -1725,6 +2118,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
  
  	pmic_glink_client_register(battmgr->client);
  
-+	if (battmgr->variant == QCOM_BATTMGR_SM8475)
-+		return devm_device_add_group(dev, &qcom_battmgr_raw_group);
-+
 +	if (battmgr->variant == QCOM_BATTMGR_SM8475)
 +		return devm_device_add_group(dev, &qcom_battmgr_raw_group);
 +

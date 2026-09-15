@@ -444,13 +444,10 @@ Adjustments for v7.2.5:
  
  	return 0;
  }
-@@ -1105,6 +1111,12 @@ static void wm_adsp_event_post_stop(struct cs_dsp *cs_dsp)
+@@ -1105,6 +1111,9 @@ static void wm_adsp_event_post_stop(struct cs_dsp *cs_dsp)
  {
  	struct wm_adsp *dsp = container_of(cs_dsp, struct wm_adsp, cs_dsp);
  
-+	if (dsp->post_stop)
-+		dsp->post_stop(dsp);
-+
 +	if (dsp->post_stop)
 +		dsp->post_stop(dsp);
 +
@@ -1206,14 +1203,6 @@ Adjustments for v7.2.5:
  
  	return graph;
  }
-@@ -375,6 +383,7 @@ EXPORT_SYMBOL_GPL(q6apm_free_fragments);
- int q6apm_remove_initial_silence(struct device *dev, struct q6apm_graph *graph, uint32_t samples)
- {
- 	struct audioreach_module *module;
-+	int ret;
- 
- 	module = q6apm_find_module_by_mid(graph, MODULE_ID_PLACEHOLDER_DECODER);
- 	if (!module)
 --- a/sound/soc/qcom/qdsp6/topology.c
 +++ b/sound/soc/qcom/qdsp6/topology.c
 @@ -753,6 +753,103 @@ static int audioreach_widget_i2s_module_load(struct audioreach_module *mod,
