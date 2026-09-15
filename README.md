@@ -1,5 +1,14 @@
 # liuqin-nixos — NixOS for Xiaomi Pad 6 Pro (liuqin, SM8475)
 
+**Private repository — do not publish.** This is the operator's personal,
+self-use repository. `data/*.tar.zst` contains proprietary Qualcomm/Xiaomi
+payloads (firmware, stock DTBO/base DTBs, SSC config) extracted from the
+operator's own device and stock ROM dumps; they are not redistributable
+(see NOTICE). If this repository is ever to be made public, first run
+`git filter-repo --path-glob 'data/*.tar.zst' --invert-paths` and switch
+`data/stock-dtbo-entries.nix` / `data/stock-base-dtbs.nix` back to
+`requireFile` (see docs/PORTING-NOTES.md).
+
 NixOS on the Xiaomi Pad 6 Pro with the latest stable Linux kernel
 (currently 7.2.5) plus the device patch series in `patches/kernel/`,
 built entirely with Nix. No downstream shell/python build scripts are used
@@ -17,11 +26,11 @@ kernel/
 pkgs/
   mkbootimg.nix      AOSP mkbootimg.py at pinned commit (fetchurl, hashed)
   bootimg.nix        boot.img: Image.gz + ABL-processed DTB + initrd
-  firmware.nix       firmware tree (requireFile placeholders, operator-supplied)
+  firmware.nix       firmware tree (requireFile inputs, operator-supplied)
   power-keyd.nix     power-key daemon (C) + session helpers
   hexagonrpc.nix     hexagonrpc, pinned commit + liuqin patches
   libssc.nix         libssc/ssccli, pinned commit
-  sensors-config.nix SSC registry/config payloads (requireFile placeholder)
+  sensors-config.nix SSC registry/config payloads (requireFile input)
 modules/liuqin/
   default.nix        hardware.liuqin options, kernel wiring, boot.kernelParams
   storage.nix        storage layout options + fileSystems generation
@@ -67,10 +76,16 @@ nix eval .#nixosConfigurations.liuqin.config.system.build.toplevel.drvPath
 nix flake check             # evaluates everything above
 ```
 
-The fixed-output inputs for the stock DTBO/base DTBs (`pkgs/bootimg.nix`)
-and the proprietary firmware/sensor payloads (`pkgs/firmware.nix`,
-`pkgs/sensors-config.nix`) are placeholders until an operator supplies the
-archives from their own stock ROM dump; see docs/PORTING-NOTES.md.
+The proprietary payloads the build consumes are not redistributable and are
+handled per-input: the stock DTBO/base DTBs used by `pkgs/bootimg.nix` are
+vendored in-tree at `data/stock-{dtbo-entries,base-dtbs}.tar.zst` (private
+repository — see the banner at the top), while the firmware/sensor payload
+archives in `pkgs/firmware.nix` and `pkgs/sensors-config.nix` stay
+`requireFile` fixed-output inputs the operator registers into the Nix store
+from their own stock ROM dump; see docs/PORTING-NOTES.md. The committed
+`data/liuqin-firmware-*.tar.zst` / `liuqin-ssc-config.tar.zst` are the
+operator's own copies of exactly those archives; register them with
+`nix-store --add-fixed sha256 data/<name>.tar.zst` to satisfy the inputs.
 
 ## Install
 
@@ -79,6 +94,14 @@ On an x86_64 host with the device in fastboot:
 ```sh
 nix build .#bootimg-nixos  # boot.img with the NixOS initrd
 nix build .#rootfsImage    # pre-built ext4 rootfs image for userdata
+```
+
+`.#rootfsImage` builds the full aarch64 NixOS closure natively; an x86_64
+host needs aarch64 build capability: either `boot.binfmt.emulatedSystems =
+[ "aarch64-linux" ]` (qemu binfmt) on the host, or an aarch64 remote
+builder. `.#bootimg-nixos` cross-compiles and needs neither.
+
+```sh
 nix run .#installer -- --serial SERIAL --boot result/boot.img \
     --rootfs result-2/ext4-fs.img \
     --sha256-boot "$(sha256sum result/boot.img | cut -d' ' -f1)" \
@@ -101,10 +124,11 @@ with the installer.
 
 ## Open items
 
-* Placeholder hash: `pkgs/sensors-config.nix` — the operator's SSC config
-  archive (set hardware.liuqin.sensors.sscConfigHash; see
-  docs/PORTING-NOTES.md). The firmware payloads and the stock DTBO/base
-  DTB sets are pinned to real hashes.
+* `pkgs/sensors-config.nix` — the operator's SSC config archive is the one
+  remaining `requireFile` input whose hash must be set by the operator
+  (hardware.liuqin.sensors.sscConfigHash; see docs/PORTING-NOTES.md). The
+  committed `data/liuqin-ssc-config.tar.zst` is the operator's own copy.
+  The firmware payload hashes are pinned to real values.
 * Rootfs deployment is solved: `.#rootfsImage` is a pre-built ext4 image of
   the NixOS closure (with the guard marker baked in) flashed verbatim via
   `fastboot flash userdata` — the fastboot-only equivalent of the

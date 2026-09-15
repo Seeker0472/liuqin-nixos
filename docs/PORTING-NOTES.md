@@ -94,7 +94,10 @@ Changed: the downstream installer boots a RAM installer over `fastboot
 boot` and untars the rootfs inside it over telnet/USB networking. That
 requires the downstream initramfs, and fastboot itself has no channel to
 push a tarball for on-device extraction. This repo's installer is
-fastboot-only end to end:
+fastboot-only end to end, and validates its inputs before touching the
+device: boot.img must carry the ANDROID! magic and fit boot_a, the rootfs
+image must fit userdata, be an ext4 image and carry the LIUQIN_ROOT
+volume label (parsed from superblock offset 0x478, pure Python):
 
 * rootfs deployment: `nix build .#rootfsImage` produces a pre-built ext4
   image (nixpkgs make-ext4-fs) of the full NixOS closure, with the
@@ -102,7 +105,12 @@ fastboot-only end to end:
   initrd guard reads it before sysroot is mounted, so stage-2 tmpfiles can
   only ever repair it, never provision it). The installer flashes it
   verbatim with `fastboot flash userdata`; the image carries the
-  `LIUQIN_ROOT` label, so no `fastboot format` step is needed.
+  `LIUQIN_ROOT` label, so no `fastboot format` step is needed. On first
+  boot `liuqin-growfs-root.service` runs resize2fs once to grow the
+  filesystem to fill the userdata partition (the image is only as large as
+  the closure). rootfsImage builds the aarch64 closure natively — an
+  x86_64 host needs qemu binfmt (`boot.binfmt.emulatedSystems =
+  [ "aarch64-linux" ]`) or an aarch64 remote builder.
 * backups use `fastboot fetch` and stop cleanly if the bootloader lacks
   it. Truncation is caught by comparing the fetched size against the
   reported partition size; that is weaker than the downstream flow, which
@@ -136,7 +144,17 @@ meaningful content behind them. The final DTB asserts every one of the
 
 ## Proprietary payload inputs (not redistributable)
 
-* pkgs/firmware.nix (all hashes pinned): touch
+This repository is private / self-use only; do not publish it. The
+operator's own extracted payloads are vendored in-tree under data/ (see
+NOTICE). To make the repository public later: `git filter-repo
+--path-glob 'data/*.tar.zst' --invert-paths`, switch
+data/stock-dtbo-entries.nix / data/stock-base-dtbs.nix back from
+`builtins.path` to `requireFile`, and regenerate every payload from your
+own stock dump as described below.
+
+* pkgs/firmware.nix (all hashes pinned, `requireFile` inputs — the
+  operator registers the vendored data/liuqin-firmware-*.tar.zst into the
+  Nix store with `nix-store --add-fixed sha256`): touch
   (novatek_nt36532_m81_fw_{csot,tm}.bin), DSP (adsp/cdsp/slpi .mbn set),
   GPU (a730_zap.mbn, a730_sqe.fw, gmu_gen70000.bin), BT (BTFM set), WLAN
   board data (board data + updates/ amss tuples), VPU (qcom/vpu/
@@ -149,7 +167,10 @@ meaningful content behind them. The final DTB asserts every one of the
   qcom/vpu/vpu20_4v.mbn, qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin,
   regulatory.db{,.p7s}.
 * pkgs/bootimg.nix: stock DTBO entries (38 files) + the stock base DTB
-  (1 file) from liuqin-audit/evidence/dtbo for the __symbols__ union
+  (1 file) from liuqin-audit/evidence/dtbo, vendored at
+  data/stock-{dtbo-entries,base-dtbs}.tar.zst and imported with
+  `builtins.path` (operator's own device dump; do not publish), for the
+  __symbols__ union
   (exactly 1469 symbols; the downstream 44/14/1781 numbers come from the
   larger OS2.0.6.0.VMYCNXM analysis tree). The boot header cmdline is
   deliberately empty (downstream native build does the same; the kernel
@@ -165,4 +186,6 @@ meaningful content behind them. The final DTB asserts every one of the
   reads it from tools/local/roms/liuqin/OS2.0.6.0.VMYCNXM/extracted/
   super-work/vendor-extract/etc/sensors. Archive it deterministically,
   `nix-store --add-fixed sha256 liuqin-ssc-config.tar.zst`, and set
-  hardware.liuqin.sensors.sscConfigHash.
+  hardware.liuqin.sensors.sscConfigHash. The committed
+  data/liuqin-ssc-config.tar.zst is the operator's own copy of that
+  archive (register it, do not re-extract).
