@@ -12,7 +12,10 @@ from the downstream installer are exactly:
   * the required --serial must be given and is bound to every fastboot call
   * userdata geometry must be exactly the known 256 GB layout
     (471789528 * 512 bytes as reported by fastboot)
-  * boot.img must fit the reported boot_a partition
+  * boot.img must carry the ANDROID! magic and fit the reported boot_a
+    partition
+  * the rootfs image must fit userdata, be an ext4 image, and carry the
+    LIUQIN_ROOT volume label (superblock offset 0x478)
   * the sha256 of --boot and --rootfs is verified before anything is sent
 
 --rootfs is a pre-built ext4 image (flake output .#rootfsImage), flashed
@@ -38,8 +41,14 @@ from pathlib import Path
 
 USERDATA_BYTES = 471789528 * 512
 BOOT_A_LIMIT = 192 * 1024 * 1024  # 0x0c000000
+ANDROID_MAGIC_OFFSET = 0
+ANDROID_MAGIC = b"ANDROID!"
 EXT4_MAGIC_OFFSET = 0x438
 EXT4_MAGIC = b"\x53\xef"
+# ext4 superblock: s_volume_name, 16 bytes, NUL-terminated.
+EXT4_LABEL_OFFSET = 0x478
+EXT4_LABEL_LEN = 16
+ROOTFS_LABEL = b"LIUQIN_ROOT"
 
 
 def sha256(path: Path) -> str:
@@ -47,10 +56,21 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def is_android_boot_image(path: Path) -> bool:
+    with path.open("rb") as stream:
+        return stream.read(len(ANDROID_MAGIC)) == ANDROID_MAGIC
+
+
 def is_ext4_image(path: Path) -> bool:
     with path.open("rb") as stream:
         stream.seek(EXT4_MAGIC_OFFSET)
         return stream.read(2) == EXT4_MAGIC
+
+
+def ext4_label(path: Path) -> bytes:
+    with path.open("rb") as stream:
+        stream.seek(EXT4_LABEL_OFFSET)
+        return stream.read(EXT4_LABEL_LEN).split(b"\0", 1)[0]
 
 
 def fastboot(serial, *arguments, timeout=180):
@@ -109,6 +129,13 @@ def main():
         parser.error("--backup must be a new directory")
     if args.boot.stat().st_size > BOOT_A_LIMIT:
         parser.error("boot.img exceeds the 192 MiB boot partition")
+    if args.rootfs.stat().st_size > USERDATA_BYTES:
+        parser.error("rootfs image exceeds the userdata partition "
+                     f"({USERDATA_BYTES} bytes); rebuild .#rootfsImage "
+                     "with a smaller closure")
+    if not is_android_boot_image(args.boot):
+        parser.error("--boot lacks the ANDROID! magic; not a boot.img "
+                     "(build it with `nix build .#bootimg-nixos`)")
     if sha256(args.boot) != args.sha256_boot:
         parser.error("boot.img checksum mismatch")
     if sha256(args.rootfs) != args.sha256_rootfs:
@@ -117,6 +144,10 @@ def main():
         parser.error("--rootfs is not an ext4 image; build it with "
                      "`nix build .#rootfsImage` (no tarballs: there is no "
                      "on-device untar step in the fastboot-only flow)")
+    if ext4_label(args.rootfs) != ROOTFS_LABEL:
+        parser.error("--rootfs ext4 label is not LIUQIN_ROOT; the initrd "
+                     "storage guard would refuse it. Build with "
+                     "`nix build .#rootfsImage`")
 
     print("Checking fastboot device identity...", flush=True)
     require_var(args.serial, "product", "liuqin")
