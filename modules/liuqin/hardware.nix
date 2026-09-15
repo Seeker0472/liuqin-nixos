@@ -239,7 +239,7 @@ in
         private=${stateDir}
         mnt=$(mktemp -d)
         trap 'umount "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true' EXIT
-        mount -o ro "$part" "$mnt"
+        mount -o ro,nodev,nosuid,noexec "$part" "$mnt"
 
         install -d -m 0700 -o root -g root "$private"
 

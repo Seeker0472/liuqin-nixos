@@ -25,6 +25,9 @@
   users.users.nixos = {
     isNormalUser = true;
     extraGroups = [ "wheel" "networkmanager" "video" "input" ];
+    # Console-only bootstrap password: change it right after first login
+    # (`passwd`). SSH does not accept it — PasswordAuthentication is
+    # disabled below, so enroll authorizedKeys before relying on SSH.
     initialPassword = "nixos";
   };
 

@@ -3,7 +3,8 @@
 # Storage options and fileSystems generation for liuqin.
 #
 # The supported layout is the stock 256 GB GPT: NixOS root is the whole
-# userdata partition (sda35, geometry 22065152+471789528 4K sectors) with the
+# userdata partition (sda35, geometry 22065152+471789528 512-byte sectors)
+# with the
 # ext4 label LIUQIN_ROOT. The "custom" layout reserves a hook for a future
 # root-in-userdata-subpartition setup and currently refuses evaluation.
 { config, lib, pkgs, ... }:

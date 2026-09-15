@@ -45,7 +45,15 @@ let
   vpu = requireFile {
     name = "liuqin-firmware-vpu.tar.zst";
     hash = "sha256-UJ0voVU4dM3A2wH7M83A0lE6EaC9X9Xl0gibI3woYf4=";
-    message = "qcom/vpu/vpu20_4v.mbn iris2 VPU firmware (from the operator stock ROM vendor firmware; downstream pins sha256 3567fd45 for its OS2.0.6.0 copy - this archive carries the blob from liuqin-mainline-blobs/extracted, sha256 cc27f8e3).";
+    message = ''
+      qcom/vpu/vpu20_4v.mbn iris2 VPU firmware, packed as a zstd tar
+      archive. The pinned hash field above is the sha256 of this
+      liuqin-firmware-vpu.tar.zst archive; the downstream project instead
+      pins the blob-level sha256 3567fd45 (OS2.0.6.0 copy), while this
+      archive carries the blob from liuqin-mainline-blobs/extracted whose
+      blob-level sha256 is cc27f8e3 (provenance only, not what requireFile
+      checks).
+    '';
   };
   topology = requireFile {
     name = "liuqin-firmware-topology.tar.zst";

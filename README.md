@@ -111,11 +111,12 @@ nix run .#installer -- --serial SERIAL --boot result/boot.img \
 ```
 
 The installer verifies product/unlocked/slot-A/userdata-geometry, backs up
-boot_a/boot_b/persist first, flashes the ext4 rootfs image to userdata with
-`fastboot flash` (overwriting the whole partition — the image carries the
-ext4 label `LIUQIN_ROOT` and the `/etc/liuqin-nixos-root` guard marker the
-initrd storage guard requires before mounting the root read-write), and
-flashes boot_a. It never switches slots.
+boot_a/boot_b/persist first, flashes boot_a with the new boot image, then
+flashes the ext4 rootfs image to userdata with `fastboot flash` (overwriting
+the whole partition — the image carries the ext4 label `LIUQIN_ROOT` and the
+`/etc/liuqin-nixos-root` guard marker the initrd storage guard requires
+before mounting the root read-write). The destructive userdata erase stays
+the last step. It never switches slots.
 
 **Recovery:** if the initrd storage guard fails (wrong label, missing or
 invalid marker, empty filesystem), the initrd has no shell by design

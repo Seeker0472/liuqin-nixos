@@ -46,7 +46,7 @@ Ten patches, applied in filename order on linux 7.2.5:
 | tools/lib/abl-symbols.py (__symbols__ union, sink node) | pkgs/bootimg.nix: same decode/splice/recompile with dtc text round-trip, plus an fdtoverlay-compatible __symbols__ overlay; verified with dtc 1.7.2 that fdtoverlay preserves __symbols__. No Python in the build. |
 | device/liuqin-abl-boot-overlay.dts | dts/liuqin-abl-boot-overlay.dts (verbatim, GPL) |
 | device/native-bootargs.txt | boot.kernelParams defaults in modules/liuqin/default.nix; debug flags gated behind hardware.liuqin.boot.debug (default off) |
-| initramfs/init storage identity check (1216-line shell) | modules/liuqin/initrd-guard.nix: one systemd initrd oneshot with the same geometry/label checks (sda 493854720 4K sectors, sda35 start 22065152 size 471789528, PARTNAME=userdata, LIUQIN_ROOT label, read-only lock of all other sd* nodes, ro,noload probe mount, root marker) |
+| initramfs/init storage identity check (1216-line shell) | modules/liuqin/initrd-guard.nix: one systemd initrd oneshot with the same geometry/label checks (sda 493854720 512-byte sectors, sda35 start 22065152 size 471789528, PARTNAME=userdata, LIUQIN_ROOT label, read-only lock of all other sd* nodes, ro,noload probe mount, root marker) |
 | liuqin-hide-gunyah-node.service | hardware.nix systemd unit (bind-mount empty dir over /sys/firmware/devicetree/base/hypervisor) |
 | logind.conf.d/90-liuqin.conf | services.logind.settings.Login (HandlePowerKey/LongPress = ignore) |
 | device/power-key/liuqin-power-keyd.c | pkgs/power-keyd.nix (C build in Nix) + helpers |

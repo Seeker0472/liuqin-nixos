@@ -80,8 +80,7 @@ in
         ExecStart = "${power-keyd}/libexec/liuqin-power-keyd";
         Restart = "always";
         RestartSec = 1;
-        TimeoutStopSec = 7;
-        UMask = "0077";
+        TimeoutStopSec = 7;        UMask = "0077";
         RuntimeDirectory = "liuqin-power-keyd";
         RuntimeDirectoryMode = "0755";
         NoNewPrivileges = true;
@@ -104,6 +103,10 @@ in
         MemoryDenyWriteExecute = true;
         CapabilityBoundingSet = "CAP_SETUID CAP_SETGID";
       };
+      # Bounded restart: same convention as liuqin-hexagonrpcd-* so a
+      # persistently crashing daemon does not spin forever.
+      unitConfig.StartLimitIntervalSec = "30s";
+      unitConfig.StartLimitBurst = 3;
     };
 
     # dconf defaults: scaling, on-screen keyboard, idle blanking, and the

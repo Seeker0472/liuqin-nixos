@@ -2683,7 +2683,7 @@ new file mode 100644
 new file mode 100644
 --- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx_fw_update.c
-@@ -0,0 +1,923 @@
+@@ -0,0 +1,947 @@
 +/*
 + * Copyright (C) 2010 - 2022 Novatek, Inc.
 + *
@@ -2829,8 +2829,23 @@ new file mode 100644
 +	uint8_t ovly_info = 0;
 +	uint8_t find_bin_header = 0;
 +
++	/* fwdata[0x20] and fwdata[0x28] are read unconditionally below. */
++	if (fwsize < 0x30) {
++		NVT_ERR("bin size %zu too small for header\n", fwsize);
++		return -EINVAL;
++	}
++
 +	/* Find the header size */
 +	end = fwdata[0] + (fwdata[1] << 8) + (fwdata[2] << 16) + (fwdata[3] << 24);
++	/*
++	 * end is firmware-controlled: bound it by the firmware size and by an
++	 * absolute ceiling so the info-section counting loops below cannot
++	 * wrap or run unbounded, and partition stays a sane allocation size.
++	 */
++	if ((end > fwsize) || (end > (64 * 1024))) {
++		NVT_ERR("invalid header size %u (bin size %zu)\n", end, fwsize);
++		return -EINVAL;
++	}
 +
 +	/* check cascade next header */
 +	cascade_2nd_header_info = (fwdata[0x20] & 0x02) >> 1;
@@ -3180,6 +3195,15 @@ new file mode 100644
 +	uint32_t len = partition*4;
 +	uint32_t list = 0;
 +	int32_t ret = 0;
++
++	/*
++	 * partition is derived from the firmware header; fwbuf is only
++	 * NVT_READ_LEN bytes, so reject reads that would overflow it.
++	 */
++	if (partition > ((2*1024) - 1) / 4) {
++		NVT_ERR("partition count %u too large for checksum read\n", partition);
++		return -EINVAL;
++	}
 +
 +	memset(fwbuf, 0, (len+1));
 +
