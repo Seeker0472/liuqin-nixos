@@ -32,14 +32,14 @@ config/example.nix   minimal GNOME configuration (nixosConfigurations.liuqin)
 dts/                 liuqin-abl-boot-overlay.dts (ABL board metadata overlay)
 data/                UCM2 files, sensors patches, GSettings schema
 tools/install.py     host-side fastboot installer (the only Python)
-patches/kernel/      eight patches applying cleanly to linux 7.2.5
+patches/kernel/      ten patches applying cleanly to linux 7.2.5
 ```
 
 ## Derivation graph
 
 ```
 linux-7.2.5.tar.xz (fetchurl, hashed)
-   + patches/kernel/0001..0008      -- linuxManualConfig (kernel/)
+   + patches/kernel/0001..0010      -- linuxManualConfig (kernel/)
    -> pkgs.liuqinKernel             -- Image, modules, dtbs/qcom/sm8475-xiaomi-liuqin.dtb
 
 sm8475-xiaomi-liuqin.dtb
@@ -84,9 +84,10 @@ flashes boot_a. It never switches slots.
 
 ## Open items
 
-* Placeholder hashes: `pkgs/bootimg.nix` (stock DTBO/base DTB sets),
-  `pkgs/firmware.nix`, `pkgs/sensors-config.nix` — fill after producing
-  the operator-supplied archives (see docs/PORTING-NOTES.md).
+* Placeholder hash: `pkgs/sensors-config.nix` — the operator's SSC config
+  archive (set hardware.liuqin.sensors.sscConfigHash; see
+  docs/PORTING-NOTES.md). The firmware payloads and the stock DTBO/base
+  DTB sets are pinned to real hashes.
 * The installer formats userdata but does not yet untar the rootfs into it
   (the downstream flow untarred inside a RAM installer; the fastboot-only
   equivalent is `fastboot flash` of a sparse ext4 image, TODO).

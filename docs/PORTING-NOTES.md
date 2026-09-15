@@ -5,6 +5,31 @@ Nothing from the downstream build system is executed; facts and data files
 were extracted and re-encoded. This file records what was inherited, what
 was dropped, and why.
 
+## Kernel patch series (patches/kernel/)
+
+Ten patches, applied in filename order on linux 7.2.5:
+
+* 0001 DTS + bindings (sm8475.dtsi, sm8475-xiaomi-liuqin.dts)
+* 0002 HID nanosic keyboard cover
+* 0003 Novatek NT36523 SPI touchscreen; irq GPIO via
+  fwnode_gpiod_get_index(of_fwnode_handle(np), "novatek,irq") because the
+  DT carries the legacy "novatek,irq-gpio" spelling gpiod_get() cannot
+  resolve (v7.2.5 removed linux/of_gpio.h, so of_get_named_gpio() is not
+  available)
+* 0004 Novatek NT36532 DSI panel
+* 0005 AudioReach/TDM/CS35L41/sc8280xp sound
+* 0006 PON/battmgr/PMIC glink
+* 0007 iris video decoder for SM8450 (vpu20_4v firmware;
+  .resume_without_payload = true, matching downstream
+  iris_platform_gen2.c — Iris2 firmware predates the RESUME payload)
+* 0008 misc: of/ubwc/earlycon-simplefb
+* 0009 I2C eUSB2 repeater backport
+* 0010 pinctrl-sm8475 TLMM (verbatim from linux-sm8450-liuqin, GPL-2.0);
+  without it "qcom,sm8475-tlmm" never probes and every GPIO-backed device
+  defers forever. kernel/config.nix answers PINCTRL_SM8475=y, and
+  kernel/default.nix sets ignoreConfigErrors because generate-config.pl
+  runs against the pristine tarball where the option does not exist yet.
+
 ## Inherited (re-expressed in Nix)
 
 | Downstream source | liuqin-nixos expression |
@@ -22,7 +47,7 @@ was dropped, and why.
 | liuqin-backlight-default.service | hardware.nix systemd unit (same 1500/2047 readback assertions) |
 | liuqin-wlan-mac / liuqin-bt-public-addr | hardware.nix oneshot units; identity files under /var/lib/liuqin-private, provisioned read-only from persist by liuqin-persist-provision.service (same checks: metadata 600:0:0, format, reserved/multicast rejection, fail closed) |
 | device/gnome-overlay/usr/share/alsa/ucm2 | data/ucm2 + alsa-ucm-conf override in overlay.nix |
-| device/sensors/patches + sources.manifest | data/sensors-patches + pkgs/{hexagonrpc,libssc}.nix at pinned commits; iio-sensor-proxy overrideAttrs with the four patches |
+| device/sensors/patches + sources.manifest | data/sensors-patches (6 patch files) + pkgs/{hexagonrpc,libssc}.nix at pinned commits; hexagonrpc.nix applies 0001/0002 (hexagonrpcd), overlay.nix applies 0003-0006 to iio-sensor-proxy |
 | sensors-overlay systemd units | hardware.nix: liuqin-slpi, liuqin-hexagonrpcd-sdsp (same sandboxing), liuqin-ssc-sample-gate (4 bounded ssccli attempts), liuqin-sensor-proxy-refresh, sysusers/tmpfiles/udev rules |
 | environment.d/50-liuqin-dmabuf.conf | environment.sessionVariables in gnome.nix |
 | dconf db/local.d and gdm.d | environment.etc dconf fragments in gnome.nix |
@@ -68,16 +93,30 @@ mounted userdata) is not yet implemented — see "Open items" in the README.
 
 ## Proprietary payload inputs (not redistributable)
 
-* pkgs/firmware.nix: touch (novatek_nt36532_m81_fw_{csot,tm}.bin),
-  DSP (adsp/cdsp/slpi .mbn set), GPU (a730_zap.mbn, a730_sqe.fw,
-  gmu_gen70000.bin), BT (BTFM set), WLAN board data (bd_m81.elf).
-  The kernel DTS firmware-name paths are: qcom/sm8475/liuqin/{adsp,cdsp,
-  slpi,a730_zap}.mbn, novatek/liuqin/novatek_nt36532_m81_fw_csot.bin,
-  qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin.
-* pkgs/sensors-config.nix: vendor/etc/sensors/config (SSC registry inputs).
-* pkgs/bootimg.nix: stock DTBO entries (44 files) + stock base DTBs
-  (14 files) for the __symbols__ union.
-
-Fill these by extracting from your own stock ROM dump, adding the archives
-to the Nix store with `nix-store --add-fixed sha256 <name>`, and replacing
-the `lib.fakeHash` placeholders.
+* pkgs/firmware.nix (all hashes pinned): touch
+  (novatek_nt36532_m81_fw_{csot,tm}.bin), DSP (adsp/cdsp/slpi .mbn set),
+  GPU (a730_zap.mbn, a730_sqe.fw, gmu_gen70000.bin), BT (BTFM set), WLAN
+  board data (board data + updates/ amss tuples), VPU (qcom/vpu/
+  vpu20_4v.mbn, iris2 firmware for patch 0007), audio topology, and
+  regulatory.db{,.p7s} (taken from nixpkgs linux-firmware, redistributable).
+  The kernel-requested contract paths are asserted at build time:
+  novatek/liuqin/novatek_nt36532_m81_fw_{csot,tm}.bin,
+  qcom/sm8475/liuqin/{adsp,cdsp,slpi,a730_zap}.mbn, qcom/a730_sqe.fw,
+  qcom/gmu_gen70000.bin, updates/ath11k/WCN6855/hw2.{0,1}/amss.bin,
+  qcom/vpu/vpu20_4v.mbn, qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin,
+  regulatory.db{,.p7s}.
+* pkgs/bootimg.nix: stock DTBO entries (38 files) + the stock base DTB
+  (1 file) from liuqin-audit/evidence/dtbo for the __symbols__ union
+  (exactly 1469 symbols; the downstream 44/14/1781 numbers come from the
+  larger OS2.0.6.0.VMYCNXM analysis tree). The boot header cmdline is
+  deliberately empty (downstream native build does the same; the kernel
+  reads /chosen/bootargs from the DT, ABL appends its own), and
+  earlycon=simplefb + keep_bootcon live in the base kernelParams rather
+  than the debug gate, matching device/native-bootargs.txt.
+* pkgs/sensors-config.nix: vendor/etc/sensors/config (SSC registry
+  inputs). Extraction: unpack the stock ROM super image, then
+  vendor/etc/sensors/config; downstream build-liuqin-sensors-stack.sh
+  reads it from tools/local/roms/liuqin/OS2.0.6.0.VMYCNXM/extracted/
+  super-work/vendor-extract/etc/sensors. Archive it deterministically,
+  `nix-store --add-fixed sha256 liuqin-ssc-config.tar.zst`, and set
+  hardware.liuqin.sensors.sscConfigHash.

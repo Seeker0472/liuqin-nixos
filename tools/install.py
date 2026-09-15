@@ -79,7 +79,9 @@ def main():
                         help="new directory receiving boot_a/boot_b/persist dumps")
     parser.add_argument("--write-rootfs", action="store_true",
                         help="actually write the rootfs (erases userdata)")
-    parser.add_argument("--sha256-rootfs",
+    parser.add_argument("--sha256-boot", required=True,
+                        help="expected sha256 of --boot; verified before flashing")
+    parser.add_argument("--sha256-rootfs", required=True,
                         help="expected sha256 of --rootfs; verified before flashing")
     args = parser.parse_args()
 
@@ -90,7 +92,9 @@ def main():
         parser.error("--backup must be a new directory")
     if args.boot.stat().st_size > BOOT_A_LIMIT:
         parser.error("boot.img exceeds the 192 MiB boot partition")
-    if args.sha256_rootfs and sha256(args.rootfs) != args.sha256_rootfs:
+    if sha256(args.boot) != args.sha256_boot:
+        parser.error("boot.img checksum mismatch")
+    if sha256(args.rootfs) != args.sha256_rootfs:
         parser.error("rootfs checksum mismatch")
     with tarfile.open(args.rootfs) as tar:
         if not tar.getmembers():
@@ -120,6 +124,12 @@ def main():
                 f"backup of {name} failed and nothing will be flashed. "
                 f"({error})")
         target.chmod(0o600)
+        # A silently truncated fetch must fail here, not after flashing.
+        expected = partition_size(args.serial, name)
+        actual = target.stat().st_size
+        if actual != expected:
+            sys.exit(f"backup of {name} is truncated: {actual} bytes, "
+                     f"partition reports {expected}")
         sums[target.name] = sha256(target)
     (args.backup / "SHA256SUMS").write_text(
         "".join(f"{h}  {n}\n" for n, h in sums.items()))
