@@ -44,7 +44,7 @@ let
     # must carry the literal \n escape, not a raw newline.
     [ "$(wc -l < rule.conf)" = 1 ]
     # The sandbox build user is not root, so the rule's chown to root fails
-    # (fchownat EINVAL) after the file is already written; only the exit
+    # (Operation not permitted — EPERM, exit 73) after the file is already written; only the exit
     # status is tolerated, the content/mode checks below must still pass.
     ${hp.systemd}/bin/systemd-tmpfiles --create --root=$PWD/root \
       $PWD/rule.conf || true

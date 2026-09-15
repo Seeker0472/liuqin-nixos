@@ -53,7 +53,9 @@ in
       systemd.services.liuqin-growfs-root = {
         description = "Grow the liuqin NixOS root filesystem to fill userdata";
         wantedBy = [ "multi-user.target" ];
-        after = [ "local-fs.target" ];
+        # systemd-tmpfiles-setup.service creates /var/lib/liuqin; the
+        # ExecStartPost touch below depends on it, so order after it.
+        after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
         unitConfig.ConditionPathExists = "!/var/lib/liuqin/growfs-done";
         serviceConfig = {
           Type = "oneshot";
