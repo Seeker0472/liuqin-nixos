@@ -8,18 +8,24 @@ This repository is MIT-licensed overall (see LICENSE), except:
   preserved verbatim.
 * dts/liuqin-abl-boot-overlay.dts is GPL-2.0-only (device-tree source,
   carried unchanged from the downstream project).
-* pkgs/liuqin-power-keyd/liuqin-power-keyd.c, liuqin-power-key-action.sh,
-  liuqin-power-menu.py and pkgs/liuqin-mark-slot-successful.c are MIT,
-  carried from the downstream project (yzddmr6/xiaomipad-6pro-mainline).
+* pkgs/liuqin-power-keyd/liuqin-power-keyd.c, liuqin-power-key-action.sh
+  and liuqin-power-menu.py are MIT, carried from the downstream project
+  (yzddmr6/xiaomipad-6pro-mainline).
 * data/ucm2/ (ALSA UCM2 configuration) is BSD-3-Clause per upstream
   alsa-ucm-conf; the liuqin card files originate from the downstream
   project.
 * data/sensors-patches/*.patch are patches to hexagonrpc (GPL-2.0) and
   iio-sensor-proxy (GPL-3.0 / LGPL); they retain their downstream headers.
 * pkgs/firmware.nix and pkgs/sensors-config.nix reference proprietary
-  Qualcomm/Xiaomi binaries that are NOT distributed by this repository;
-  they are requireFile placeholders the operator fills from their own
-  stock ROM dump.
+  Qualcomm/Xiaomi binaries that are NOT redistributable. This repository is
+  PRIVATE / personal self-use and must not be published publicly: the
+  committed data/*.tar.zst archives (liuqin-firmware-*, liuqin-ssc-config,
+  stock-dtbo-entries, stock-base-dtbs) are the operator's own device / stock
+  ROM dumps, carried in-tree for the operator's own builds only. If the
+  repository is ever to be published, these files must first be removed
+  from history (git filter-repo --path-glob 'data/*.tar.zst'
+  --invert-paths) and data/stock-dtbo-entries.nix / stock-base-dtbs.nix
+  switched back to requireFile inputs.
 
 Knowledge (partition geometry, ABL behavior, systemd ordering rationale)
 was extracted from the downstream project and re-expressed in Nix; no
