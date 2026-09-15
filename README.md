@@ -12,8 +12,9 @@ operator's own device and stock ROM dumps; they are not redistributable
 NixOS on the Xiaomi Pad 6 Pro with the latest stable Linux kernel
 (currently 7.2.5) plus the device patch series in `patches/kernel/`,
 built entirely with Nix. No downstream shell/python build scripts are used
-in the build chain; the only Python is `tools/install.py`, the host-side
-installer that operates the device over fastboot.
+in the build chain; Python appears only as the interpreter for mkbootimg
+(boot.img assembly) and the power-menu helper, plus tools/install.py, the
+host-side installer that operates the device over fastboot.
 
 ## Repository layout
 
@@ -40,7 +41,7 @@ modules/liuqin/
 config/example.nix   minimal GNOME configuration (nixosConfigurations.liuqin)
 dts/                 liuqin-abl-boot-overlay.dts (ABL board metadata overlay)
 data/                UCM2 files, sensors patches, GSettings schema
-tools/install.py     host-side fastboot installer (the only Python)
+tools/install.py     host-side fastboot installer (Python 3)
 patches/kernel/      ten patches applying cleanly to linux 7.2.5
 ```
 
@@ -124,11 +125,12 @@ with the installer.
 
 ## Open items
 
-* `pkgs/sensors-config.nix` — the operator's SSC config archive is the one
-  remaining `requireFile` input whose hash must be set by the operator
-  (hardware.liuqin.sensors.sscConfigHash; see docs/PORTING-NOTES.md). The
-  committed `data/liuqin-ssc-config.tar.zst` is the operator's own copy.
-  The firmware payload hashes are pinned to real values.
+* `pkgs/sensors-config.nix` — the SSC config hash is pinned in
+  config/example.nix; other operators must re-derive it from their own stock
+  ROM dump (hardware.liuqin.sensors.sscConfigHash; see
+  docs/PORTING-NOTES.md). The committed `data/liuqin-ssc-config.tar.zst` is
+  the operator's own copy. The firmware payload hashes are pinned to real
+  values.
 * Rootfs deployment is solved: `.#rootfsImage` is a pre-built ext4 image of
   the NixOS closure (with the guard marker baked in) flashed verbatim via
   `fastboot flash userdata` — the fastboot-only equivalent of the

@@ -18,7 +18,14 @@ let
   dsp = requireFile {
     name = "liuqin-firmware-dsp.tar.zst";
     hash = "sha256-0c167XxGtCUOvQak1sBXK2SxlphlQZAG3cHBedvH+Ww=";
-    message = "qcom/sm8475/liuqin/{adsp,cdsp,slpi}.b*/.mbn set (from the downstream release ramdisk).";
+    message = ''
+      liuqin-firmware-dsp.tar.zst is an operator-supplied fixed-output input:
+      pack the qcom/sm8475/liuqin/{adsp,cdsp,slpi}.b*/.mbn DSP firmware set
+      (from the downstream release ramdisk or your own stock ROM dump) into a
+      zstd tar archive, then register it with
+      `nix-store --add-fixed sha256 liuqin-firmware-dsp.tar.zst`.
+      See docs/PORTING-NOTES.md for the exact archive layout.
+    '';
   };
   gpu = requireFile {
     name = "liuqin-firmware-gpu.tar.zst";

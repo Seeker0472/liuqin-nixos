@@ -63,7 +63,10 @@
         # guard reads /etc/liuqin-nixos-root BEFORE sysroot is mounted, so
         # the marker must exist in the image from the start (stage-2 tmpfiles
         # only repairs it afterwards). Built on the host (e2fsprogs is
-        # architecture-independent over an aarch64 closure).
+        # architecture-independent over an aarch64 closure), but the closure
+        # itself must be built natively for aarch64: an x86_64 host needs
+        # qemu binfmt (boot.binfmt.emulatedSystems) or an aarch64 remote
+        # builder to produce it.
         rootfsImage = pkgsHost.callPackage (nixpkgs + "/nixos/lib/make-ext4-fs.nix") {
           storePaths = [
             self.nixosConfigurations.liuqin.config.system.build.toplevel
