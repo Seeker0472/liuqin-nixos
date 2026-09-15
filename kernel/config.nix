@@ -30,12 +30,10 @@ with kernelLib;
   PHY_QCOM_QMP_UFS = lib.mkForce yes;
   PHY_QCOM_QMP_PCIE = lib.mkForce yes;
   PHY_SNPS_EUSB2 = lib.mkForce yes;
-  # The eusb2-repeater node instantiated by DTS patch 0001 binds to the
-  # downstream-only PHY_QCOM_I2C_EUSB2_REPEATER ("nxp,eusb2-repeater");
-  # vanilla 7.2.5 does not carry that option at all (generate-config.pl
-  # fails on answered-but-unasked options), so it cannot be answered here.
-  # Enable the mainline SPMI variant; the I2C driver needs backporting
-  # before the DTS node can bind.
+  # The eusb2-repeater node instantiated by DTS patch 0001 binds to
+  # PHY_QCOM_I2C_EUSB2_REPEATER ("nxp,eusb2-repeater"), backported as
+  # patches/kernel/0009. The mainline SPMI variant is kept too.
+  PHY_QCOM_I2C_EUSB2_REPEATER = lib.mkForce yes;
   PHY_QCOM_EUSB2_REPEATER = lib.mkForce yes;
   I2C_QCOM_GENI = lib.mkForce yes;
   SPI = lib.mkForce yes;
