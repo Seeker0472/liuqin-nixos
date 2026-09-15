@@ -217,13 +217,25 @@ in
     # >100-file registry floor).
     systemd.services.liuqin-persist-provision = {
       description = "Provision liuqin per-device data from the persist partition";
-      wantedBy = [ "multi-user.target" ];
-      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-slpi.service" ];
+      wantedBy = [ "multi-user.target" "sound.target" ];
+      # CS35L41 calibration must exist before anything opens an audio
+      # stream: the driver request_firmware() fires as soon as the sound
+      # card is bound. Wanted by (and ordered before) sound.target so the
+      # per-channel calr blobs in /var/lib/firmware/cirrus are in place
+      # before PipeWire/WirePlumber can touch the card.
+      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-slpi.service" "sound.target" ];
       after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
       path = with pkgs; [ coreutils util-linux gnugrep findutils ];
       script = ''
         set -eu
         part=/dev/disk/by-partlabel/persist
+        # Downstream provision-liuqin-from-persist.sh semantics: a missing
+        # persist partition is a hard failure, not a skip — audio, WLAN and
+        # BT identities would silently run uncalibrated/factory otherwise.
+        [ -b "$part" ] || {
+          echo "liuqin-persist-provision: $part is absent" >&2
+          exit 1
+        }
         private=${stateDir}
         mnt=$(mktemp -d)
         trap 'umount "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true' EXIT
@@ -288,7 +300,6 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      unitConfig.ConditionPathExists = "/dev/disk/by-partlabel/persist";
     };
 
     users.users.fastrpc = {
