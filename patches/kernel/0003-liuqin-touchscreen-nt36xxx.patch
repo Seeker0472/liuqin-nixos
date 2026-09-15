@@ -2930,7 +2930,8 @@ new file mode 100644
 +				pos = end - 0x10;
 +			}
 +
-+			if (pos + 16 > fwsize)
++			/* pos is u32; cascade path pos = end - 0x10 can underflow */
++			if (pos < 16 || pos + 16 > fwsize)
 +				return -EINVAL;
 +
 +			bin_map[list].SRAM_addr = byte_to_word(&fwdata[pos]);
