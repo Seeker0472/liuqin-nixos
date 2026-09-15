@@ -8,6 +8,20 @@
     let
       lib = nixpkgs.lib;
 
+      # requireFile payloads (firmware, SSC config) count as unfree; the same
+      # predicate the nixosConfiguration carries, applied to the flake's own
+      # package sets so `nix flake check` can evaluate them.
+      allowLiuqinUnfree = pkg:
+        builtins.elem (lib.getName pkg) [
+          "liuqin-ssc-config.tar.zst"
+          "liuqin-firmware-touch.tar.zst"
+          "liuqin-firmware-dsp.tar.zst"
+          "liuqin-firmware-gpu.tar.zst"
+          "liuqin-firmware-bt.tar.zst"
+          "liuqin-firmware-wlan-board.tar.zst"
+          "liuqin-firmware-topology.tar.zst"
+        ];
+
       pkgsHost = import nixpkgs { system = "x86_64-linux"; };
 
       # x86_64 -> aarch64 cross package set carrying the liuqin overlay.
@@ -16,6 +30,7 @@
         crossSystem.system = "aarch64-linux";
         overlays = [ self.overlays.default ];
         config.allowImportFromDerivation = true;
+        config.allowUnfreePredicate = allowLiuqinUnfree;
       };
 
       # Native aarch64 package set (for the NixOS system closure).
@@ -23,6 +38,7 @@
         system = "aarch64-linux";
         overlays = [ self.overlays.default ];
         config.allowImportFromDerivation = true;
+        config.allowUnfreePredicate = allowLiuqinUnfree;
       };
     in
     {
@@ -55,16 +71,7 @@
         modules = [
           {
             nixpkgs.overlays = [ self.overlays.default ];
-            # requireFile payloads (firmware, SSC config) count as unfree.
-            nixpkgs.config.allowUnfreePredicate = pkg:
-              builtins.elem (lib.getName pkg) [
-                "liuqin-ssc-config.tar.zst"
-                "liuqin-firmware-touch.tar.zst"
-                "liuqin-firmware-dsp.tar.zst"
-                "liuqin-firmware-gpu.tar.zst"
-                "liuqin-firmware-bt.tar.zst"
-                "liuqin-firmware-wlan-board.tar.zst"
-              ];
+            nixpkgs.config.allowUnfreePredicate = allowLiuqinUnfree;
           }
           self.nixosModules.liuqin
           ./config/example.nix

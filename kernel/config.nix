@@ -30,6 +30,13 @@ with kernelLib;
   PHY_QCOM_QMP_UFS = lib.mkForce yes;
   PHY_QCOM_QMP_PCIE = lib.mkForce yes;
   PHY_SNPS_EUSB2 = lib.mkForce yes;
+  # The eusb2-repeater node instantiated by DTS patch 0001 binds to the
+  # downstream-only PHY_QCOM_I2C_EUSB2_REPEATER ("nxp,eusb2-repeater");
+  # vanilla 7.2.5 does not carry that option at all (generate-config.pl
+  # fails on answered-but-unasked options), so it cannot be answered here.
+  # Enable the mainline SPMI variant; the I2C driver needs backporting
+  # before the DTS node can bind.
+  PHY_QCOM_EUSB2_REPEATER = lib.mkForce yes;
   I2C_QCOM_GENI = lib.mkForce yes;
   SPI = lib.mkForce yes;
   SPI_QCOM_GENI = lib.mkForce yes;
@@ -199,4 +206,7 @@ with kernelLib;
 
   # serial-flash for the persist partition and friends.
   MTD_SPI_NOR = lib.mkForce module;
+
+  # GNOME portals (xdg-document-portal) mount via FUSE.
+  FUSE_FS = lib.mkForce yes;
 }

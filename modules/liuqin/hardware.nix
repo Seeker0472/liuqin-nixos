@@ -47,6 +47,8 @@ in
         echo 1500 > "$backlight/brightness"
         echo 0 > "$backlight/bl_power"
         [ "$(cat "$backlight/actual_brightness")" = 1500 ]
+        [ "$(cat "$backlight/brightness")" = 1500 ]
+        [ "$(cat "$backlight/bl_power")" = 0 ]
       '';
       serviceConfig = {
         Type = "oneshot";
@@ -73,10 +75,16 @@ in
         state=${stateDir}/wlan-mac
         [ -f "$state" ] && [ ! -L "$state" ]
         [ "$(stat -c '%a:%u:%g' "$state")" = '600:0:0' ]
+        # Single-line framing: anything else is not a provisioned identity.
+        [ "$(wc -l < "$state")" = 1 ]
         mac=$(head -n1 "$state" | tr 'A-F' 'a-f')
         printf '%s\n' "$mac" | grep -Eq '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'
         case $mac in
           00:00:00:00:00:00|ff:ff:ff:ff:ff:ff) exit 1 ;;
+        esac
+        # Reject multicast identities (odd first octet).
+        case ''${mac%%:*} in
+          ?1|?3|?5|?7|?9|?b|?d|?f) exit 1 ;;
         esac
         iface=
         for i in $(seq 1 30); do
@@ -110,6 +118,8 @@ in
     # --- Bluetooth public address -----------------------------------------
     systemd.services.liuqin-bt-preconfigure = {
       description = "liuqin QCA6490 public Bluetooth address";
+      # When bluetooth.service stops, this helper stops with it.
+      partOf = [ "bluetooth.service" ];
       path = with pkgs; [ bluez coreutils gnugrep gawk util-linux ];
       script = ''
         set -eu
@@ -121,25 +131,47 @@ in
         case $addr in
           00:00:00:00:00:00|FF:FF:FF:FF:FF:FF|00:00:00:00:5A:AD) exit 1 ;;
         esac
+        # Bound every individual MGMT request: a request observed waiting on
+        # the unit timeout must not be able to park the helper (downstream
+        # liuqin-bt-public-addr wraps every btmgmt call in timeout 2s).
+        run_mgmt() {
+          true | timeout --signal=TERM --kill-after=1s 2s btmgmt "$@"
+        }
         # Wait (bounded) for the controller; the rampatch/NVM download over
         # UART finishes on its own schedule.
         for i in $(seq 1 30); do
-          config=$(printf '%s' "" | btmgmt config 2>&1 || true)
+          config=$(run_mgmt config 2>&1 || true)
           case $config in
             *"Unconfigured index list with 1 item"*)
               idx=$(printf '%s\n' "$config" | awk '/^hci[0-9]+:[[:space:]]+Unconfigured controller/ { line=$1; sub(/^hci/,"",line); sub(/:$/,"",line); print line; exit }')
               [ -n "$idx" ]
-              printf '%s' "" | btmgmt --index "$idx" public-addr "$addr"
+              out=$(run_mgmt --index "$idx" public-addr "$addr" 2>&1) || {
+                echo "liuqin-bt-preconfigure: btmgmt public-addr failed" >&2
+                exit 1
+              }
+              # Require the controller's completion reply, not btmgmt's exit
+              # status alone (downstream asserts "Set Public Address complete").
+              printf '%s\n' "$out" | grep -Eq "^hci$idx[[:space:]]+Set Public Address complete" || {
+                echo "liuqin-bt-preconfigure: controller did not confirm the address" >&2
+                exit 1
+              }
               exit 0
               ;;
           esac
-          info=$(printf '%s' "" | btmgmt --index 0 info 2>&1 || true)
+          info=$(run_mgmt --index 0 info 2>&1 || true)
           case $info in
             *"addr $addr"*) exit 0 ;;
             *"addr 00:00:00:00:5A:AD"*)
-              printf '%s' "" | btmgmt --index 0 power off || true
-              printf '%s' "" | btmgmt --index 0 public-addr "$addr"
-              printf '%s' "" | btmgmt --index 0 power on || true
+              run_mgmt --index 0 power off >/dev/null 2>&1 || true
+              out=$(run_mgmt --index 0 public-addr "$addr" 2>&1) || {
+                echo "liuqin-bt-preconfigure: btmgmt public-addr failed" >&2
+                exit 1
+              }
+              printf '%s\n' "$out" | grep -Eq "^hci0[[:space:]]+Set Public Address complete" || {
+                echo "liuqin-bt-preconfigure: controller did not confirm the address" >&2
+                exit 1
+              }
+              run_mgmt --index 0 power on >/dev/null 2>&1 || true
               exit 0
               ;;
           esac
@@ -151,6 +183,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        TimeoutStartSec = 150;
       };
     };
     systemd.services.bluetooth = {
@@ -273,6 +306,20 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "20s";
+        TimeoutStopSec = "20s";
+        # Downstream liuqin-slpi stop: power the remoteproc back off.
+        ExecStop = pkgs.writeShellScript "liuqin-slpi-stop" ''
+          set -eu
+          export PATH=${lib.makeBinPath (with pkgs; [ coreutils gnugrep ])}
+          for remote in /sys/class/remoteproc/remoteproc*; do
+            [ "$(cat "$remote/name")" = slpi ] || continue
+            [ "$(cat "$remote/state")" != offline ] || exit 0
+            echo stop > "$remote/state"
+            exit 0
+          done
+          echo "SLPI remote processor is unavailable" >&2
+          exit 1
+        '';
       };
     };
 
@@ -383,6 +430,71 @@ in
           round=$((round + 1))
           sleep 10
         done
+        exit 1
+      '';
+      serviceConfig.Type = "oneshot";
+    };
+
+    # Downstream sensors-overlay 49-liuqin-sensorproxy.rules: gnome-shell's
+    # first accelerometer claim at login races logind session registration,
+    # and upstream's allow_active default denies it for the whole boot.
+    # The session refresh helper also needs to restart the proxy from an
+    # unprivileged user unit; bound the grant by unit and verb.
+    security.polkit.extraConfig = ''
+      polkit.addRule(function(action, subject) {
+          if (action.id == "net.hadess.SensorProxy.claim-sensor" && subject.local) {
+              return polkit.Result.YES;
+          }
+      });
+      polkit.addRule(function(action, subject) {
+          if (action.id == "org.freedesktop.systemd1.manage-units" &&
+              action.lookup("unit") == "iio-sensor-proxy.service" &&
+              action.lookup("verb") == "restart") {
+              return polkit.Result.YES;
+          }
+      });
+    '';
+
+    # The system-level refresh above covers the greeter shell; a desktop
+    # session started after it would run the whole login without a claim.
+    # Re-announce the proxy name once THIS session's gnome-shell is up and
+    # watching (downstream liuqin-sensor-proxy-session-refresh).
+    systemd.user.services.liuqin-sensor-proxy-session-refresh = {
+      description = "Re-announce iio-sensor-proxy to the session's gnome-shell";
+      wantedBy = [ "graphical-session.target" ];
+      path = with pkgs; [ coreutils gawk procps systemd glib ];
+      script = ''
+        set -u
+        owner=
+        i=0
+        while [ $i -lt 90 ]; do
+          owner=$(gdbus call --session -d org.freedesktop.DBus -o /org/freedesktop/DBus \
+            -m org.freedesktop.DBus.GetNameOwner org.gnome.Shell 2>/dev/null) && break
+          i=$((i + 1))
+          sleep 1
+        done
+        case $owner in
+          *':'*) ;;
+          *) echo "liuqin-sensor-proxy-session-refresh: gnome-shell never appeared" >&2; exit 1 ;;
+        esac
+        # The shell name is acquired before mutter's monitor setup completes.
+        sleep 3
+        round=1
+        while [ $round -le 3 ]; do
+          systemctl restart iio-sensor-proxy.service || :
+          sleep 4
+          pid=$(pgrep -f iio-sensor-proxy | head -1 || :)
+          if [ -n "$pid" ]; then
+            a=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null || echo 0)
+            sleep 4
+            b=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null || echo 0)
+            if [ "''${b:-0}" -gt "''${a:-0}" ]; then
+              exit 0
+            fi
+          fi
+          round=$((round + 1))
+        done
+        echo "liuqin-sensor-proxy-session-refresh: claim never established" >&2
         exit 1
       '';
       serviceConfig.Type = "oneshot";

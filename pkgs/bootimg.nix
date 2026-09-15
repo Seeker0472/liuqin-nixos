@@ -33,9 +33,13 @@
 , dtbName ? "qcom/sm8475-xiaomi-liuqin.dtb"
 , ablOverlayDts ? ../dts/liuqin-abl-boot-overlay.dts
 # /chosen/bootargs the kernel actually reads; ABL concatenates its own
-# bootargs after it. Must match what the running system expects; the DTS
-# /chosen/bootargs is authoritative for the kernel, so it must equal this.
-, bootargs ? "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init initcall_debug ignore_loglevel clk_ignore_unused pd_ignore_unused rootwait mtdoops.dump_oops=1 hung_task_panic=1 softlockup_panic=1 panic=15"
+# bootargs after it. The kernel's own DTS (patches/kernel/0001) carries a
+# long debug string; the build overlays this value onto /chosen/bootargs
+# with fdtoverlay before packaging, mirroring the downstream
+# tools/build-liuqin-native-boot.sh cmdline-overlay step, and the final DT
+# is asserted to hold exactly this. The default matches the downstream
+# build-bootimg.sh product default.
+, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
 , headerCmdline ? bootargs
 , ramdisk ? null
 }:
@@ -74,7 +78,19 @@ stdenvNoCC.mkDerivation {
 
     # 1+2: ABL board-selection metadata.
     dtc -@ -I dts -O dtb -o abl-overlay.dtbo ${ablOverlayDts}
-    fdtoverlay -i "$base_dtb" -o boot-1.dtb abl-overlay.dtbo
+    fdtoverlay -i "$base_dtb" -o boot-0.dtb abl-overlay.dtbo
+
+    # 1b: the kernel DTS carries the long debug bootargs; the product cmdline
+    # is overlaid onto /chosen/bootargs like the downstream
+    # build-liuqin-native-boot.sh cmdline-overlay does.
+    {
+      echo '/dts-v1/;'
+      echo '/plugin/;'
+      echo '/ { fragment@0 { target-path = "/chosen";'
+      echo '  __overlay__ { bootargs = "${bootargs}"; }; }; };'
+    } > cmdline-overlay.dts
+    dtc -@ -q -I dts -O dtb -o cmdline-overlay.dtbo cmdline-overlay.dts
+    fdtoverlay -i boot-0.dtb -o boot-1.dtb cmdline-overlay.dtbo
 
     # 3: synthesize the __symbols__ union overlay. dtc decodes with -@ so
     # __symbols__ and __fixups__ survive the round trip.
@@ -94,6 +110,16 @@ stdenvNoCC.mkDerivation {
     echo "symbols exported: $count"
     # Guard the union size like the downstream --expect-symbols did.
     test "$count" -gt 200
+
+    # Input-count assertions, mirroring build-bootimg.sh:107-118. The
+    # downstream hard count is 44 DTBO entries / 14 base DTBs from the
+    # OS2.0.6.0.VMYCNXM analysis tree (vendor_boot dtb-*.dtb). Our
+    # fixed-input archives come from liuqin-audit/evidence/dtbo: 38 DTBO
+    # entries plus the single stock base DTB, a smaller set than the
+    # downstream extraction. Assert what this build actually consumes so a
+    # silently truncated archive fails here.
+    test "$(find "$stockDtboDir" -maxdepth 1 -name 'entry.*.dtb' | wc -l)" = 38
+    test "$(find "$stockDtbDir" -maxdepth 1 -name 'dtb-*.dtb' | wc -l)" = 1
     echo "stock dtbo entries: $(ls $stockDtboDir | wc -l), base dtbs: $(ls $stockDtbDir | wc -l)"
 
 

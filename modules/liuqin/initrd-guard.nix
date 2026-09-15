@@ -80,7 +80,11 @@ let
     rmdir "$probe"
     [ "$marker_ok" = 1 ] || fail "root marker missing (not a liuqin NixOS root?)"
 
-    # Unlock only the root device. Everything else stays read-only.
+    # Unlock the parent disk first: a partition cannot be opened rw while
+    # its parent disk is read-only (downstream init:674-682 opens
+    # parent, then target, in that order).
+    blockdev --setrw "$parent"
+    [ "$(blockdev --getro "$parent")" = 0 ] || fail "could not re-enable rw on sda"
     blockdev --setrw "$dev"
     [ "$(blockdev --getro "$dev")" = 0 ] || fail "could not re-enable rw on sda35"
 

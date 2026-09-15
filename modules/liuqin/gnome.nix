@@ -82,7 +82,12 @@ in
         RuntimeDirectoryMode = "0755";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        ProtectHome = true;
+        # Downstream 20-liuqin-session-runtime.conf: the daemon drives the
+        # session's dconf/GSettings over /run/user, so persistent homes stay
+        # read-only rather than inaccessible.
+        ProtectHome = "no";
+        ReadOnlyPaths = [ "/home" "/root" ];
+        ReadWritePaths = [ "/run/user" ];
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectKernelLogs = true;
