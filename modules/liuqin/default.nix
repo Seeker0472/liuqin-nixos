@@ -26,10 +26,28 @@ in
     };
 
     boot.debug = lib.mkEnableOption ''
-      verbose debug boot parameters (earlycon=simplefb, ignore_loglevel,
-      clk_ignore_unused, pd_ignore_unused, panic/pstore diagnostics). Keep
-      off for daily use: clk/pd ignore flags keep every unclaimed clock and
-      power domain alive and the tablet discharges while plugged in'';
+      verbose debug boot parameters (ignore_loglevel, clk_ignore_unused,
+      pd_ignore_unused, panic/pstore diagnostics). earlycon=simplefb and
+      keep_bootcon are part of the base cmdline (downstream product
+      native-bootargs), not gated here. Keep off for daily use: clk/pd
+      ignore flags keep every unclaimed clock and power domain alive and
+      the tablet discharges while plugged in'';
+
+    sensors = {
+      enable = (lib.mkEnableOption ''
+        Qualcomm SSC sensor stack (SLPI lifecycle, hexagonrpcd, iio-sensor-proxy)'')
+        // { default = true; };
+
+      sscConfigHash = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          sha256 (SRI form) of liuqin-ssc-config.tar.zst: the stock ROM's
+          vendor/etc/sensors/config, archived deterministically. Operator-only
+          data; see docs/PORTING-NOTES.md. The build fails with a clear error
+          while unset.'';
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -46,13 +64,24 @@ in
         # ABL's framebuffer must stay the kernel's console, not the
         # simplefb driver's device.
         "initcall_blacklist=simplefb_driver_init"
+        # Early console on the ABL simple-framebuffer, and keep the boot
+        # console alive until the real consoles take over. Both are part of
+        # the downstream product cmdline (device/native-bootargs.txt), not
+        # debug-gated: without earlycon there is no output at all before
+        # the DSI panel driver loads, and keep_bootcon keeps that early
+        # stream continuous with console=drm_log.
+        "earlycon=simplefb"
+        "keep_bootcon"
         # The late DRM log console must be named explicitly; console=tty0
         # keeps /dev/console on the VT afterwards.
         "console=drm_log"
         "console=tty0"
+        # CS35L41 calibration is per-device state, provisioned from the
+        # persist partition at boot; /lib/firmware is the read-only store
+        # tree, so the firmware loader gets one extra writable path.
+        "firmware_class.path=/var/lib/firmware"
       ]
       ++ lib.optionals cfg.boot.debug [
-        "earlycon=simplefb"
         "ignore_loglevel"
         "clk_ignore_unused"
         "pd_ignore_unused"
