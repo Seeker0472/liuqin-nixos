@@ -205,7 +205,7 @@ Adjustments for v7.2.5:
  static const struct iris_firmware_desc iris_vpu30_p4_s6_gen2_desc = {
  	.firmware_data = &iris_hfi_gen2_data,
  	.get_vpu_buffer_size = iris_vpu_buf_size,
-@@ -118,6 +125,39 @@
+@@ -118,6 +125,41 @@
  	.max_core_mbps = (((3840 * 2176) / 256) * 120),
  };
  
@@ -237,6 +237,8 @@ Adjustments for v7.2.5:
 +	.inst_caps = &platform_inst_cap_sm8450,
 +	.tz_cp_config_data = tz_cp_config_vpu3,
 +	.tz_cp_config_data_size = ARRAY_SIZE(tz_cp_config_vpu3),
++	/* Iris2 firmware predates the RESUME reason payload. */
++	.resume_without_payload = true,
 +	.num_vpp_pipe = 4,
 +	.max_session_count = 16,
 +	.max_core_mbpf = ((8192 * 4320) / 256) * 2,

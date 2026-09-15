@@ -11,8 +11,10 @@ Adjustments for v7.2.5:
   against).
 - drivers/input/touchscreen/nt36523/nt36xxx.c: v7.2.5 removed the
   long-deprecated linux/of_gpio.h; nvt_parse_dt() now looks up the
-  reset/irq GPIOs through the gpiod API (gpiod_get/desc_to_gpio)
-  instead of of_get_named_gpio_flags()/of_get_named_gpio().
+  reset GPIO through gpiod_get(dev, "novatek,reset") and the irq GPIO
+  through fwnode_gpiod_get_index(of_fwnode_handle(np), "novatek,irq"):
+  the DT carries "novatek,irq-gpio" (the legacy binding spelling that
+  gpiod_get(dev, "novatek-irq") would never resolve).
 
 --- a/drivers/input/touchscreen/Kconfig
 +++ b/drivers/input/touchscreen/Kconfig
@@ -64,7 +66,7 @@ new file mode 100644
 new file mode 100644
 --- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx.c
-@@ -0,0 +1,2325 @@
+@@ -0,0 +1,2333 @@
 +/*
 + * Copyright (C) 2010 - 2018 Novatek, Inc.
 + * Copyright (C) 2021 XiaoMi, Inc.
@@ -791,7 +793,15 @@ new file mode 100644
 +	NVT_LOG("novatek,reset-gpio=%d\n", ts->reset_gpio);
 +#endif
 +	{
-+		struct gpio_desc *irq_gpiod = gpiod_get(dev, "novatek,irq", GPIOD_ASIS);
++		/*
++		 * The liuqin DT uses the legacy Novatek binding spelling
++		 * "novatek,irq-gpio" (no gpiod-convertible suffix), so look the
++		 * GPIO up by the exact property name instead of gpiod_get(),
++		 * which would search for "novatek-irq-gpios". The DT pin
++		 * carries its own flags (IRQ_TYPE_EDGE_RISING), hence ASIS.
++		 */
++		struct gpio_desc *irq_gpiod = fwnode_gpiod_get_index(
++			of_fwnode_handle(np), "novatek,irq", 0, GPIOD_ASIS, "nvt irq");
 +
 +		if (IS_ERR(irq_gpiod)) {
 +			ts->irq_gpio = PTR_ERR(irq_gpiod);
