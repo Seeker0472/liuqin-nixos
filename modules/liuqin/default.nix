@@ -27,11 +27,13 @@ in
 
     boot.debug = lib.mkEnableOption ''
       verbose debug boot parameters (ignore_loglevel, clk_ignore_unused,
-      pd_ignore_unused, panic/pstore diagnostics). earlycon=simplefb and
-      keep_bootcon are part of the base cmdline (downstream product
-      native-bootargs), not gated here. Keep off for daily use: clk/pd
-      ignore flags keep every unclaimed clock and power domain alive and
-      the tablet discharges while plugged in'';
+      pd_ignore_unused, panic/pstore diagnostics, keep_bootcon).
+      earlycon=simplefb is part of the base cmdline (downstream product
+      native-bootargs), not gated here. Keep this off for daily use:
+      clk/pd ignore flags keep every unclaimed clock and power domain alive
+      and the tablet discharges while plugged in, and keep_bootcon keeps
+      simplefb0 writing into the bootloader framebuffer all session, which
+      a desktop compositor cannot draw over'';
 
     sensors = {
       enable = (lib.mkEnableOption ''
@@ -64,14 +66,15 @@ in
         # ABL's framebuffer must stay the kernel's console, not the
         # simplefb driver's device.
         "initcall_blacklist=simplefb_driver_init"
-        # Early console on the ABL simple-framebuffer, and keep the boot
-        # console alive until the real consoles take over. Both are part of
-        # the downstream product cmdline (device/native-bootargs.txt), not
-        # debug-gated: without earlycon there is no output at all before
-        # the DSI panel driver loads, and keep_bootcon keeps that early
-        # stream continuous with console=drm_log.
+        # Early console on the ABL simple-framebuffer. Part of the
+        # downstream product cmdline (build-bootimg.sh:44): without it
+        # there is no output at all before the DSI panel driver loads.
+        # keep_bootcon is deliberately NOT in the base string: downstream
+        # removed it on purpose (build-bootimg.sh:40-44) because it keeps
+        # simplefb0 writing into the bootloader framebuffer all session,
+        # which a desktop compositor cannot draw over; it is debug-gated
+        # below instead.
         "earlycon=simplefb"
-        "keep_bootcon"
         # The late DRM log console must be named explicitly; console=tty0
         # keeps /dev/console on the VT afterwards.
         "console=drm_log"
@@ -83,6 +86,7 @@ in
       ]
       ++ lib.optionals cfg.boot.debug [
         "ignore_loglevel"
+        "keep_bootcon"
         "clk_ignore_unused"
         "pd_ignore_unused"
         "initcall_debug"
