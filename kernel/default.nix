@@ -58,4 +58,15 @@ buildLinux {
   # "unused option".
   ignoreConfigErrors = true;
   defconfig = "defconfig"; # ARCH=arm64 defconfig
+
+  # firmware_class.path=/var/lib/firmware (boot.kernelParams) only works when
+  # the kernel was built with the fw_path_para command-line parameter; assert
+  # the symbol string survived into vmlinux so a config regression fails the
+  # build instead of silently breaking CS35L41 calibration loading at boot.
+  postBuild = ''
+    strings vmlinux | grep -q fw_path_para || {
+      echo "error: vmlinux lacks fw_path_para; firmware_class.path would be a no-op" >&2
+      exit 1
+    }
+  '';
 }
