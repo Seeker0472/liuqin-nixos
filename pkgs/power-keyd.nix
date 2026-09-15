@@ -6,9 +6,9 @@
 # systemd environment.
 { lib
 , stdenv
+, coreutils
 , python3
-, zenity
-, gnome-session
+, gnome-control-center
 }:
 
 stdenv.mkDerivation {
@@ -33,12 +33,12 @@ stdenv.mkDerivation {
     install -Dm0755 liuqin-power-key-action.sh $out/libexec/liuqin-power-key-action
     install -Dm0755 liuqin-power-menu.py $out/libexec/liuqin-power-menu
     substituteInPlace $out/libexec/liuqin-power-menu \
-      --replace-fail '#!/usr/bin/env python3' '#!${python3}/bin/python3'
+      --replace-fail '#!/usr/bin/env python3' '#!${python3}/bin/python3' \
+      --replace-fail '/usr/share/locale' '${gnome-control-center}/share/locale'
+    # No /usr/bin or /usr/sbin on NixOS: the helper must call coreutils'
+    # test(1) by absolute path (it runs via setpriv, not a shell builtin).
+    substituteInPlace $out/libexec/liuqin-power-key-action \
+      --replace-fail '"$test_bin" -S' '"${coreutils}/bin/test" -S'
     runHook postInstall
   '';
-
-  passthru.sessionPath = lib.makeSearchPath "bin" [
-    zenity
-    gnome-session
-  ];
 }

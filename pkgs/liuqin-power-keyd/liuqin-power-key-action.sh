@@ -7,7 +7,8 @@ set -eu
 
 action=${1:-}
 : "${loginctl:?}" "${gdbus:?}" "${gsettings:?}" "${systemctl:?}" \
-	"${systemd_run:?}" "${power_menu:?}" "${setpriv:?}" "${getent:?}"
+	"${systemd_run:?}" "${power_menu:?}" "${setpriv:?}" "${getent:?}" \
+	"${test_bin:?}"
 state_dir=${LIUQIN_STATE_DIR:-/run/liuqin-power-keyd}
 runtime_base=/run/user
 power_schema_dir=${GSETTINGS_SCHEMA_DIR:?}
@@ -37,7 +38,7 @@ home=$(printf '%s\n' "$passwd_entry" | cut -d: -f6)
 case $gid in ''|*[!0-9]*) exit 3 ;; esac
 runtime=$runtime_base/$uid
 "$setpriv" --reuid="$uid" --regid="$gid" --clear-groups -- \
-	/usr/bin/test -S "$runtime/bus" || {
+	"$test_bin" -S "$runtime/bus" || {
 	echo "liuqin-power-key-action: active session has no D-Bus; $action ignored" >&2
 	exit 3
 }

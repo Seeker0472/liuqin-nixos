@@ -42,7 +42,10 @@ in
       WEBKIT_DISABLE_DMABUF_RENDERER = "1";
     };
 
-    environment.systemPackages = [ pkgs.zenity powerSchemas ];
+    # zenity (dialog) and gnome-session (gnome-session-quit) are looked up on
+    # PATH by liuqin-power-menu inside the user session; keep them explicit
+    # here since pkgs/power-keyd.nix no longer carries them in a passthru.
+    environment.systemPackages = [ pkgs.zenity pkgs.gnome-session powerSchemas ];
 
     # The power policy schema (read by liuqin-power-key-action through
     # GSETTINGS_SCHEMA_DIR, set by the service environment below).
@@ -69,6 +72,7 @@ in
         power_menu = "${power-keyd}/libexec/liuqin-power-menu";
         setpriv = "${pkgs.util-linux}/bin/setpriv";
         getent = "${pkgs.getent}/bin/getent";
+        test_bin = "${pkgs.coreutils}/bin/test";
         GSETTINGS_SCHEMA_DIR = "${powerSchemas}/share/gsettings-schemas/liuqin-power/glib-2.0/schemas";
       };
       serviceConfig = {
