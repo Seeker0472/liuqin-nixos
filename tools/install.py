@@ -1,40 +1,56 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Install NixOS boot.img and rootfs onto a Xiaomi Pad 6 Pro (liuqin).
+"""Install the NixOS boot.img and rootfs image onto a Xiaomi Pad 6 Pro
+(liuqin).
 
-Host-side installer running over fastboot. All device-identity checks from
-the downstream installer are kept:
+Host-side installer running over fastboot. The device-identity checks kept
+from the downstream installer are exactly:
 
-  * fastboot product must be "liuqin", device unlocked, slot A active
-  * the optional --serial must match the fastboot device
+  * fastboot product must be "liuqin"
+  * the bootloader must be unlocked
+  * slot A must be the active slot (slots are never switched)
+  * the required --serial must be given and is bound to every fastboot call
   * userdata geometry must be exactly the known 256 GB layout
     (471789528 * 512 bytes as reported by fastboot)
-  * boot.img must fit the boot_a partition
-  * the rootfs tarball checksum is verified before anything is sent
+  * boot.img must fit the reported boot_a partition
+  * the sha256 of --boot and --rootfs is verified before anything is sent
+
+--rootfs is a pre-built ext4 image (flake output .#rootfsImage), flashed
+verbatim with `fastboot flash userdata`. Unlike the downstream RAM-installer
+flow there is no tarball and no on-device untar: the image already carries
+the /etc/liuqin-nixos-root marker the initrd storage guard requires before
+it will mount the root read-write.
 
 Backups of boot_a/boot_b/persist use `fastboot fetch` when the device's
 bootloader supports it; otherwise the installer stops with a clear error
 instead of writing anything.
 
 Usage:
-  liuqin-install --serial SERIAL --boot boot.img --rootfs rootfs.tar.gz \
-      --backup DIR [--write-rootfs]
+  liuqin-install --serial SERIAL --boot boot.img --rootfs rootfs.img \
+      --sha256-boot SUM --sha256-rootfs SUM --backup DIR [--write-rootfs]
 """
 import argparse
 import hashlib
 import re
 import subprocess
 import sys
-import tarfile
 from pathlib import Path
 
 USERDATA_BYTES = 471789528 * 512
 BOOT_A_LIMIT = 192 * 1024 * 1024  # 0x0c000000
+EXT4_MAGIC_OFFSET = 0x438
+EXT4_MAGIC = b"\x53\xef"
 
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def is_ext4_image(path: Path) -> bool:
+    with path.open("rb") as stream:
+        stream.seek(EXT4_MAGIC_OFFSET)
+        return stream.read(2) == EXT4_MAGIC
 
 
 def fastboot(serial, *arguments, timeout=180):
@@ -72,7 +88,8 @@ def main():
     parser.add_argument("--boot", type=Path, required=True,
                         help="boot.img to flash to boot_a")
     parser.add_argument("--rootfs", type=Path, required=True,
-                        help="rootfs tarball written to userdata")
+                        help="pre-built ext4 rootfs image (flake output "
+                             ".#rootfsImage) flashed verbatim to userdata")
     parser.add_argument("--serial", required=True,
                         help="fastboot serial of the target device")
     parser.add_argument("--backup", type=Path, required=True,
@@ -96,9 +113,10 @@ def main():
         parser.error("boot.img checksum mismatch")
     if sha256(args.rootfs) != args.sha256_rootfs:
         parser.error("rootfs checksum mismatch")
-    with tarfile.open(args.rootfs) as tar:
-        if not tar.getmembers():
-            parser.error("rootfs tarball is empty or unreadable")
+    if not is_ext4_image(args.rootfs):
+        parser.error("--rootfs is not an ext4 image; build it with "
+                     "`nix build .#rootfsImage` (no tarballs: there is no "
+                     "on-device untar step in the fastboot-only flow)")
 
     print("Checking fastboot device identity...", flush=True)
     require_var(args.serial, "product", "liuqin")
@@ -125,6 +143,8 @@ def main():
                 f"({error})")
         target.chmod(0o600)
         # A silently truncated fetch must fail here, not after flashing.
+        # Note: this is size equality, weaker than the downstream sha256
+        # record of every fetched partition (see docs/PORTING-NOTES.md).
         expected = partition_size(args.serial, name)
         actual = target.stat().st_size
         if actual != expected:
@@ -139,20 +159,22 @@ def main():
               "erase userdata and install.", flush=True)
         return
 
-    print("Formatting userdata as ext4 with label LIUQIN_ROOT...", flush=True)
-    fastboot(args.serial, "erase", "userdata")
-    fastboot(args.serial, "format:ext4:LIUQIN_ROOT", "userdata", timeout=600)
+    print("Flashing the ext4 rootfs image to userdata "
+          "(overwrites the whole partition)...", flush=True)
+    fastboot(args.serial, "flash", "userdata", str(args.rootfs), timeout=1800)
 
     print("Writing the boot image to boot_a...", flush=True)
     fastboot(args.serial, "flash", "boot_a", str(args.boot))
     fastboot(args.serial, "reboot")
-    print("Installation commands completed. First-boot verification is "
-          "still required.", flush=True)
+    print("Installation commands completed. The rootfs was deployed as a "
+          "pre-built ext4 image carrying the guard marker; the initrd "
+          "storage guard should accept it on first boot. First-boot "
+          "verification is still required.", flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
     except (OSError, RuntimeError, ValueError, KeyError,
-            subprocess.SubprocessError, tarfile.TarError) as error:
+            subprocess.SubprocessError) as error:
         sys.exit("Installation stopped: " + str(error))

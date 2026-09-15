@@ -15,10 +15,13 @@
 let
   cfg = config.hardware.liuqin;
 
-  # The root marker: a real regular file (not an environment.etc symlink)
-  # written onto the rootfs by systemd-tmpfiles at boot. The guard verifies
-  # content, ownership, mode and size, mirroring the downstream init's
-  # marker contract (regular file, 644 root:root, exact sha256).
+  # The root marker: a real regular file (not an environment.etc symlink).
+  # The guard verifies content, ownership, mode and size, mirroring the
+  # downstream init's marker contract (regular file, 644 root:root, exact
+  # sha256). The content is exposed read-only below so packages.rootfsImage
+  # can bake the identical file into the ext4 image at build time — the
+  # guard runs BEFORE /sysroot is mounted, so a marker written only by
+  # stage-2 tmpfiles can never satisfy a fresh install.
   markerContent = "LIUQIN_NIXOS_ROOT_V1\n";
   markerSha256 = builtins.hashString "sha256" markerContent;
 
@@ -62,6 +65,26 @@ let
     [ -n "$label_path" ] || fail "label ${cfg.storage.rootLabel} not found"
     [ "$(readlink -f "$label_path")" = "$dev" ] || fail "label resolves elsewhere"
 
+    # Controlled escape for the freshly-formatted case: label and geometry
+    # check out but the ext4 filesystem is empty (no /nix). That is the
+    # state a plain `fastboot format:ext4` leaves behind; it is unrecoverable
+    # in the initrd (emergencyAccess is false, no shell), so say exactly how
+    # to recover instead of dropping silently into emergency.target.
+    probe=$(mktemp -d)
+    mount -t ext4 -o ro,noload "$dev" "$probe" || fail "read-only probe mount failed"
+    if [ ! -d "$probe/nix" ]; then
+      umount "$probe"; rmdir "$probe"
+      echo "liuqin-storage-guard: userdata is correctly labelled but EMPTY" >&2
+      echo "(freshly formatted, no NixOS rootfs)." >&2
+      echo "Recovery: boot the device into fastboot and re-run the installer:" >&2
+      echo "  liuqin-install --serial SERIAL --boot boot.img \\" >&2
+      echo "    --rootfs rootfs.img --sha256-boot SUM --sha256-rootfs SUM \\" >&2
+      echo "    --backup DIR --write-rootfs" >&2
+      echo "Re-flashing the rootfs image over fastboot is the ONLY recovery" >&2
+      echo "channel; the initrd deliberately provides no shell." >&2
+      fail "empty rootfs: re-flash .#rootfsImage (see docs/PORTING-NOTES.md)"
+    fi
+
     # Lock every sd* node read-only, then verify the lock took. An empty
     # glob is a failure, not proof of safety.
     seen=0
@@ -78,9 +101,8 @@ let
 
     # Probe-mount the root read-only and require the root marker to be a
     # regular file owned 644 root:root whose sha256 matches exactly the
-    # content this system writes (see systemd.tmpfiles below).
-    probe=$(mktemp -d)
-    mount -t ext4 -o ro,noload "$dev" "$probe" || fail "read-only probe mount failed"
+    # content baked into the rootfs image at build time (packages.rootfsImage)
+    # and repaired by systemd-tmpfiles at boot (see systemd.tmpfiles below).
     marker=$probe/etc/liuqin-nixos-root
     marker_ok=0
     if [ -f "$marker" ] && [ ! -L "$marker" ]; then
@@ -94,7 +116,7 @@ let
     fi
     umount "$probe"
     rmdir "$probe"
-    [ "$marker_ok" = 1 ] || fail "root marker missing or invalid (not a liuqin NixOS root?)"
+    [ "$marker_ok" = 1 ] || fail "root marker missing or invalid (not a liuqin NixOS root?; re-flash .#rootfsImage to recover)"
 
     # Unlock the parent disk first: a partition cannot be opened rw while
     # its parent disk is read-only (downstream init:674-682 opens
@@ -117,12 +139,37 @@ let
   '';
 in
 {
+  options.hardware.liuqin.rootMarkerContent = lib.mkOption {
+    type = lib.types.str;
+    default = markerContent;
+    readOnly = true;
+    description = ''
+      Exact content (with trailing newline) of /etc/liuqin-nixos-root, the
+      identity marker the initrd storage guard requires on the rootfs.
+      Read-only: packages.rootfsImage consumes this so the image carries the
+      byte-identical marker the guard verifies.
+    '';
+  };
+
   config = lib.mkIf cfg.enable {
+    # The guard hard-codes /dev/sda35 (immutable GPT geometry checks); a
+    # different rootDevice would silently bypass it. Fail evaluation instead.
+    assertions = [
+      {
+        assertion = cfg.storage.rootDevice == "/dev/disk/by-partlabel/userdata";
+        message = ''
+          hardware.liuqin.storage.rootDevice is "${cfg.storage.rootDevice}",
+          but the initrd storage guard verifies the immutable identity of
+          /dev/sda35 (by-partlabel/userdata) only. Changing the root device
+          is unsupported; keep the default.'';
+      }
+    ];
+
     # The marker the guard requires. environment.etc would place a symlink
     # into /etc; the guard demands a regular file on the rootfs, so
     # systemd-tmpfiles writes it (f+ also repairs a drifted copy on boot).
-    # 0444 would be equally acceptable, but 0644 matches the downstream
-    # marker metadata contract byte for byte.
+    # Fresh installs get the file from the rootfs image itself; tmpfiles is
+    # the drift repair, not the initial provisioning.
     systemd.tmpfiles.rules = [
       "f+ /etc/liuqin-nixos-root 0644 root root - ${markerContent}"
     ];

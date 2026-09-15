@@ -57,6 +57,37 @@
             + "/initrd";
         };
         power-keyd = pkgsArm.liuqinPowerKeyd;
+        # Pre-built ext4 rootfs image of the whole NixOS closure for
+        # `fastboot flash userdata`. This is the fastboot-only replacement
+        # for the downstream RAM-installer rootfs untar: the initrd storage
+        # guard reads /etc/liuqin-nixos-root BEFORE sysroot is mounted, so
+        # the marker must exist in the image from the start (stage-2 tmpfiles
+        # only repairs it afterwards). Built on the host (e2fsprogs is
+        # architecture-independent over an aarch64 closure).
+        rootfsImage = pkgsHost.callPackage (nixpkgs + "/nixos/lib/make-ext4-fs.nix") {
+          storePaths = [
+            self.nixosConfigurations.liuqin.config.system.build.toplevel
+          ];
+          volumeLabel =
+            self.nixosConfigurations.liuqin.config.hardware.liuqin.storage.rootLabel;
+          populateImageCommands = let
+            toplevel = self.nixosConfigurations.liuqin.config.system.build.toplevel;
+            marker =
+              self.nixosConfigurations.liuqin.config.hardware.liuqin.rootMarkerContent;
+          in ''
+            mkdir -p ./files/etc ./files/var ./files/tmp ./files/root ./files/home
+            chmod 0755 ./files/var ./files/home ./files/etc
+            chmod 1777 ./files/tmp
+            chmod 0700 ./files/root
+            # Dereference: environment.etc entries are store symlinks and the
+            # guard requires real regular files on the rootfs.
+            cp -rL ${toplevel}/etc/. ./files/etc/
+            chmod -R u+w ./files/etc
+            printf '%s' '${marker}' > ./files/etc/liuqin-nixos-root
+            chmod 0644 ./files/etc/liuqin-nixos-root
+            ln -s ${toplevel}/init ./files/init
+          '';
+        };
         # Host-side installer; runs on x86_64 against fastboot.
         installer = pkgsHost.writers.writePython3Bin "liuqin-install" {
           libraries = [ ];
