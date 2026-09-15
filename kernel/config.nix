@@ -25,6 +25,9 @@ with kernelLib;
 {
   # --- Core platform: SM8475 / Qualcomm bring-up ---
   ARCH_QCOM = lib.mkForce yes;
+  # TLMM for qcom,sm8475-tlmm (patch 0010); without it every GPIO-backed
+  # peripheral on liuqin defers probe forever.
+  PINCTRL_SM8475 = lib.mkForce yes;
   SCSI_UFS_QCOM = lib.mkForce yes;
   PHY_QCOM_QMP = lib.mkForce yes;
   PHY_QCOM_QMP_UFS = lib.mkForce yes;
