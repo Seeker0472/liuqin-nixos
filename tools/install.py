@@ -10,8 +10,9 @@ from the downstream installer are exactly:
   * the bootloader must be unlocked
   * slot A must be the active slot (slots are never switched)
   * the required --serial must be given and is bound to every fastboot call
-  * userdata geometry must be exactly the known 256 GB layout
-    (471789528 * 512 bytes as reported by fastboot)
+  * the userdata partition size is measured on the unit with fastboot
+    (`getvar partition-size:userdata`); it is capacity-specific (128/256/512
+    GB variants exist) and is never assumed
   * boot.img must carry the ANDROID! magic and fit the reported boot_a
     partition
   * the rootfs image must fit userdata, be an ext4 image, and carry the
@@ -39,7 +40,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-USERDATA_BYTES = 471789528 * 512
 BOOT_A_LIMIT = 192 * 1024 * 1024  # 0x0c000000
 ANDROID_MAGIC_OFFSET = 0
 ANDROID_MAGIC = b"ANDROID!"
@@ -129,10 +129,6 @@ def main():
         parser.error("--backup must be a new directory")
     if args.boot.stat().st_size > BOOT_A_LIMIT:
         parser.error("boot.img exceeds the 192 MiB boot partition")
-    if args.rootfs.stat().st_size > USERDATA_BYTES:
-        parser.error("rootfs image exceeds the userdata partition "
-                     f"({USERDATA_BYTES} bytes); rebuild .#rootfsImage "
-                     "with a smaller closure")
     if not is_android_boot_image(args.boot):
         parser.error("--boot lacks the ANDROID! magic; not a boot.img "
                      "(build it with `nix build .#bootimg-nixos`)")
@@ -154,9 +150,20 @@ def main():
     require_var(args.serial, "unlocked", "yes")
     # Slot A only; never switch slots implicitly.
     require_var(args.serial, "current-slot", "a")
-    if partition_size(args.serial, "userdata") != USERDATA_BYTES:
-        parser.error("unsupported userdata size; only the known 256 GB "
-                     "layout is admitted")
+    # userdata's size is capacity-specific (this tablet ships as 128/256/512
+    # GB), so it is measured on the unit, never assumed. partition_size() has
+    # no default: a device that reports nothing makes it raise, and the
+    # install stops instead of guessing which layout the device has. The
+    # measured number is then the only gate left: a rootfs that does not fit
+    # the partition the device actually reports is refused.
+    userdata_bytes = partition_size(args.serial, "userdata")
+    if userdata_bytes <= 0:
+        parser.error("fastboot reported no usable userdata size; refusing "
+                     "to install onto a layout that cannot be measured")
+    if args.rootfs.stat().st_size > userdata_bytes:
+        parser.error("rootfs image does not fit the measured userdata "
+                     f"partition ({userdata_bytes} bytes); rebuild "
+                     ".#rootfsImage with a smaller closure")
     if args.boot.stat().st_size > partition_size(args.serial, "boot_a"):
         parser.error("boot image exceeds the reported boot partition size")
 

@@ -1,5 +1,13 @@
 # Porting notes: xiaomipad-6pro-mainline -> liuqin-nixos
 
+> **Updated 2026-09-19.** The storage geometry in this document describes the
+> 256 GB variant. The actual unit is 512 GB and was repartitioned on
+> 2026-09-19: userdata is now 263.3 GiB, with a new 200 GiB `linux` partition
+> at its tail. The measurement and the operation are recorded in
+> `liuqin-dualboot/docs/GEOMETRY-2026-09-19.md`; the procedure is
+> `liuqin-dualboot/docs/TESTING.md` phase 5, which requires measuring the unit
+> rather than copying a number. The text below is unchanged.
+
 This repo re-expresses the downstream project's device adaptation in Nix.
 Nothing from the downstream build system is executed; facts and data files
 were extracted and re-encoded. This file records what was inherited, what
