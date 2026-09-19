@@ -56,15 +56,23 @@ else
 	# ABL places it inside the partition cannot be checked from the host), so
 	# make the filesystem here instead, where the partition offset is known,
 	# and verify by mounting what we just made.
-	if [ -x /sbin/mke2fs ]; then
-		echo "--- mke2fs -t ext4 -L LIUQIN_ROOT /dev/sda36 ---"
-		if /sbin/mke2fs -t ext4 -L LIUQIN_ROOT -F -q /dev/sda36; then
+	# busybox already ships this (its mke2fs is the mkfs.ext2 applet, which
+	# makes ext2 - the ext4 driver mounts that happily and resize2fs grows
+	# it); a static e2fsprogs in the archive would provide mke2fs/mkfs.ext4
+	# instead. Take whichever is present.
+	fmt=
+	for c in mke2fs mkfs.ext4 mkfs.ext3 mkfs.ext2; do
+		if command -v "$c" >/dev/null 2>&1; then fmt=$c; break; fi
+	done
+	if [ -n "$fmt" ]; then
+		echo "--- $fmt -F -L LIUQIN_ROOT /dev/sda36 ---"
+		if "$fmt" -F -L LIUQIN_ROOT /dev/sda36; then
 			echo "=== LIUQIN CHECK: format OK ==="
 			sync
 			mkdir -p /mnt
 			if mount -t ext4 -o ro /dev/sda36 /mnt 2>&1; then
 				mount_ok=1
-				echo "=== LIUQIN CHECK: freshly formatted /dev/sda36 mounts (ext4) ==="
+				echo "=== LIUQIN CHECK: freshly formatted /dev/sda36 mounts ==="
 				df -h /mnt 2>/dev/null | tail -2
 				ls -la /mnt | head -6
 				umount /mnt
@@ -72,10 +80,10 @@ else
 				echo "=== LIUQIN CHECK: formatted but still will not mount ==="
 			fi
 		else
-			echo "=== LIUQIN CHECK: mke2fs failed ==="
+			echo "=== LIUQIN CHECK: formatter failed ==="
 		fi
 	else
-		echo "--- no mke2fs in this initramfs, cannot format ---"
+		echo "--- no formatter in this initramfs, cannot format ---"
 	fi
 fi
 echo "--- dmesg tail ---"
