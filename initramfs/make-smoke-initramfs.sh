@@ -28,6 +28,12 @@ staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 mkdir -p "$staging/bin" "$staging/proc" "$staging/sys" "$staging/dev"
 cp "$busybox" "$staging/bin/busybox"
+# The kernel execve()s /init and resolves its interpreter from the initramfs,
+# before any userspace exists: without /bin/sh a "#!/bin/sh" init dies with
+# "Failed to execute /init (error -2)" and panics, and the smoke script never
+# runs a single line. The script's shebang names busybox directly for the same
+# reason; this symlink is what any other #!/bin/sh helper would need.
+ln -s busybox "$staging/bin/sh"
 cp "$init" "$staging/init"
 chmod 0755 "$staging/init" "$staging/bin/busybox"
 

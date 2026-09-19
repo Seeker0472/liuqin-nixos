@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/busybox sh
 # liuqin smoke-test initramfs /init.
 #
 # The device has no wired UART, so the only console is the panel: the kernel
@@ -36,7 +36,9 @@ ls -l /dev/disk/by-partlabel/ 2>/dev/null | head -40
 echo "--- 新 linux 分区（GPT 第 36 项 = /dev/sda36）---"
 blkid /dev/sda36 2>/dev/null || echo "(no blkid, relying on the mount below)"
 mkdir -p /mnt
+mount_ok=0
 if mount -t ext4 -o ro /dev/sda36 /mnt 2>&1; then
+	mount_ok=1
 	echo "=== LIUQIN CHECK: /dev/sda36 挂载成功（合法的 ext4）==="
 	df -h /mnt 2>/dev/null | tail -2
 	echo "--- 根目录内容 ---"
@@ -50,7 +52,19 @@ fi
 echo "--- dmesg tail ---"
 dmesg 2>/dev/null | tail -15
 
-echo "=== holding 60s for a photo, then reboot -f ==="
-sleep 60
-echo "=== rebooting ==="
-reboot -f
+# The result is reported twice over: on the panel for a human, and by
+# behaviour for the host.  There is no UART and no gadget in this userspace, so
+# "did it work" has to be observable from outside without a photo: on success
+# this reboots (the device comes back to ABL and then Android within ~90 s), on
+# failure it holds here and never returns - the absence of the reboot *is* the
+# failure report.
+if [ "$mount_ok" = 1 ]; then
+	echo "=== holding 60s for a photo, then reboot -f ==="
+	sleep 60
+	echo "=== rebooting (mount check passed) ==="
+	reboot -f
+else
+	echo "=== MOUNT CHECK FAILED: holding indefinitely (no reboot) ==="
+	echo "=== the host will see no reboot, which is the failure signal ==="
+	sleep 3600
+fi
