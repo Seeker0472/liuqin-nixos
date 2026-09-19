@@ -12,6 +12,24 @@
 # aarch64 busybox into a cpio.gz) and a boot.img that carries it as its ramdisk.
 export PATH=/bin
 /bin/busybox --install -s /bin 2>/dev/null
+
+# Unmissable marker, printed before anything that can hang.
+#
+# The panel only ever shows kernel output on this board (DEBUGGING.md section
+# 10: simplefb is blacklisted so fbcon has no framebuffer, and the drm_log
+# client waits on a display stack that never finishes probing), so silence from
+# this init has two completely different meanings: "the init did not run" or
+# "it ran and nothing can be seen". Thirty identical lines make that readable:
+# if they appear, the console works and whatever is missing afterwards is the
+# step that hung; if they never appear, userspace has no console at all and the
+# only way forward is another channel (USB CDC-ACM, or leaving simplefb alone
+# so tty0 gets fbcon).
+i=0
+while [ "$i" -lt 30 ]; do
+	echo "=============== LIUQIN SMOKE INIT IS RUNNING ($i) ==============="
+	i=$((i + 1))
+done
+echo "--- kernel $(uname -r), PID 1 alive, starting checks ---"
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
@@ -95,13 +113,25 @@ dmesg 2>/dev/null | tail -15
 # this reboots (the device comes back to ABL and then Android within ~90 s), on
 # failure it holds here and never returns - the absence of the reboot *is* the
 # failure report.
+# The result is shouted, not stated: on a panel where userspace output may not
+# appear at all, one line and thirty lines are very different amounts of
+# evidence, and a missing burst is itself the answer.
 if [ "$mount_ok" = 1 ]; then
+	i=0
+	while [ "$i" -lt 20 ]; do
+		echo "############ LIUQIN CHECK PASSED: sda36 IS A MOUNTABLE EXT4 ############"
+		i=$((i + 1))
+	done
 	echo "=== holding 60s for a photo, then reboot -f ==="
 	sleep 60
 	echo "=== rebooting (mount check passed) ==="
 	reboot -f
 else
-	echo "=== MOUNT CHECK FAILED: holding indefinitely (no reboot) ==="
-	echo "=== the host will see no reboot, which is the failure signal ==="
+	i=0
+	while [ "$i" -lt 20 ]; do
+		echo "!!!!!!!!!!!! LIUQIN CHECK FAILED (mount_ok=$mount_ok) !!!!!!!!!!!!"
+		i=$((i + 1))
+	done
+	echo "=== holding indefinitely (no reboot); that absence is the signal ==="
 	sleep 3600
 fi
