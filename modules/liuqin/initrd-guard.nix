@@ -1,9 +1,15 @@
 # SPDX-License-Identifier: MIT
 #
 # Initrd storage guard for liuqin: the persistent root is only ever opened
-# after the userdata partition passes an immutable identity check (GPT
-# geometry, PARTNAME, filesystem label), and every other sd* node is forced
-# read-only before the root device is opened rw.
+# after the configured root partition passes an identity check (it must be
+# the partition its PARTNAME and filesystem label claim), and every other sd*
+# node is forced read-only before the root device is opened rw.
+#
+# Everything about the root device is derived at runtime from
+# hardware.liuqin.storage.rootDevice: the partition node, the partlabel name
+# matched against the partition's uevent and the parent disk (via sysfs). No
+# partition number, start or size is baked in — those differ per capacity
+# variant (256 GB vs 512 GB) and per layout.
 #
 # This is the declarative equivalent of the downstream 1216-line busybox
 # init's storage section: same checks, same fail-closed behavior, expressed
@@ -14,6 +20,16 @@
 
 let
   cfg = config.hardware.liuqin;
+
+  # hardware.liuqin.storage.rootDevice is a /dev/disk/by-partlabel/<name>
+  # path; the guard takes the partition name from its last component at
+  # runtime and matches it against the partition's uevent. That only means
+  # something for exactly that path shape, so anything else is rejected at
+  # evaluation time instead of failing later inside the initrd.
+  partName = lib.removePrefix "/dev/disk/by-partlabel/" cfg.storage.rootDevice;
+  partNameOk =
+    lib.hasPrefix "/dev/disk/by-partlabel/" cfg.storage.rootDevice
+    && builtins.match "[^/\n]+" partName != null;
 
   # The root marker: a real regular file (not an environment.etc symlink).
   # The guard verifies content, ownership, mode and size, mirroring the
@@ -65,9 +81,11 @@ let
       gnugrep
     ])}
 
-    dev=/dev/sda35
-    parent=/dev/sda
-    sys=/sys/block/sda
+    # The configured root device; the partition node, its partlabel name and
+    # its parent disk are all derived from it below.
+    root=${cfg.storage.rootDevice}
+    part=$(basename "$root")
+    dev=$(readlink -f "$root" 2>/dev/null || true)
 
     fail() {
       echo "liuqin-storage-guard: $*" >&2
@@ -78,34 +96,38 @@ let
       exit 1
     }
 
-    [ -b "$parent" ] || fail "sda is absent"
-    [ -b "$dev" ] || fail "sda35 is absent"
-    [ "$(readlink -f "$parent")" = "$parent" ] || fail "sda is a symlink"
-    [ "$(readlink -f "$dev")" = "$dev" ] || fail "sda35 is a symlink"
+    [ -b "$dev" ] || fail "root device $root is absent"
+    [ "$(readlink -f "$dev")" = "$dev" ] || fail "$dev is a symlink"
 
-    # Immutable GPT geometry of the stock 256 GB layout.
-    [ "$(cat "$sys/size")" = 493854720 ] || fail "sda size"
-    [ "$(cat "$sys/queue/logical_block_size")" = 4096 ] || fail "sda logical block size"
-    [ "$(cat "$sys/sda35/partition")" = 35 ] || fail "sda35 partition number"
-    [ "$(cat "$sys/sda35/start")" = 22065152 ] || fail "sda35 start"
-    [ "$(cat "$sys/sda35/size")" = 471789528 ] || fail "sda35 size"
-    grep -qx 'PARTNAME=userdata' "$sys/sda35/uevent" || fail "sda35 PARTNAME"
+    # sysfs identity: /sys/class/block/<node> resolves to the kernel
+    # directory <...>/block/<disk>/<node>, whose parent names the disk and
+    # whose 'partition' attribute exists only for a partition. Geometry is
+    # deliberately not checked: partition numbers, start and size differ per
+    # capacity variant and per layout.
+    sys=$(readlink -f "/sys/class/block/$(basename "$dev")" 2>/dev/null || true)
+    [ -n "$sys" ] || fail "no sysfs entry for $dev"
+    [ -e "$sys/partition" ] || fail "$dev is not a partition"
+    parent=/dev/$(basename "$(dirname "$sys")")
+    [ -b "$parent" ] || fail "parent disk of $dev ($parent) is absent"
+    [ "$(readlink -f "$parent")" = "$parent" ] || fail "$parent is a symlink"
+
+    grep -qxF "PARTNAME=$part" "$sys/uevent" || fail "$dev PARTNAME is not $part"
 
     # The label must resolve to exactly this partition.
     label_path=$(findfs LABEL=${cfg.storage.rootLabel} 2>/dev/null || true)
     [ -n "$label_path" ] || fail "label ${cfg.storage.rootLabel} not found"
     [ "$(readlink -f "$label_path")" = "$dev" ] || fail "label resolves elsewhere"
 
-    # Controlled escape for the freshly-formatted case: label and geometry
-    # check out but the ext4 filesystem is empty (no /nix). That is the
-    # state a plain `fastboot format:ext4` leaves behind; it is unrecoverable
+    # Controlled escape for the freshly-formatted case: the label checks out
+    # but the ext4 filesystem is empty (no /nix). That is the state a plain
+    # `fastboot format:ext4` leaves behind; it is unrecoverable
     # in the initrd (emergencyAccess is false, no shell), so say exactly how
     # to recover instead of dropping silently into emergency.target.
     probe=$(mktemp -d)
     mount -t ext4 -o ro,noload "$dev" "$probe" || fail "read-only probe mount failed"
     if [ ! -d "$probe/nix" ]; then
       umount "$probe"; rmdir "$probe"
-      echo "liuqin-storage-guard: userdata is correctly labelled but EMPTY" >&2
+      echo "liuqin-storage-guard: $part is correctly labelled but EMPTY" >&2
       echo "(freshly formatted, no NixOS rootfs)." >&2
       echo "Recovery: boot the device into fastboot and re-run the installer:" >&2
       echo "  liuqin-install --serial SERIAL --boot boot.img \\" >&2
@@ -153,20 +175,20 @@ let
     # its parent disk is read-only (downstream init:674-682 opens
     # parent, then target, in that order).
     blockdev --setrw "$parent"
-    [ "$(blockdev --getro "$parent")" = 0 ] || fail "could not re-enable rw on sda"
+    [ "$(blockdev --getro "$parent")" = 0 ] || fail "could not re-enable rw on $parent"
     blockdev --setrw "$dev"
-    [ "$(blockdev --getro "$dev")" = 0 ] || fail "could not re-enable rw on sda35"
+    [ "$(blockdev --getro "$dev")" = 0 ] || fail "could not re-enable rw on $dev"
 
     # Reassert read-only on every sibling partition after the unlock: the
     # parent disk rw must not widen any other partition's window.
-    for node in /dev/sda[0-9]*; do
+    for node in /dev/$(basename "$parent")[0-9]*; do
       [ -b "$node" ] || continue
       [ "$node" = "$dev" ] && continue
       blockdev --setro "$node"
       [ "$(blockdev --getro "$node")" = 1 ] || fail "read-only reassert failed on $node"
     done
 
-    echo "liuqin-storage-guard: sda35 identity verified; only sda35 is writable"
+    echo "liuqin-storage-guard: $dev ($part) identity verified; only $dev is writable"
   '';
 in
 {
@@ -195,16 +217,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # The guard hard-codes /dev/sda35 (immutable GPT geometry checks); a
-    # different rootDevice would silently bypass it. Fail evaluation instead.
+    # The guard resolves /dev/disk/by-partlabel/<name> at runtime, so the
+    # root device must have exactly that shape; anything else would derive a
+    # bogus partition name and bypass the identity check.
     assertions = [
       {
-        assertion = cfg.storage.rootDevice == "/dev/disk/by-partlabel/userdata";
+        assertion = partNameOk;
         message = ''
           hardware.liuqin.storage.rootDevice is "${cfg.storage.rootDevice}",
-          but the initrd storage guard verifies the immutable identity of
-          /dev/sda35 (by-partlabel/userdata) only. Changing the root device
-          is unsupported; keep the default.'';
+          but the initrd storage guard derives the partition name and its
+          parent disk from a /dev/disk/by-partlabel/<name> path.
+          Set it to e.g. "/dev/disk/by-partlabel/userdata".'';
       }
     ];
 
