@@ -134,13 +134,14 @@ That phandle is never dereferenced: ABL resolves its overlay fixups
 through the __symbols__ string table (label -> node path) only, and never
 walks the sink node. Semantic difference from downstream abl-symbols.py:
 labels the base DTB already exports keep pointing at their real nodes in
-the nix build (1302 of them on the current 7.2.5 DTB), while the
-downstream tool points every symbol at the sink. This is safe because the
-symbol table only tells ABL *where* each label lives; pointing a label at
-its true node is strictly more accurate than pointing it at a sink, and
-the runtime Gunyah RM DTBO only needs its fixups to resolve, not to find
-meaningful content behind them. The final DTB asserts every one of the
-1469 union symbols resolves.
+the nix build, while the downstream tool points every symbol at the sink.
+This is safe because the symbol table only tells ABL *where* each label
+lives; pointing a label at its true node is strictly more accurate than
+pointing it at a sink, and the runtime Gunyah RM DTBO only needs its
+fixups to resolve, not to find meaningful content behind them. The final
+DTB carries 2139 __symbols__ entries (570 pointing at their real node,
+1569 at the sink) and the build asserts every one of the 1744 union
+symbols resolves.
 
 ## Proprietary payload inputs (not redistributable)
 
@@ -166,13 +167,17 @@ own stock dump as described below.
   qcom/gmu_gen70000.bin, updates/ath11k/WCN6855/hw2.{0,1}/amss.bin,
   qcom/vpu/vpu20_4v.mbn, qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin,
   regulatory.db{,.p7s}.
-* pkgs/bootimg.nix: stock DTBO entries (38 files) + the stock base DTB
-  (1 file) from liuqin-audit/evidence/dtbo, vendored at
+* pkgs/bootimg.nix: stock DTBO entries (38 files, from
+  liuqin-audit/evidence/dtbo) + all 11 base DTBs of
+  liuqin_images_*/images/vendor_boot.img's DTB table, vendored at
   data/stock-{dtbo-entries,base-dtbs}.tar.zst and imported with
-  `builtins.path` (operator's own device dump; do not publish), for the
-  __symbols__ union
-  (exactly 1469 symbols; the downstream 44/14/1781 numbers come from the
-  larger OS2.0.6.0.VMYCNXM analysis tree). The boot header cmdline is
+  `builtins.path` (operator's own dump; do not publish), for the
+  __symbols__ union (exactly 1744 symbols). The base set must stay
+  complete: a single base DTB exports 1451 labels, which collapses the
+  union to 1469 - 275 labels short of what ABL's forced stock DTBO overlay
+  may reference, and ABL aborts on the first fixup it cannot resolve. The
+  downstream 44/14/1781 numbers come from the larger OS2.0.6.0.VMYCNXM
+  analysis tree. The boot header cmdline is
   deliberately empty (downstream native build does the same; the kernel
   reads /chosen/bootargs from the DT, ABL appends its own), and the DT
   bootargs match the downstream product default: earlycon=simplefb stays

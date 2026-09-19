@@ -98,7 +98,7 @@ Adjustments for v7.2.5:
  # These Sparc drivers have to appear before others such as 8250
 --- a/drivers/tty/serial/earlycon-simplefb.c
 +++ b/drivers/tty/serial/earlycon-simplefb.c
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,368 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Early console on a bootloader-provided framebuffer described in the DT.
@@ -127,12 +127,13 @@ Adjustments for v7.2.5:
 + *
 + * Adapted from drivers/firmware/efi/earlycon.c, which does the same job from
 + * screen_info. It scrolls the whole framebuffer up one text line at a time;
-+ * this one instead wipes and restarts from the top once it reaches the bottom.
-+ * Scrolling reads back write-combining memory, which is slow enough on a
-+ * 1800x2880x32 panel (20 MiB a line) to look like the hang we came to debug.
-+ * Wrapping costs one clear per screenful, and the screen still ends up holding
-+ * the most recent lines, with the last one written being where the kernel got
-+ * stuck.
++ * this one instead restarts at the top once it reaches the bottom, wiping each
++ * line as it reuses it. Scrolling reads back write-combining memory, which is
++ * slow enough on a 1800x2880x32 panel (a whole-screen move per text line) to
++ * look like the hang we came to debug, and wiping the screen on every wrap
++ * destroys the log tail exactly when the kernel stops printing in it. Reusing
++ * lines costs one line-wipe per line and keeps the most recent screenful on
++ * screen, with the last line written being where the kernel got stuck.
 + */
 +
 +#include <linux/console.h>
@@ -257,12 +258,20 @@ Adjustments for v7.2.5:
 +	}
 +}
 +
-+/* Start over at the top rather than scrolling; see the file comment. */
++/*
++ * Start over at the top without clearing and without scrolling: a scroll
++ * reads back 20 MiB of write-combining memory per text line, and clearing
++ * throws away the very log tail we are booting to read (the kernel usually
++ * stops printing just after a wrap). Each line is wiped as its first
++ * character is written instead, so the screen always holds the most recent
++ * screenful and the cursor ends up sitting on the line the kernel got stuck
++ * in.
++ */
 +static bool simplefb_wrap(void)
 +{
 +	cur_x = 0;
 +	cur_y = 0;
-+	return simplefb_clear_lines(0, fb_height);
++	return true;
 +}
 +
 +static void simplefb_earlycon_write(struct console *con, const char *str,
@@ -274,6 +283,10 @@ Adjustments for v7.2.5:
 +	while (num) {
 +		unsigned int linemax = (fb_width - cur_x) / font->width;
 +		unsigned int h, count;
++
++		/* wipe the line we are about to reuse so no stale glyphs remain */
++		if (!cur_x && !simplefb_clear_lines(cur_y, font->height))
++			return;
 +
 +		/*
 +		 * memchr, not strnchrnul: the latter also stops on a NUL, and

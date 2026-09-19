@@ -40,6 +40,8 @@ modules/liuqin/
   hardware.nix       backlight/audio/WLAN/BT/sensors/Gunyah containment units
   gnome.nix          GNOME desktop policy (power-keyd, dconf, logind, dmabuf)
 config/example.nix   minimal GNOME configuration (nixosConfigurations.liuqin)
+initramfs/           smoke-test PID 1 (busybox) + the script that packs it into
+                     the cpio.gz bootimg.nix takes as `ramdisk`
 dts/                 liuqin-abl-boot-overlay.dts (ABL board metadata overlay)
 data/                UCM2 files, sensors patches, GSettings schema
 tools/install.py     host-side fastboot installer (Python 3)
@@ -55,6 +57,12 @@ rootfs image with nixpkgs' make-ext4-fs.
 linux-7.2.5.tar.xz (fetchurl, hashed)
    + patches/kernel/0001..0010      -- linuxManualConfig (kernel/)
    -> pkgs.liuqinKernel             -- Image, modules, dtbs/qcom/sm8475-xiaomi-liuqin.dtb
+      ^ the display recipe (kernel/liuqin-firstboot.config = the downstream
+        liuqin-firstboot fragment verbatim + the patch-introduced symbols) is
+        applied by the postConfigure hook in kernel/default.nix: appended to the
+        generated .config and re-resolved with "make ARCH=arm64 O=$buildRoot
+        olddefconfig", then asserted to be =y.  nixpkgs' own channels cannot
+        carry it - see BRINGUP-LOG 53.9/53.10/53.16 in the U-Boot repo.
 
 sm8475-xiaomi-liuqin.dtb
    + dts/liuqin-abl-boot-overlay.dts        (dtc -@ + fdtoverlay)
@@ -188,4 +196,17 @@ with the installer.
   used for every nixpkgs kernel.
 * `storage.layout = "custom"` (root in a userdata subpartition) is a
   reserved option that currently fails evaluation with a clear message.
+* **On-device bring-up is tracked in the U-Boot repository**
+  (`liuqin-dualboot/docs/BRINGUP-LOG.md`; §53 is the current record): the kernel
+  boots under ABL's `fastboot boot` and reaches a busybox userspace; the display
+  needs `initcall_blacklist=...,arm_smmu_init,disp_cc_sm8450_driver_init` until
+  userspace owns the panel (those two drivers reconfigure the display hardware
+  ABL is still using, which is what made the screen go white mid-boot); and
+  there is no rootfs yet, so without a ramdisk the kernel panics at
+  `mount_root`.  `initramfs/` holds the smoke-test PID 1 used for that.
+* **`tools/install.py` cannot run on this device as written**: its pre-flash
+  backup uses `fastboot fetch`, which the device's fastboot does not implement
+  (measured on the U-Boot side; the ABL side is untested), so it stops before
+  writing anything.  It also targets `boot_a` + `userdata`, i.e. it would
+  overwrite stock Android and erase /data.
 

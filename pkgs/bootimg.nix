@@ -120,19 +120,22 @@ stdenvNoCC.mkDerivation {
     count=$(wc -l < symbols.sorted)
     echo "symbols exported: $count"
     # Exact contract, like the downstream --expect-symbols: the union of
-    # every label exported by the 38 stock DTBO entries plus the single
-    # stock base DTB (liuqin-audit/evidence/dtbo) is exactly 1469 symbols.
-    test "$count" = 1469
+    # every label the 38 stock DTBO entries reference (__fixups__) plus
+    # every label the 11 stock base DTBs export (__symbols__) is exactly
+    # 1744 symbols. It must stay a superset of what the downstream
+    # extraction yields (44 entries / 14 base DTBs from the OS2.0.6.0
+    # analysis tree, 1781 labels) because ABL force-applies the stock DTBO
+    # overlay and aborts on the first fixup it cannot resolve. 1469 was the
+    # single-base-DTB set: short by 275 labels (apsscc, BIG_CPU_OFF,
+    # ap2mdm_active, cdsp_cvp_mem, ...).
+    test "$count" = 1744
 
-    # Input-count assertions, mirroring build-bootimg.sh:107-118. The
-    # downstream hard count is 44 DTBO entries / 14 base DTBs from the
-    # OS2.0.6.0.VMYCNXM analysis tree (vendor_boot dtb-*.dtb). Our
-    # fixed-input archives come from liuqin-audit/evidence/dtbo: 38 DTBO
-    # entries plus the single stock base DTB, a smaller set than the
-    # downstream extraction. Assert what this build actually consumes so a
-    # silently truncated archive fails here.
+    # Input-count assertions, mirroring build-bootimg.sh:107-118. Assert
+    # what this build actually consumes so a silently truncated archive
+    # fails here. The base set is all 11 entries of the stock vendor_boot
+    # DTB table (the ABL-selectable set), not just one.
     test "$(find "$stockDtboDir" -maxdepth 1 -name 'entry.*.dtb' | wc -l)" = 38
-    test "$(find "$stockDtbDir" -maxdepth 1 -name 'dtb-*.dtb' | wc -l)" = 1
+    test "$(find "$stockDtbDir" -maxdepth 1 -name 'dtb-*.dtb' | wc -l)" = 11
     echo "stock dtbo entries: $(ls $stockDtboDir | wc -l), base dtbs: $(ls $stockDtbDir | wc -l)"
 
 

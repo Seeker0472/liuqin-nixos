@@ -2683,7 +2683,7 @@ new file mode 100644
 new file mode 100644
 --- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx_fw_update.c
-@@ -0,0 +1,953 @@
+@@ -0,0 +1,954 @@
 +/*
 + * Copyright (C) 2010 - 2022 Novatek, Inc.
 + *

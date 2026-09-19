@@ -31,4 +31,25 @@
 			xiaomi,miboard-id = <0x10 0>;
 		};
 	};
+
+	/*
+	 * ABL force-applies the stock DTBO overlays, and those carry their own
+	 * ramoops@a7000000.  With ours also present the kernel sees two
+	 * available reserved-memory nodes at the same address and reports
+	 * "OVERLAP DETECTED", which makes the region unusable and leaves a
+	 * permanent warning in every boot log.  Disable our copy; ABL's is the
+	 * one that stays.
+	 *
+	 * Note: pstore is not a usable log channel on this unit either way -
+	 * 0xa7000000 is unreachable from a kernel booted this way, which is the
+	 * same fault that killed the stock kernel in its ramoops probe
+	 * (BRINGUP-LOG 49.6, 53.14).  The kernel log is read off the screen.
+	 */
+	fragment@1 {
+		target-path = "/reserved-memory/ramoops@a7000000";
+
+		__overlay__ {
+			status = "disabled";
+		};
+	};
 };

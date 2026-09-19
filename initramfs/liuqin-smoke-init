@@ -1,0 +1,40 @@
+#!/bin/sh
+# liuqin smoke-test initramfs /init.
+#
+# The device has no wired UART, so the only console is the panel: the kernel
+# paints earlycon output into ABL's framebuffer and, once the DRM log client is
+# up, onto the panel itself (BRINGUP-LOG 53.15).  This script runs as PID 1
+# from an initramfs, prints the facts that are otherwise unreadable, waits long
+# enough for a photo, then reboots - so the whole "boot -> look -> come back"
+# cycle needs no button press on either boot path.
+#
+# Pairs with ../initramfs/make-smoke-initramfs.sh (packs this plus a static
+# aarch64 busybox into a cpio.gz) and a boot.img that carries it as its ramdisk.
+export PATH=/bin
+/bin/busybox --install -s /bin 2>/dev/null
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+
+echo "=== liuqin: userspace UP (kernel $(uname -r)) ==="
+echo "--- /proc/version ---"
+cat /proc/version
+echo "--- /proc/partitions ---"
+cat /proc/partitions
+echo "--- block devices ---"
+ls -l /dev/sd* /dev/mmcblk* 2>/dev/null | head -20
+echo "--- /sys/class/drm (connectors) ---"
+for s in /sys/class/drm/card*/card*/status; do
+	[ -f "$s" ] && echo "$s = $(cat "$s")"
+done
+echo "--- /sys/class/backlight ---"
+ls /sys/class/backlight/ 2>/dev/null
+echo "--- firmware tree ---"
+ls /lib/firmware 2>/dev/null | head
+echo "--- dmesg tail ---"
+dmesg 2>/dev/null | tail -15
+
+echo "=== holding 60s for a photo, then reboot -f ==="
+sleep 60
+echo "=== rebooting ==="
+reboot -f

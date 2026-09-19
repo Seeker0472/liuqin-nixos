@@ -62,6 +62,51 @@ in
   ignoreConfigErrors = true;
   defconfig = "defconfig"; # ARCH=arm64 defconfig
 }).overrideAttrs (old: {
+  # Feed the downstream display recipe in where it can actually take effect.
+  #
+  # This hook deliberately OVERRIDES the =module choices that ./config.nix
+  # still carries from the original "everything is a module, loaded from the
+  # initrd/rootfs" design.  That is the one place where this derivation has two
+  # sources of truth, and it is on purpose: config.nix stays the record of what
+  # the flake wants for a normal (rootfs-bearing) deployment, while the recipe
+  # below is the port's bring-up set for this device as it actually boots today.
+  #
+  # nixpkgs' own channels were tried and provably cannot express it (53.9/53.10
+  # for the generator's line checks, 53.16 for why the idiomatic translation
+  # still dies): structuredExtraConfig is a single pass of answers to Kconfig
+  # prompts, so an answer that depends on another symbol being lifted first is
+  # rejected - "BT" is asked before "RFKILL" (Kconfig walks files in order), so
+  # BT=y is not even offered ("ALTS: M/n/?") and the repeated-question guard
+  # aborts with "Error in reading or end of file".  Writing the recipe into
+  # .config and re-resolving lets the kernel solve the whole set at once, which
+  # is exactly what the downstream build script does with "make oldconfig".
+  #
+  # The assertion at the end is not decoration: 'grep -E "^CONFIG_X="' also
+  # matches =m, which is how a silent downgrade once shipped as "built in".
+  # (nixpkgs' other channel, extraConfig, goes through that same one-pass
+  # answer mechanism, so it cannot carry this recipe either.)  That the recipe
+  # works at all was established by hand on the host: "make ARCH=arm64
+  # oldconfig" against this kernel yields DRM_MSM=y, SM_GPUCC_8450=y,
+  # SND/SND_SOC=y, QCOM_OCMEM/LLCC=y.
+  postConfigure = (old.postConfigure or "") + ''
+    echo "postConfigure: appending the downstream kernel config recipe"
+    : "''${buildRoot:=build}"
+    cat ${./liuqin-firstboot.config} >> "$buildRoot/.config"
+    make ARCH=arm64 O="$buildRoot" olddefconfig
+    # Must be =y, not merely present: '^CONFIG_X=' also matches '=m', and
+    # olddefconfig silently downgrades to =m when a dependency is still a
+    # module - which is exactly what happened and left the display drivers
+    # unloadable (BRINGUP-LOG 53.13).
+    for sym in DRM DRM_MSM DRM_PANEL_NOVATEK_NT36532 SM_GPUCC_8450 SM_DISPCC_8450 \
+               BACKLIGHT_CLASS_DEVICE BACKLIGHT_KTZ8866 FB_SIMPLE \
+               DRM_CLIENT_LOG DRM_CLIENT_DEFAULT_LOG; do
+      grep -qx "CONFIG_$sym=y" "$buildRoot/.config" || {
+        echo "error: CONFIG_$sym is not =y in the final .config:" >&2
+        grep -E "^CONFIG_$sym=|^# CONFIG_$sym is not set" "$buildRoot/.config" >&2 || echo "  (absent)" >&2
+        exit 1
+      }
+    done
+  '';
   # firmware_class.path=/var/lib/firmware (boot.kernelParams) only works when
   # the kernel was built with the fw_path_para command-line parameter; assert
   # the symbol string survived into vmlinux so a config regression fails the
@@ -72,5 +117,10 @@ in
       echo "error: vmlinux lacks fw_path_para; firmware_class.path would be a no-op" >&2
       exit 1
     }
+  '';
+  # Ship the *final* .config so the recipe can be diffed against the upstream
+  # port's fragments instead of inferred from the build log.
+  postInstall = (old.postInstall or "") + ''
+    cp "$buildRoot/.config" "$out/kernel-config-final"
   '';
 })
