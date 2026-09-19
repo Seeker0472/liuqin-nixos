@@ -67,6 +67,8 @@ elif mount -t ext4 -o ro /dev/sda36 /mnt 2>&1; then
 	echo "=== LIUQIN CHECK: /dev/sda36 mounted read-only (a valid ext4) ==="
 	df -h /mnt 2>/dev/null | tail -2
 	ls -la /mnt | head -12
+	echo "--- label (blkid) ---"
+	blkid /dev/sda36 2>&1 | head -2
 	umount /mnt
 else
 	echo "=== LIUQIN CHECK: /dev/sda36 does not mount as ext4 ==="
