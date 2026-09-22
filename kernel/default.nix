@@ -99,7 +99,7 @@ in
     # unloadable (BRINGUP-LOG 53.13).
     for sym in DRM DRM_MSM DRM_PANEL_NOVATEK_NT36532 SM_GPUCC_8450 SM_DISPCC_8450 \
                BACKLIGHT_CLASS_DEVICE BACKLIGHT_KTZ8866 FB_SIMPLE \
-               DRM_CLIENT_LOG DRM_CLIENT_DEFAULT_LOG; do
+               DRM_CLIENT_LOG DRM_CLIENT_DEFAULT_LOG BOOTLOG_CONSOLE; do
       grep -qx "CONFIG_$sym=y" "$buildRoot/.config" || {
         echo "error: CONFIG_$sym is not =y in the final .config:" >&2
         grep -E "^CONFIG_$sym=|^# CONFIG_$sym is not set" "$buildRoot/.config" >&2 || echo "  (absent)" >&2

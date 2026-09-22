@@ -127,6 +127,10 @@ with kernelLib;
   HID_GENERIC = lib.mkForce yes;
 
   USB = lib.mkForce yes;
+  # The tablet's DWC3 controller is dual-role, but the smoke initramfs needs
+  # its peripheral gadget engine selected in the kernel (there is no module
+  # loader before the control channel comes up).
+  USB_DWC3_GADGET = lib.mkForce yes;
 
   # BT_RFCOMM_TTY is asked as a bool under BT_RFCOMM=m; answering y makes
   # kconfig re-ask the parent tree and generate-config.pl dies. Keep it off.
@@ -151,6 +155,12 @@ with kernelLib;
   # matching kernel param earlycon=simplefb is debug-gated in the NixOS
   # module.
   SERIAL_EARLYCON_SIMPLEFB = lib.mkForce yes;
+
+  # The log channel that does not need a camera: patch 0011 registers a console
+  # that keeps everything printk writes in a DRAM ring (persistent_ram layout)
+  # and cleans each line out of the caches, so a boot that dies still leaves its
+  # log behind for U-Boot's liuqin_rdump to collect. Param: bootlog=<addr>,<size>.
+  BOOTLOG_CONSOLE = lib.mkForce yes;
 
   # Pstore (mtdoops/hung-task diagnostics come from the debug cmdline).
   PSTORE = lib.mkForce yes;
@@ -201,7 +211,11 @@ with kernelLib;
   SQUASHFS_XZ = lib.mkForce yes;
   SQUASHFS_ZSTD = lib.mkForce yes;
   SQUASHFS_LZO = lib.mkForce yes;
-  USB_CONFIGFS = lib.mkForce module;
+  # This selects libcomposite and the gadget functions. The platform's DWC3
+  # peripheral controller is already built in by arm64 defconfig/downstream
+  # firstboot config; answering its dependency tree again makes nixpkgs'
+  # generate-config dialogue diverge.
+  USB_CONFIGFS = lib.mkForce yes;
   USB_CONFIGFS_NCM = lib.mkForce yes;
   USB_CONFIGFS_ECM = lib.mkForce yes;
 

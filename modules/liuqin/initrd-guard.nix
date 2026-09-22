@@ -71,6 +71,7 @@ let
     touch $out
   '';
   markerCheck = mkMarkerCheck pkgs;
+  installTarget = if cfg.storage.layout == "linux-partition" then "linux" else "userdata";
 
   guardScript = pkgs.writeShellScript "liuqin-storage-guard" ''
     set -eu
@@ -129,10 +130,12 @@ let
       umount "$probe"; rmdir "$probe"
       echo "liuqin-storage-guard: $part is correctly labelled but EMPTY" >&2
       echo "(freshly formatted, no NixOS rootfs)." >&2
-      echo "Recovery: boot the device into fastboot and re-run the installer:" >&2
-      echo "  liuqin-install --serial SERIAL --boot boot.img \\" >&2
-      echo "    --rootfs rootfs.img --sha256-boot SUM --sha256-rootfs SUM \\" >&2
-      echo "    --backup DIR --write-rootfs" >&2
+      echo "Recovery: run the host installer for target ${installTarget}:" >&2
+      echo "  liuqin-install --serial SERIAL --target ${installTarget} \\" >&2
+      echo "    --rootfs rootfs.img --sha256-rootfs SUM --write-rootfs" >&2
+      ${lib.optionalString (cfg.storage.layout == "whole-userdata") ''
+      echo "    --boot boot.img --sha256-boot SUM --backup DIR" >&2
+      ''}
       echo "Re-flashing the rootfs image over fastboot is the ONLY recovery" >&2
       echo "channel; the initrd deliberately provides no shell." >&2
       fail "empty rootfs: re-flash .#rootfsImage (see docs/PORTING-NOTES.md)"

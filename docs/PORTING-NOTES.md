@@ -54,7 +54,7 @@ Ten patches, applied in filename order on linux 7.2.5:
 | tools/lib/abl-symbols.py (__symbols__ union, sink node) | pkgs/bootimg.nix: same decode/splice/recompile with dtc text round-trip, plus an fdtoverlay-compatible __symbols__ overlay; verified with dtc 1.7.2 that fdtoverlay preserves __symbols__. No Python in the build. |
 | device/liuqin-abl-boot-overlay.dts | dts/liuqin-abl-boot-overlay.dts (verbatim, GPL) |
 | device/native-bootargs.txt | boot.kernelParams defaults in modules/liuqin/default.nix; debug flags gated behind hardware.liuqin.boot.debug (default off) |
-| initramfs/init storage identity check (1216-line shell) | modules/liuqin/initrd-guard.nix: one systemd initrd oneshot with the same geometry/label checks (sda 493854720 512-byte sectors, sda35 start 22065152 size 471789528, PARTNAME=userdata, LIUQIN_ROOT label, read-only lock of all other sd* nodes, ro,noload probe mount, root marker) |
+| initramfs/init storage identity check (1216-line shell) | modules/liuqin/initrd-guard.nix: one systemd initrd oneshot with the same runtime label/identity checks, `ro,noload` probe mount, root marker, and read-only lock of all other UFS nodes; capacity-specific sector geometry is deliberately measured on the unit rather than embedded here |
 | liuqin-hide-gunyah-node.service | hardware.nix systemd unit (bind-mount empty dir over /sys/firmware/devicetree/base/hypervisor) |
 | logind.conf.d/90-liuqin.conf | services.logind.settings.Login (HandlePowerKey/LongPress = ignore) |
 | device/power-key/liuqin-power-keyd.c | pkgs/power-keyd.nix (C build in Nix) + helpers |
@@ -93,10 +93,9 @@ Ten patches, applied in filename order on linux 7.2.5:
 
 ## tools/install.py vs install-liuqin.py
 
-Kept: product/unlocked/slot checks, userdata geometry gate
-(471789528*512), boot partition size gate, backup-before-flash, serial
-binding, checksum verification of every input before flashing, never
-switching slots.
+Kept: product/unlocked/slot checks, a measured target-partition size gate,
+boot partition size gate, backup-before-flash, serial binding, checksum
+verification of every input before flashing, never switching slots.
 
 Changed: the downstream installer boots a RAM installer over `fastboot
 boot` and untars the rootfs inside it over telnet/USB networking. That
@@ -202,3 +201,45 @@ own stock dump as described below.
   hardware.liuqin.sensors.sscConfigHash. The committed
   data/liuqin-ssc-config.tar.zst is the operator's own copy of that
   archive (register it, do not re-extract).
+
+## U-Boot loader path (2026-09-21)
+
+`hardware.liuqin.boot.loader = "uboot"` re-expresses the same device support
+through a different boot chain: U-Boot in `boot_b` loads the kernel from the
+`linux` partition instead of ABL loading a `boot.img` from a boot slot.
+Everything below is this repository's own construction; nothing in it comes
+from the downstream port.
+
+* `/boot` payload (`pkgs/bootdir.nix`): `Image`, `initrd.img` and
+  `liuqin.dtb`. The DTB is the kernel's own, with `/chosen/bootargs` rewritten
+  to `boot.kernelParams` - the command line has to travel there because
+  U-Boot's `boot_linux` passes none (it only overwrites `/chosen/bootargs`
+  when a `$bootargs` variable exists). The derivation asserts the value landed
+  and that the initrd fits below ABL's framebuffer at `0xb8000000`, which is
+  the constraint the U-Boot script's load addresses were chosen for.
+* `storage.layout = "linux-partition"`: root is
+  `/dev/disk/by-partlabel/linux`. The initrd guard needed no change - it
+  derives the partition name, its parent disk and its identity checks from
+  `hardware.liuqin.storage.rootDevice`, and deliberately bakes in no geometry
+  (partition numbers and sizes differ per capacity variant).
+* The partition is created explicitly with the static `sgdisk` shipped in the
+  live bring-up image, after measuring the unit and saving a GPT backup. Never
+  use fixed sector values, and never create it from the installer or running
+  system. The current U-Boot safe profile intentionally has no generic GPT
+  partition writer; its narrowly-scoped A/B slot metadata helper is separate.
+* `tools/install.py --target linux` writes exactly one partition and activates
+  nothing; the pre-flash `fastboot fetch` backups belong to the `userdata`
+  target, which the stock ABL fastboot cannot satisfy anyway.
+
+### Why the boot chain is fenced off that way
+
+Two failures on 2026-09-20/21 left ABL unable to load *any* image
+(`fbreason: LoadImageAndAuth Fail`), recoverable only through an authorized
+EDL flash. Both followed self-built code owning the boot path - a mainline
+kernel under ABL's `fastboot boot` in the first case, and this U-Boot booting
+from slot `b` (inside a watchdog-driven reset loop) in the second. No
+fastboot-writable partition carries the damaged state, which is why restoring
+the table, the security partitions, the hyp VM images and the boot chain from
+the unit's own healthy dump changed nothing. The practical rules are in the
+README ("Bring-up rules"); the evidence is in
+`liuqin-dualboot/docs/{INCIDENT-2026-09-20-abl-fastboot-lockout,SERVICE-REPORT-2026-09-20}.md`.

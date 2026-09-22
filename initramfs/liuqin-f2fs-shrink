@@ -1,0 +1,66 @@
+#!/bin/busybox sh
+# Explicit F2FS shrink gate for the liuqin bring-up image.
+#
+# Usage:
+#   liuqin-f2fs-shrink DEVICE TARGET_SECTORS
+#   liuqin-f2fs-shrink DEVICE TARGET_SECTORS RESIZE-F2FS CLEAN-UNMOUNTED
+#
+# The first form is a read-only preflight.  The second form is the only form
+# that invokes resize.f2fs, and requires the exact confirmation tokens.  GPT
+# is deliberately not touched here; run liuqin-gpt-carve only after reviewing
+# this command's final check and its output.
+set -eu
+
+fail() { echo "liuqin-f2fs-shrink: $*" >&2; exit 2; }
+[ "$#" -ge 2 ] || fail "usage: $0 DEVICE TARGET_SECTORS [RESIZE-F2FS CLEAN-UNMOUNTED]"
+device=$1
+target=$2
+[ -b "$device" ] || fail "$device is not a block device"
+case "$target" in ''|*[!0-9]*) fail "target sectors must be decimal";; esac
+[ "$target" -gt 0 ] || fail "target sectors must be positive"
+
+resolved=$(readlink -f "$device")
+current_bytes=$(blockdev --getsize64 "$device") || fail "cannot read current device size"
+current=$((current_bytes / 512))
+[ "$target" -lt "$current" ] || fail "target $target is not smaller than current $current sectors"
+
+# A mounted F2FS image must never be resized.  Reject direct mounts even when
+# the caller supplied the write tokens; dm-crypt/device-mapper users must do
+# the operation from a recovery environment where the mapped filesystem is
+# demonstrably stopped.
+while read -r source _rest; do
+	[ -n "$source" ] || continue
+	resolved_source=$(readlink -f "$source" 2>/dev/null || true)
+	[ "$resolved_source" = "$resolved" ] && fail "$device is mounted; unmount it first"
+done < /proc/mounts
+
+mkdir -p /run
+fsck_log=/run/liuqin-f2fs-check.txt
+fsck.f2fs --dry-run "$device" >"$fsck_log" 2>&1 || {
+	echo "F2FS preflight failed; inspect $fsck_log and replay/check it while unmounted" >&2
+	exit 1
+}
+echo "clean F2FS preflight passed: $device current=$current target=$target sectors"
+
+if [ "${3-}" != RESIZE-F2FS ] || [ "${4-}" != CLEAN-UNMOUNTED ]; then
+	echo "dry-run only: require RESIZE-F2FS CLEAN-UNMOUNTED to invoke resize.f2fs"
+	exit 0
+fi
+
+resize.f2fs -s -t "$target" "$device"
+sync
+fsck.f2fs --dry-run "$device" >"$fsck_log" 2>&1 ||
+	fail "post-resize F2FS check failed; do not change GPT (see $fsck_log)"
+super=$(fsck.f2fs -l "$device" 2>&1) || fail "cannot read post-resize F2FS superblock"
+block_count=$(printf '%s\n' "$super" | sed -n 's/^block_count:[[:space:]]*//p' | head -1)
+log_sector=$(printf '%s\n' "$super" | sed -n 's/^log_sectorsize:[[:space:]]*//p' | head -1)
+log_block=$(printf '%s\n' "$super" | sed -n 's/^log_blocksize:[[:space:]]*//p' | head -1)
+[ -n "$block_count" ] && [ -n "$log_sector" ] && [ -n "$log_block" ] ||
+	fail "post-resize F2FS superblock is incomplete"
+sectors_per_block=$((1 << (log_block - log_sector)))
+[ $((target % sectors_per_block)) -eq 0 ] ||
+	fail "target is not aligned to the F2FS block size"
+expected_blocks=$((target / sectors_per_block))
+[ "$block_count" = "$expected_blocks" ] ||
+	fail "F2FS block_count=$block_count, expected=$expected_blocks from target=$target"
+echo "F2FS resize and post-check passed; now review geometry before GPT carve"

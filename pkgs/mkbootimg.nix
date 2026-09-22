@@ -13,7 +13,7 @@ stdenvNoCC.mkDerivation {
 
   src = fetchurl {
     url = "https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/${commit}.tar.gz";
-    hash = "sha256-Mc7VNbYJ5B24Rnc3uLY7YW4WuDoGP4I4xmGUeNguJhM=";
+    hash = "sha256-++/PzoAd0Bc8XqN+FtbmOZk3tGGQI8nGCSWZEYLPKVI=";
   };
 
   # The googlesource +archive endpoint serves a bare tar.gz with no root dir.
@@ -32,6 +32,7 @@ stdenvNoCC.mkDerivation {
     echo '37d84b3d162e0bc62e36c1f4e1c63c85ea0caa9f29be023eb2f8efe006ad948c  mkbootimg.py' | sha256sum -c --quiet
     echo '06b54dd9a07c5281778e29e234e76f6e3faee8bf0c904a5ef88fdee30eeed12e  unpack_bootimg.py' | sha256sum -c --quiet
     install -Dm0755 mkbootimg.py $out/bin/mkbootimg.py
+    ln -s mkbootimg.py $out/bin/mkbootimg
     install -Dm0755 unpack_bootimg.py $out/bin/unpack_bootimg.py
     # mkbootimg imports the in-tree gki/ module at runtime; the gki
     # testdata/ subdirectory ships test-only private keys (avb test keys),

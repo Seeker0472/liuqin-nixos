@@ -42,7 +42,7 @@
 # there on purpose (lines 40-44: it keeps simplefb0 writing into the
 # bootloader framebuffer all session, which a desktop compositor cannot
 # draw over); in this repo it lives behind hardware.liuqin.boot.debug.
-, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
+, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init rootwait bootlog=0x9f000000,0x100000"
   # The downstream native build deliberately ships an empty header cmdline:
   # ABL concatenates its own bootargs after the header value and the kernel
   # already reads /chosen/bootargs from the DT; duplicating them in the
@@ -162,9 +162,17 @@ stdenvNoCC.mkDerivation {
 
     # Decompile the merged DTB, splice the sink+symbols in before the final
     # root brace, and recompile with -@. If the base already carries a
-    # __symbols__ node (fdtoverlay from an -@ overlay can create one),
-    # append our symbols to it instead of failing.
+    # __symbols__ node (fdtoverlay from an -@ overlay can create one), remove
+    # it first.  Keeping real base-DTB targets would let ABL's forced stock
+    # overlays mutate mainline nodes; every exported symbol must resolve to
+    # the inert sink instead.
     dtc -I dtb -O dts boot-1.dtb > boot-1.dts
+    awk '
+      /^\t__symbols__ \{/ { skip = 1; next }
+      skip && /^\t\};/ { skip = 0; next }
+      !skip { print }
+    ' boot-1.dts > boot-1-nosymbols.dts
+    mv boot-1-nosymbols.dts boot-1.dts
     if grep -q '__symbols__ {' boot-1.dts; then
       # Merge into the existing __symbols__ block, skipping names the base
       # already exports to avoid duplicate-property errors.

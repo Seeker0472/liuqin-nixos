@@ -1,0 +1,105 @@
+#!/bin/busybox sh
+# Geometry-asserted tail carve for the liuqin bring-up image.
+#
+# Usage (all sectors are measured from sgdisk --info/--print, never guessed):
+#   liuqin-gpt-carve DISK USERDATA_NUM LINUX_NUM LINUX_START LINUX_END \
+#       USERDATA_START USERDATA_END [WRITE-LINUX-GPT USERDATA-FS-SHRINK-VERIFIED]
+#
+# Without both final tokens this is a dry run. With them, the existing userdata
+# entry is replaced by a shorter entry with the same type/GUID/name and a new
+# Linux filesystem entry is appended over the exact old userdata tail. A GPT
+# backup is made before either mode returns. Android userdata must have been
+# shrunk and checked first while unmounted; this tool cannot safely resize the
+# device's encrypted F2FS. The command is intentionally separate from PID 1
+# and is never invoked automatically.
+set -eu
+
+fail() { echo "liuqin-gpt-carve: $*" >&2; exit 2; }
+[ "$#" -ge 7 ] || fail "usage: $0 DISK USERDATA_NUM LINUX_NUM LINUX_START LINUX_END USERDATA_START USERDATA_END [WRITE-LINUX-GPT USERDATA-FS-SHRINK-VERIFIED]"
+
+disk=$1
+ud_num=$2
+linux_num=$3
+linux_start=$4
+linux_end=$5
+ud_start_expected=$6
+ud_end_expected=$7
+write_token=${8-}
+fs_token=${9-}
+[ -b "$disk" ] || fail "$disk is not a block device"
+
+for value in "$ud_num" "$linux_num" "$linux_start" "$linux_end" \
+	"$ud_start_expected" "$ud_end_expected"; do
+	case "$value" in ''|*[!0-9]*) fail "non-decimal argument: $value";; esac
+done
+[ "$linux_start" -gt "$ud_start_expected" ] || fail "linux start is not after userdata start"
+[ "$linux_end" -eq "$ud_end_expected" ] || fail "linux end must equal old userdata end"
+[ "$linux_start" -le "$linux_end" ] || fail "empty linux range"
+new_ud_end=$((linux_start - 1))
+[ "$new_ud_end" -ge "$ud_start_expected" ] || fail "userdata would become empty"
+
+sgdisk --verify "$disk" >/run/liuqin-gpt-verify-before.txt 2>&1 || \
+	fail "sgdisk --verify rejected the existing table"
+ud_info=$(sgdisk --info="$ud_num" "$disk" 2>&1) || \
+	fail "cannot inspect userdata partition $ud_num"
+ud_start=$(printf '%s\n' "$ud_info" | sed -n 's/^First sector: *\([0-9][0-9]*\).*/\1/p' | head -1)
+ud_end=$(printf '%s\n' "$ud_info" | sed -n 's/^Last sector: *\([0-9][0-9]*\).*/\1/p' | head -1)
+ud_type=$(printf '%s\n' "$ud_info" | sed -n 's/^Partition GUID code: *\([^ ]*\).*$/\1/p' | head -1)
+ud_guid=$(printf '%s\n' "$ud_info" | sed -n 's/^Partition unique GUID: *//p' | head -1)
+ud_name=$(printf '%s\n' "$ud_info" | sed -n "s/^Partition name: '\(.*\)'$/\1/p" | head -1)
+[ "$ud_start" = "$ud_start_expected" ] || fail "userdata start changed: $ud_start != $ud_start_expected"
+[ "$ud_end" = "$ud_end_expected" ] || fail "userdata end changed: $ud_end != $ud_end_expected"
+[ -n "$ud_type" ] || fail "cannot recover userdata type GUID"
+[ -n "$ud_guid" ] || fail "cannot recover userdata unique GUID"
+[ "$ud_name" = userdata ] || fail "partition $ud_num is named '$ud_name', not userdata"
+
+# The requested Linux number must be unused; silently replacing a different
+# partition is never acceptable. sgdisk exits 0 for both an existing entry
+# and the diagnostic "Partition #N does not exist.", so the exit status alone
+# cannot distinguish the safe case.
+linux_info=$(sgdisk --info="$linux_num" "$disk" 2>&1) ||
+	fail "cannot inspect requested linux partition number $linux_num"
+printf '%s\n' "$linux_info" > /run/liuqin-gpt-existing.txt
+if ! printf '%s\n' "$linux_info" | grep -q "Partition #$linux_num does not exist"; then
+	fail "linux partition number $linux_num already exists"
+fi
+
+backup=/run/gpt-before-$(basename "$disk").bin
+suffix=0
+while [ -e "$backup" ]; do
+	suffix=$((suffix + 1))
+	backup=/run/gpt-before-$(basename "$disk").$suffix.bin
+done
+sgdisk --backup="$backup" "$disk" >/run/liuqin-gpt-backup.txt 2>&1 || \
+	fail "could not create GPT backup at $backup"
+echo "backup=$backup"
+echo "userdata=$ud_num start=$ud_start end=$ud_end"
+echo "new_userdata=$ud_start..$new_ud_end"
+echo "linux=$linux_num start=$linux_start end=$linux_end"
+echo "type=$ud_type guid=$ud_guid"
+
+[ "$write_token" = WRITE-LINUX-GPT ] &&
+[ "$fs_token" = USERDATA-FS-SHRINK-VERIFIED ] || {
+	echo "dry-run: require WRITE-LINUX-GPT USERDATA-FS-SHRINK-VERIFIED to write"
+	echo "refusing: Android userdata must be shrunk and checked before GPT write"
+	exit 0
+}
+
+sgdisk \
+	--delete="$ud_num" \
+	--new="$ud_num:$ud_start:$new_ud_end" \
+	--typecode="$ud_num:$ud_type" \
+	--partition-guid="$ud_num:$ud_guid" \
+	--change-name="$ud_num:userdata" \
+	--new="$linux_num:$linux_start:$linux_end" \
+	--typecode="$linux_num:8300" \
+	--change-name="$linux_num:linux" \
+	"$disk" >/run/liuqin-gpt-write.txt 2>&1 || fail "sgdisk write failed; restore $backup"
+sync
+blockdev --flushbufs "$disk" 2>/dev/null || true
+sgdisk --verify "$disk" >/run/liuqin-gpt-verify-after.txt 2>&1 || \
+	fail "post-write GPT verify failed; restore $backup before reboot"
+new_info=$(sgdisk --info="$linux_num" "$disk" 2>&1) || fail "new linux entry is unreadable"
+printf '%s\n' "$new_info" | grep -q "First sector: *$linux_start" || fail "linux start readback mismatch"
+printf '%s\n' "$new_info" | grep -q "Last sector: *$linux_end" || fail "linux end readback mismatch"
+echo "write complete: GPT verified and linux entry read back"

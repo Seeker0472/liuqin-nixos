@@ -10,11 +10,7 @@
 # carry the files at the archive's top level (/init, /bin/busybox).
 set -eu
 
-busybox=${1:?usage: make-smoke-initramfs.sh <aarch64-static-busybox> [out.cpio.gz] [e2fsprogs]}
-# Static e2fsprogs (optional): gives the smoke init mke2fs, so the new linux
-# partition can be formatted on the device - where the partition offset is
-# known - instead of through fastboot flash, which did not survive that path.
-e2fs=${3:-}
+busybox=${1:?usage: make-smoke-initramfs.sh <aarch64-static-busybox> [out.cpio.gz]}
 init=$(dirname "$(realpath "$0")")/liuqin-smoke-init
 out=${2:-$(pwd)/liuqin-smoke-initramfs.cpio.gz}
 
@@ -38,15 +34,6 @@ cp "$busybox" "$staging/bin/busybox"
 # runs a single line. The script's shebang names busybox directly for the same
 # reason; this symlink is what any other #!/bin/sh helper would need.
 ln -s busybox "$staging/bin/sh"
-if [ -n "$e2fs" ]; then
-	mkdir -p "$staging/sbin"
-	cp "$e2fs/sbin/mke2fs" "$staging/sbin/mke2fs"
-	ln -s mke2fs "$staging/sbin/mkfs.ext4"
-	file -b "$staging/sbin/mke2fs" | grep -q "statically linked" || {
-		echo "mke2fs is not static; it would need a loader in the initramfs" >&2
-		exit 1
-	}
-fi
 cp "$init" "$staging/init"
 chmod 0755 "$staging/init" "$staging/bin/busybox"
 

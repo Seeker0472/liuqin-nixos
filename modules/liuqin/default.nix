@@ -25,6 +25,24 @@ in
       description = "Kernel package (linuxManualConfig with liuqin patches).";
     };
 
+    boot.loader = lib.mkOption {
+      type = lib.types.enum [ "abl" "uboot" ];
+      default = "abl";
+      description = ''
+        Who loads the kernel.
+
+          "abl"    ABL's fastboot loads a boot.img from a boot slot; the kernel
+                   command line travels in the Android boot header
+                   (pkgs/bootimg.nix), and the installer writes userdata or the
+                   `linux` partition.
+          "uboot"  U-Boot's `boot_linux` reads /boot/Image, /boot/initrd.img and
+                   /boot/liuqin.dtb from the `linux` partition and calls booti.
+                   The command line is baked into the DTB (pkgs/bootdir.nix)
+                   because U-Boot deliberately passes none: it only overwrites
+                   /chosen/bootargs when a $bootargs variable exists.
+      '';
+    };
+
     boot.debug = lib.mkEnableOption ''
       verbose debug boot parameters (ignore_loglevel, clk_ignore_unused,
       pd_ignore_unused, panic/pstore diagnostics, keep_bootcon).
@@ -63,9 +81,13 @@ in
         "qcom_q6v5_pas.slpi_auto_boot=0"
         # UFS enumeration and the storage guard take a moment.
         "rootwait"
-        # ABL's framebuffer must stay the kernel's console, not the
-        # simplefb driver's device.
-        "initcall_blacklist=simplefb_driver_init"
+        # ABL's framebuffer and display ownership must stay intact while the
+        # mainline kernel starts.  The bring-up logs prove that re-running the
+        # SMMU stream-table init or SM8450 display-clock init blanks the panel
+        # before userspace can take over; simplefb itself must also stay out of
+        # the DRM path.  Keep these exact kallsyms names in one parameter so
+        # boot.img and U-Boot/DTB paths cannot drift.
+        "initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init"
         # Early console on the ABL simple-framebuffer. Part of the
         # downstream product cmdline (build-bootimg.sh:44): without it
         # there is no output at all before the DSI panel driver loads.
@@ -79,6 +101,12 @@ in
         # keeps /dev/console on the VT afterwards.
         "console=drm_log"
         "console=tty0"
+        # Same log, but machine-readable: patch 0011's console keeps it in a
+        # DRAM ring that survives a reset, so a boot that dies without a usable
+        # panel still leaves its log where U-Boot (liuqin_rdump) can collect it.
+        # The address has to match that command; 0x9f000000..0x9fd00000 is free
+        # DRAM between the mpss and adsp reservations.
+        "bootlog=0x9f000000,0x100000"
         # CS35L41 calibration is per-device state, provisioned from the
         # persist partition at boot; /lib/firmware is the read-only store
         # tree, so the firmware loader gets one extra writable path.
@@ -95,6 +123,19 @@ in
         "softlockup_panic=1"
         "panic=0"
       ];
+
+    # /boot payload for the U-Boot loader path. lib.mkLiuqinImages copies it
+    # into the rootfs image's /boot when boot.loader = "uboot"; nothing
+    # references it otherwise, so it is not built for the ABL path.
+    system.build.liuqinBootDir = pkgs.liuqinBootdir {
+      kernel = cfg.package;
+      dtb = pkgs.liuqinKernelDtb;
+      initrd = config.system.build.initialRamdisk + "/initrd";
+      bootargs = lib.concatStringsSep " " (
+        config.boot.kernelParams
+        ++ [ "init=${config.system.build.toplevel}/init" ]
+      );
+    };
 
     # systemd-based stage 1 is the only supported initrd here.
     boot.initrd.systemd.enable = lib.mkDefault true;

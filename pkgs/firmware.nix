@@ -7,7 +7,7 @@
 # archives once with the commands in docs/PORTING-NOTES.md, place them in
 # the Nix store via `nix-store --add-fixed sha256 <file>` (or
 # `nix-prefetch-file`), then the fixed hashes below pin them.
-{ lib, runCommand, requireFile, zstd, linux-firmware }:
+{ lib, runCommand, requireFile, zstd, wireless-regdb }:
 
 let
   touch = requireFile {
@@ -93,10 +93,10 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   mkdir -p $fw/qcom/sm8450
   tar --zstd -xf ${topology} -C $fw/qcom/sm8450
 
-  # regulatory.db comes from nixpkgs linux-firmware (redistributable), not
-  # from the device dump.
-  install -Dm0644 ${linux-firmware}/lib/firmware/regulatory.db $fw/regulatory.db
-  install -Dm0644 ${linux-firmware}/lib/firmware/regulatory.db.p7s $fw/regulatory.db.p7s
+  # regulatory.db is packaged separately from linux-firmware in current
+  # nixpkgs; it is redistributable and does not come from the device dump.
+  install -Dm0644 ${wireless-regdb}/lib/firmware/regulatory.db $fw/regulatory.db
+  install -Dm0644 ${wireless-regdb}/lib/firmware/regulatory.db.p7s $fw/regulatory.db.p7s
 
   # Assert the contract paths the kernel actually requests.
   for required in \

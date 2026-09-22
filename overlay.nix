@@ -22,6 +22,11 @@ in
     kernel = final.liuqinKernel;
   };
 
+  # /boot payload for the U-Boot loader path (kernel + initrd + DTB carrying
+  # the command line). Built by the NixOS module via system.build; the
+  # arguments come from the configuration, so it is not instantiated here.
+  liuqinBootdir = args: final.callPackage ./pkgs/bootdir.nix args;
+
   # --- Device packages ---
   liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd.nix { };
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc.nix { };
@@ -54,4 +59,7 @@ in
   # Firmware tree assembled from requireFile placeholders (operator-supplied
   # stock-ROM payloads); see pkgs/firmware.nix.
   liuqinFirmware = final.callPackage ./pkgs/firmware.nix { };
+  liuqinInitrdFirmware = final.callPackage ./pkgs/firmware-initrd.nix {
+    firmware = final.liuqinFirmware;
+  };
 }

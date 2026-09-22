@@ -7,10 +7,15 @@
 # through /dev/disk/by-partlabel/<name>, and the initrd guard resolves the
 # partition, its identity and its parent disk from that path at runtime.
 #
-#   whole-userdata  NixOS root is the whole stock userdata partition.
-#   custom          NixOS root is a dedicated `linux` partition carved out of
-#                   the tail of userdata by the U-Boot command `liuqin_mklinux`
-#                   (liuqin-dualboot/docs/TESTING.md phase 5).
+#   whole-userdata   NixOS root is the whole stock userdata partition. Android
+#                    and NixOS then cannot both keep /data.
+#   linux-partition  NixOS root is a dedicated `linux` partition carved out of
+#                    the tail of userdata by the explicit `sgdisk` operation
+#                    in the read-only-by-default live bring-up image
+#                    (liuqin-nixos/README.md). Android keeps its own userdata,
+#                    so both systems boot and store data independently - this
+#                    is the layout the dual-boot flow (U-Boot on boot_b,
+#                    Android on boot_a) is built around.
 #
 # Partition numbers, start and size are capacity-specific (the stock 256 GB
 # and 512 GB GPTs differ; this repository was originally written against a
@@ -25,12 +30,14 @@ in
 {
   options.hardware.liuqin.storage = {
     layout = lib.mkOption {
-      type = lib.types.enum [ "whole-userdata" "custom" ];
+      type = lib.types.enum [ "whole-userdata" "linux-partition" ];
       default = "whole-userdata";
       description = ''
         Root storage layout. "whole-userdata" uses the entire stock userdata
-        partition as the NixOS root; "custom" uses the dedicated `linux`
-        partition carved out of userdata's tail.
+        partition as the NixOS root; "linux-partition" uses the dedicated
+        `linux` partition carved out of userdata's tail with the explicit
+        `sgdisk` operation in the live bring-up image after live geometry
+        measurement and GPT backup.
       '';
     };
 
@@ -39,7 +46,7 @@ in
       description = ''
         Block device holding the NixOS root filesystem. Defaults to the
         by-partlabel path of the partition the layout selects (userdata for
-        "whole-userdata", linux for "custom"); the initrd storage guard
+        "whole-userdata", linux for "linux-partition"); the initrd storage guard
         derives the partition, its partlabel and its parent disk from it.
       '';
     };
