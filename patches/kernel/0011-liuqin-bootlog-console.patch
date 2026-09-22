@@ -21,7 +21,7 @@ this console registers.
 diff -Nur base/drivers/tty/serial/bootlog-console.c work/drivers/tty/serial/bootlog-console.c
 --- a/drivers/tty/serial/bootlog-console.c
 +++ b/drivers/tty/serial/bootlog-console.c
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,172 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * bootlog: a console that keeps the kernel log in DRAM across a reset.
@@ -191,7 +191,8 @@ diff -Nur base/drivers/tty/serial/bootlog-console.c work/drivers/tty/serial/boot
 +		bootlog_used = 0;
 +	}
 +	bootlog_publish();
-+	return register_console(&bootlog_console);
++	register_console(&bootlog_console);
++	return 0;
 +}
 +postcore_initcall(bootlog_init);
 diff -Nur base/drivers/tty/serial/Kconfig work/drivers/tty/serial/Kconfig
