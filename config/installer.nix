@@ -72,9 +72,10 @@ in
     "${modulesPath}/profiles/perlless.nix"
   ];
 
-  # The device kernel is shared with the normal NixOS image. The live image
-  # itself has no persistent root filesystem, so no storage module is enabled.
-  boot.kernelPackages = pkgs.linuxPackagesFor pkgs.liuqinKernel;
+  # The installer deliberately uses its own kernel variant. It keeps the
+  # validated display hand-off/earlycon behaviour, but promotes the USB/input
+  # path to built-in so a RAM-only image never depends on a module tree.
+  boot.kernelPackages = pkgs.linuxPackagesFor pkgs.liuqinInstallerKernel;
   # The generic NixOS default list contains PC storage modules such as
   # ata_piix. This kernel is intentionally device-specific and does not ship
   # those modules; the live root only needs the filesystems used to mount its
@@ -99,16 +100,18 @@ in
   boot.kernelParams = [
     "qcom_q6v5_pas.slpi_auto_boot=0"
     "rootwait"
-    "initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init"
+    # Match the downstream 6.17 installer/native image: only stop fbcon from
+    # taking over ABL's simplefb. Do not disable SMMU or display clocks here;
+    # the live image needs IOMMU-backed UFS/PCIe (Wi-Fi) as well.
+    "initcall_blacklist=simplefb_driver_init"
     "earlycon=simplefb"
     "console=drm_log"
     "console=tty0"
-    "bootlog=0x9f000000,0x100000"
     "firmware_class.path=/var/lib/firmware:${pkgs.liuqinInitrdFirmware}/lib/firmware"
   ];
 
-  # WLAN and touchscreen firmware are needed before the netboot system has
-  # switched to its squashfs-backed root. Keep the installer device-specific:
+  # WLAN firmware is needed before the netboot system has switched to its
+  # squashfs-backed root. Keep the installer device-specific:
   # enabling the generic redistributable firmware bundle would add hundreds of
   # megabytes of unrelated linux-firmware to the live root.
   hardware.enableRedistributableFirmware = lib.mkForce false;
@@ -122,10 +125,12 @@ in
   networking.hostName = "liuqin-installer";
   networking.networkmanager.enable = true;
   networking.networkmanager.package = networkmanager;
-  networking.useDHCP = false;
+  # NetworkManager owns both association and per-connection DHCP.  Do not
+  # start the separate dhcpcd service as well: it is redundant here and makes
+  # the live image larger and can race NetworkManager for the same interface.
+  networking.useDHCP = lib.mkForce false;
   networking.firewall.enable = false;
-  # NetworkManager enables these by default, but the installer has no modem
-  # and all network operations run as root from the console or SSH.
+  # NetworkManager enables these by default, but the installer has no modem.
   networking.modemmanager.enable = lib.mkForce false;
   security.polkit.enable = lib.mkForce false;
   security.sudo.enable = lib.mkForce false;

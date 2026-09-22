@@ -8,7 +8,7 @@
 # persistent boot_b installation remains a separate hardware step.
 #
 # examples/demo/ is the same system expressed as a *consumer* flake (the
-# template to copy for your own machine); this file is the BSP's own smoke
+# template to copy for your own machine); this file is the BSP's own example
 # configuration. They are separate copies on purpose: keep them in sync.
 #
 # This file is *an example*, not a site configuration: apart from the storage
@@ -23,9 +23,9 @@
     desktop.gnome.enable = true;
 
     # The U-Boot chain: /boot/{Image,initrd.img,liuqin.dtb} live on the `linux`
-    # partition and carry the command line inside the DTB, so one
-    # `install.py --target linux` writing the rootfs image also installs
-    # everything the bootloader reads.
+    # partition and carry the command line inside the DTB. The RAM installer
+    # is the only supported way to create the target filesystem and install
+    # this system.
     boot.loader = "uboot";
     storage.layout = "linux-partition";
 

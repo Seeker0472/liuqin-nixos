@@ -127,9 +127,9 @@ with kernelLib;
   HID_GENERIC = lib.mkForce yes;
 
   USB = lib.mkForce yes;
-  # The tablet's DWC3 controller is dual-role, but the smoke initramfs needs
-  # its peripheral gadget engine selected in the kernel (there is no module
-  # loader before the control channel comes up).
+  # The tablet's DWC3 controller is dual-role; the live installer needs its
+  # peripheral gadget engine selected in the kernel because there is no module
+  # loader before the control channel comes up.
   USB_DWC3_GADGET = lib.mkForce yes;
 
   # BT_RFCOMM_TTY is asked as a bool under BT_RFCOMM=m; answering y makes
@@ -151,18 +151,11 @@ with kernelLib;
   CRYPTO_LIB_AES = lib.mkForce yes;
   CRYPTO_ECDH = lib.mkForce yes;
 
-  # Early console over the ABL simple-framebuffer (patch 0008); the
-  # matching kernel param earlycon=simplefb is debug-gated in the NixOS
-  # module.
+  # Early console over the ABL simple-framebuffer (patch 0008).
   SERIAL_EARLYCON_SIMPLEFB = lib.mkForce yes;
 
-  # The log channel that does not need a camera: patch 0011 registers a console
-  # that keeps everything printk writes in a DRAM ring (persistent_ram layout)
-  # and cleans each line out of the caches, so a boot that dies still leaves its
-  # log behind for U-Boot's liuqin_rdump to collect. Param: bootlog=<addr>,<size>.
-  BOOTLOG_CONSOLE = lib.mkForce yes;
-
-  # Pstore (mtdoops/hung-task diagnostics come from the debug cmdline).
+  # Pstore remains available for stock ramoops hand-off. The ABL overlay
+  # disables the duplicate reserved-memory node used by the mainline DTS.
   PSTORE = lib.mkForce yes;
   PSTORE_CONSOLE = lib.mkForce yes;
   PSTORE_PMSG = lib.mkForce yes;

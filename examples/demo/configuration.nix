@@ -8,7 +8,7 @@
 # This is a normal NixOS module and the only file to edit to make it yours:
 # the equivalent configuration shipped inside the BSP is config/demo.nix, and
 # the two are deliberately separate copies (a self-contained consumer here, the
-# BSP's own smoke configuration there). Change one, change the other - the flake
+# BSP's own example configuration there). Change one, change the other - the flake
 # check that would catch drift does not exist yet:
 # hostname, users, timezone, storage layout, desktop. Everything device-specific
 # (kernel, firmware, touch/audio/Wi-Fi/sensor plumbing, the initrd storage

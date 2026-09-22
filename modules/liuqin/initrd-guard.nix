@@ -34,10 +34,8 @@ let
   # The root marker: a real regular file (not an environment.etc symlink).
   # The guard verifies content, ownership, mode and size, mirroring the
   # downstream init's marker contract (regular file, 644 root:root, exact
-  # sha256). The content is exposed read-only below so packages.rootfsImage
-  # can bake the identical file into the ext4 image at build time — the
-  # guard runs BEFORE /sysroot is mounted, so a marker written only by
-  # stage-2 tmpfiles can never satisfy a fresh install.
+  # sha256). The RAM installer writes this file immediately after
+  # nixos-install, before the target is ever booted.
   markerContent = "LIUQIN_NIXOS_ROOT_V1\n";
   markerSha256 = builtins.hashString "sha256" markerContent;
   markerSize = builtins.stringLength markerContent;
@@ -46,32 +44,6 @@ let
   # Interpolating markerContent verbatim would embed a raw newline and
   # silently truncate the written file to 20 bytes instead of 21.
   markerArgument = lib.replaceStrings [ "\n" ] [ "\\n" ] markerContent;
-
-  # Build-time consistency check: run the exact tmpfiles rule below through
-  # systemd-tmpfiles and require a byte-identical result to markerContent,
-  # so a rule/marker drift fails the build instead of the initrd guard.
-  # A function of a package set so the flake can build a host-arch copy
-  # (packages.x86_64-linux.root-marker-check) without cross-compiling.
-  mkMarkerCheck = hp: hp.runCommand "liuqin-root-marker-check" { } ''
-    mkdir -p root/etc
-    rule=$(printf '%s\n' ${lib.escapeShellArg "f+ /etc/liuqin-nixos-root 0644 root root - ${markerArgument}"})
-    printf '%s\n' "$rule" > rule.conf
-    # Guard against the exact drift this check exists for: the rule argument
-    # must carry the literal \n escape, not a raw newline.
-    [ "$(wc -l < rule.conf)" = 1 ]
-    # The sandbox build user is not root, so the rule's chown to root fails
-    # (Operation not permitted — EPERM, exit 73) after the file is already written; only the exit
-    # status is tolerated, the content/mode checks below must still pass.
-    ${hp.systemd}/bin/systemd-tmpfiles --create --root=$PWD/root \
-      $PWD/rule.conf || true
-    [ -f root/etc/liuqin-nixos-root ] && [ ! -L root/etc/liuqin-nixos-root ]
-    [ "$(stat -c %a root/etc/liuqin-nixos-root)" = 644 ]
-    printf '%s' ${lib.escapeShellArg markerContent} > expected
-    cmp expected root/etc/liuqin-nixos-root
-    touch $out
-  '';
-  markerCheck = mkMarkerCheck pkgs;
-  installTarget = if cfg.storage.layout == "linux-partition" then "linux" else "userdata";
 
   guardScript = pkgs.writeShellScript "liuqin-storage-guard" ''
     set -eu
@@ -130,15 +102,9 @@ let
       umount "$probe"; rmdir "$probe"
       echo "liuqin-storage-guard: $part is correctly labelled but EMPTY" >&2
       echo "(freshly formatted, no NixOS rootfs)." >&2
-      echo "Recovery: run the host installer for target ${installTarget}:" >&2
-      echo "  liuqin-install --serial SERIAL --target ${installTarget} \\" >&2
-      echo "    --rootfs rootfs.img --sha256-rootfs SUM --write-rootfs" >&2
-      ${lib.optionalString (cfg.storage.layout == "whole-userdata") ''
-      echo "    --boot boot.img --sha256-boot SUM --backup DIR" >&2
-      ''}
-      echo "Re-flashing the rootfs image over fastboot is the ONLY recovery" >&2
-      echo "channel; the initrd deliberately provides no shell." >&2
-      fail "empty rootfs: re-flash .#rootfsImage (see docs/PORTING-NOTES.md)"
+      echo "Recovery: boot the RAM installer image again, mount the target at /mnt," >&2
+      echo "and run liuqin-install-nixos after checking the filesystem." >&2
+      fail "empty rootfs: reinstall from the liuqin RAM installer"
     fi
 
     # Lock every sd* node read-only, then verify the lock took. An empty
@@ -157,8 +123,8 @@ let
 
     # Probe-mount the root read-only and require the root marker to be a
     # regular file owned 644 root:root whose sha256 matches exactly the
-    # content baked into the rootfs image at build time (packages.rootfsImage)
-    # and repaired by systemd-tmpfiles at boot (see systemd.tmpfiles below).
+    # installer-provisioned marker and repaired by systemd-tmpfiles at boot
+    # (see systemd.tmpfiles below).
     marker=$probe/etc/liuqin-nixos-root
     marker_ok=0
     if [ -f "$marker" ] && [ ! -L "$marker" ]; then
@@ -172,7 +138,7 @@ let
     fi
     umount "$probe"
     rmdir "$probe"
-    [ "$marker_ok" = 1 ] || fail "root marker missing or invalid (not a liuqin NixOS root?; re-flash .#rootfsImage to recover)"
+    [ "$marker_ok" = 1 ] || fail "root marker missing or invalid (reinstall from the RAM installer)"
 
     # Unlock the parent disk first: a partition cannot be opened rw while
     # its parent disk is read-only (downstream init:674-682 opens
@@ -199,25 +165,12 @@ in
     type = lib.types.str;
     default = markerContent;
     readOnly = true;
-    description = ''
-      Exact content (with trailing newline) of /etc/liuqin-nixos-root, the
-      identity marker the initrd storage guard requires on the rootfs.
-      Read-only: packages.rootfsImage consumes this so the image carries the
-      byte-identical marker the guard verifies.
-    '';
-  };
-
-  options.hardware.liuqin.rootMarkerCheck = lib.mkOption {
-    type = lib.types.functionTo lib.types.package;
-    default = mkMarkerCheck;
-    readOnly = true;
-    description = ''
-      Function from a package set to a derivation that runs the systemd
-      tmpfiles marker rule through systemd-tmpfiles --create --root and
-      requires byte-identical output to rootMarkerContent. The flake builds
-      it on the host architecture as packages.x86_64-linux.root-marker-check.
-    '';
-  };
+      description = ''
+        Exact content (with trailing newline) of /etc/liuqin-nixos-root, the
+        identity marker the initrd storage guard requires on the rootfs.
+        The RAM installer writes the byte-identical marker after nixos-install.
+      '';
+    };
 
   config = lib.mkIf cfg.enable {
     # The guard resolves /dev/disk/by-partlabel/<name> at runtime, so the
@@ -237,17 +190,11 @@ in
     # The marker the guard requires. environment.etc would place a symlink
     # into /etc; the guard demands a regular file on the rootfs, so
     # systemd-tmpfiles writes it (f+ also repairs a drifted copy on boot).
-    # Fresh installs get the file from the rootfs image itself; tmpfiles is
-    # the drift repair, not the initial provisioning.
+    # Fresh installs get the file from the RAM install wrapper; tmpfiles is the
+    # drift repair, not the initial provisioning.
     systemd.tmpfiles.rules = [
       "f+ /etc/liuqin-nixos-root 0644 root root - ${markerArgument}"
     ];
-
-    # Force the byte-consistency check into the system closure so it is
-    # built and verified with every system build (system-path activation
-    # script dependency, not a package symlink).
-    system.activationScripts.liuqinRootMarkerCheck =
-      lib.stringAfter [ ] "true # depends on ${markerCheck}";
 
     # Never hand out a root shell in the initrd: a guard failure drops to
     # emergency.target, and that must not be a sidestep around the checks.

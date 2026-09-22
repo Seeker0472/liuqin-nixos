@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Installer-only USB role.
+ *
+ * The normal liuqin DT remains USB2 peripheral-only because that is the
+ * validated ABL/fastboot hand-off.  A live installer needs a reliable local
+ * input path even when Wi-Fi credentials have not been entered yet, so its
+ * DT starts the USB2 controller as a host for a wired keyboard.  Keeping this
+ * in a separate overlay means the normal boot image does not silently change
+ * its Type-C role.
+ */
+/dts-v1/;
+/plugin/;
+
+&usb_1 {
+	status = "okay";
+};
+
+&usb_1 {
+	dr_mode = "host";
+	maximum-speed = "high-speed";
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
+};
+
+&usb_1_hsphy {
+	status = "okay";
+};

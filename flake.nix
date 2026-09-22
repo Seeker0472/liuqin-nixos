@@ -87,34 +87,38 @@
           let
             cfg = configuration.config;
             toplevel = cfg.system.build.liuqinLiveToplevel;
-            bootargs = cfg.boot.kernelParams
-              ++ [ "init=${toplevel}/init" ];
+            bootargs = cfg.boot.kernelParams ++ [ "init=${toplevel}/init" ];
+            # Keep the empirically conservative local display profile as an
+            # explicit fallback. The default installer above follows the
+            # downstream simplefb-only profile so SMMU/UFS, PCIe/Wi-Fi and
+            # display ordering can be tested independently.
+            safeBootParams = map (
+              param:
+              if param == "initcall_blacklist=simplefb_driver_init" then
+                "initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init"
+              else
+                param
+            ) cfg.boot.kernelParams;
+            safeBootargs = safeBootParams ++ [ "init=${toplevel}/init" ];
+            mkImage = imageBootargs: pkgsArm.callPackage ./pkgs/bootimg.nix {
+              kernel = cfg.boot.kernelPackages.kernel;
+              gawk = pkgsHost.gawk;
+              bootargs = lib.concatStringsSep " " imageBootargs;
+              ramdisk = cfg.system.build.netbootRamdisk + "/initrd";
+              extraOverlayDts = ./dts/liuqin-installer-overlay.dts;
+            };
           in
           {
-            bootimg = pkgsArm.callPackage ./pkgs/bootimg.nix {
-              kernel = cfg.boot.kernelPackages.kernel;
-              bootargs = lib.concatStringsSep " " bootargs;
-              ramdisk = cfg.system.build.netbootRamdisk + "/initrd";
-            };
+            bootimg = mkImage bootargs;
+            safeBootimg = mkImage safeBootargs;
             inherit (cfg.system.build) netbootRamdisk squashfsStore toplevel;
           };
 
-        # Deployable artifacts for ANY liuqin nixosConfiguration (this
-        # flake's example or a consumer's own). Returns:
-        #   bootimg          boot.img: configuration's kernel + NixOS initrd
-        #                    + boot.kernelParams cmdline
-        #   rootfsImage      pre-built ext4 rootfs of the whole closure,
-        #                    for `fastboot flash userdata` (layout
-        #                    whole-userdata) or `--target linux` (layout
-        #                    linux-partition)
-        #   bootdir          /boot payload for boot.loader = "uboot": Image,
-        #                    initrd.img and a DTB carrying the command line
-        #   rootMarkerCheck  host-arch tmpfiles marker byte-consistency check
-        #
-        # rootfsImage builds the aarch64 closure natively: an x86_64 host
-        # needs qemu binfmt (boot.binfmt.emulatedSystems) or an aarch64
-        # remote builder. bootimg cross-compiles and needs neither.
-        mkLiuqinImages = configuration:
+        # Build boot artifacts for an installed configuration. Installation
+        # itself is intentionally not represented here: the only supported
+        # entry point is the RAM installer image above, followed by
+        # nixos-install from its live shell.
+        mkLiuqinBootImages = configuration:
           let
             cfg = configuration.config;
             toplevel = cfg.system.build.toplevel;
@@ -122,123 +126,43 @@
           {
             bootimg = pkgsArm.callPackage ./pkgs/bootimg.nix {
               kernel = cfg.boot.kernelPackages.kernel;
+              gawk = pkgsHost.gawk;
               bootargs = lib.concatStringsSep " " (
                 cfg.boot.kernelParams ++ [ "init=${toplevel}/init" ]
               );
               ramdisk = cfg.system.build.initialRamdisk + "/initrd";
             };
-
-            # Pre-built ext4 rootfs image for `fastboot flash userdata`. The
-            # initrd storage guard reads /etc/liuqin-nixos-root BEFORE
-            # sysroot is mounted, so the marker must exist in the image from
-            # the start (stage-2 tmpfiles only repairs it afterwards).
-            rootfsImage = pkgsHost.callPackage (nixpkgs + "/nixos/lib/make-ext4-fs.nix") {
-              storePaths = [ toplevel ];
-              volumeLabel = cfg.hardware.liuqin.storage.rootLabel;
-              populateImageCommands =
-                let
-                  marker = cfg.hardware.liuqin.rootMarkerContent;
-                  # U-Boot path: the kernel, initrd and the cmdline-carrying DTB
-                  # live on the root filesystem's own /boot, so a single flash
-                  # installs both the system and what the bootloader reads.
-                  bootFiles =
-                    lib.optionalString
-                      (cfg.hardware.liuqin.boot.loader == "uboot") ''
-                        mkdir -p ./files/boot
-                        cp -rL ${cfg.system.build.liuqinBootDir}/. ./files/boot/
-                        chmod -R u+w ./files/boot
-                      '';
-                in
-                ''
-                  mkdir -p ./files/etc ./files/var ./files/tmp ./files/root ./files/home
-                  chmod 0755 ./files/var ./files/home ./files/etc
-                  chmod 1777 ./files/tmp
-                  chmod 0700 ./files/root
-                  # Dereference: environment.etc entries are store symlinks
-                  # and the guard requires real regular files on the rootfs.
-                  cp -rL ${toplevel}/etc/. ./files/etc/
-                  chmod -R u+w ./files/etc
-                  printf '%s' '${marker}' > ./files/etc/liuqin-nixos-root
-                  chmod 0644 ./files/etc/liuqin-nixos-root
-                  ln -s ${toplevel}/init ./files/init
-                  ${bootFiles}
-                '';
-            };
-
             bootdir = cfg.system.build.liuqinBootDir;
-
-            # Host-arch copy of the tmpfiles marker byte-consistency check
-            # from modules/liuqin/initrd-guard.nix: runs the exact
-            # systemd.tmpfiles rule through systemd-tmpfiles --create --root
-            # and requires the result to be byte-identical to the guard
-            # marker. Also asserted into the aarch64 system closure via an
-            # activation script.
-            rootMarkerCheck = cfg.hardware.liuqin.rootMarkerCheck pkgsHost;
           };
       };
 
       packages.x86_64-linux =
         let
-          exampleImages = self.lib.mkLiuqinImages self.nixosConfigurations.liuqin;
-          demoImages = self.lib.mkLiuqinImages self.nixosConfigurations.demo;
+          exampleImages = self.lib.mkLiuqinBootImages self.nixosConfigurations.liuqin;
+          demoImages = self.lib.mkLiuqinBootImages self.nixosConfigurations.demo;
           installerImages = self.lib.mkLiuqinInstallerImages
             self.nixosConfigurations.liuqin-installer;
           mkbootimgTool = pkgsHost.callPackage ./pkgs/mkbootimg.nix { };
-          # Build the operator-only F2FS tools without SELinux userspace;
-          # static libselinux does not link in this musl cross build.
-          f2fsToolsStatic = pkgsArm.pkgsStatic.f2fs-tools.overrideAttrs (old: {
-            buildInputs = builtins.filter
-              (input: pkgsArm.lib.getName input != "libselinux")
-              old.buildInputs;
-            configureFlags = (old.configureFlags or [ ]) ++ [ "--without-selinux" ];
-          });
-          smokeInitramfs = pkgsHost.callPackage ./pkgs/smoke-initramfs.nix {
-            busybox = pkgsArm.pkgsStatic.busybox;
-            gptfdisk = pkgsArm.pkgsStatic.gptfdisk;
-            f2fsTools = f2fsToolsStatic;
-            smokeInit = ./initramfs/liuqin-smoke-init;
-          };
         in
         {
           kernel = pkgsArm.liuqinKernel;
+          installer-kernel = pkgsArm.liuqinInstallerKernel;
           dtb = pkgsArm.liuqinKernelDtb;
+          installer-dtb = pkgsArm.liuqinInstallerKernelDtb;
           bootimg = pkgsArm.liuqinBootimg;
           power-keyd = pkgsArm.liuqinPowerKeyd;
-          # Image bundle of the EXAMPLE configuration (config/example.nix).
-          # Your own configuration: use lib.mkLiuqinImages instead.
-          inherit (exampleImages) rootfsImage;
+          # Boot image for the EXAMPLE configuration (config/example.nix).
+          # Your own configuration: use lib.mkLiuqinBootImages instead.
           bootimg-nixos = exampleImages.bootimg;
-          root-marker-check = exampleImages.rootMarkerCheck;
-          # Image bundle of the DEMO configuration (config/demo.nix): flash
-          # demo-rootfsImage to the `linux` partition and boot with U-Boot.
-          demo-rootfsImage = demoImages.rootfsImage;
-          # Sparse form lets AOSP fastboot resparse a large ext4 image into
-          # max-download-size-sized transfers. The raw image remains the
-          # canonical artifact and is used for local filesystem validation.
-          rootfsImageSparse = pkgsHost.runCommand "liuqin-rootfs-sparse.img" {
-            nativeBuildInputs = [ pkgsHost.android-tools ];
-          } ''
-            img2simg ${exampleImages.rootfsImage} $out
-          '';
-          demo-rootfsImageSparse = pkgsHost.runCommand "liuqin-demo-rootfs-sparse.img" {
-            nativeBuildInputs = [ pkgsHost.android-tools ];
-          } ''
-            img2simg ${demoImages.rootfsImage} $out
-          '';
           demo-bootdir = demoImages.bootdir;
           demo-bootimg = demoImages.bootimg;
-          # Minimal RAM bring-up image: static aarch64 BusyBox initramfs plus
-          # the Nix-built kernel/DTB. It is diagnostic only and never writes
-          # partitions; install remains the measured host-side fastboot path.
-          smoke-initramfs = smokeInitramfs;
-          smoke-bootimg = pkgsHost.callPackage ./pkgs/bootimg.nix {
-            kernel = pkgsArm.liuqinKernel;
-            ramdisk = smokeInitramfs;
-            mkbootimg = mkbootimgTool;
-          };
           # Full NixOS live installer: kernel plus a netboot squashfs/root
-          # overlay packed into the ABL boot.img ramdisk. This is RAM-boot-only.
+          # overlay packed into the ABL boot.img ramdisk. This is the only
+          # supported initial-install path and is RAM-boot-only.
           installer-bootimg = installerImages.bootimg;
+          # Fallback for the previously validated local display workaround;
+          # the default installer is intentionally downstream-style.
+          installer-bootimg-safe = installerImages.safeBootimg;
           installer-ramdisk = installerImages.netbootRamdisk;
           installer-squashfs = installerImages.squashfsStore;
           # Host wrapper for the checked-in U-Boot pipeline. The dualboot tree
@@ -264,17 +188,11 @@
               exec bash "$workspace/liuqin-dualboot/u-boot/build.sh" "$@"
             '';
           };
-          # Host-side installer; runs on x86_64 against fastboot.
-          installer = pkgsHost.writers.writePython3Bin "liuqin-install" {
-            libraries = [ ];
-            flakeIgnore = [ "E501" "E265" ];
-            makeWrapperArgs = [ "--prefix PATH : ${pkgsHost.android-tools}/bin" ];
-          } (builtins.readFile ./tools/install.py);
         };
 
       nixosModules.liuqin = import ./modules/liuqin;
 
-      # Example / smoke-test configuration (config/example.nix). Real
+      # Example configuration (config/example.nix). Real
       # deployments define their own via lib.mkLiuqinSystem; this one backs
       # the flake's packages and eval check.
       nixosConfigurations.liuqin = self.lib.mkLiuqinSystem {

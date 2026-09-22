@@ -32,6 +32,7 @@
 , kernel
 , dtbName ? "qcom/sm8475-xiaomi-liuqin.dtb"
 , ablOverlayDts ? ../dts/liuqin-abl-boot-overlay.dts
+, extraOverlayDts ? null
 # /chosen/bootargs the kernel actually reads; ABL concatenates its own
 # bootargs after it. The kernel's own DTS (patches/kernel/0001) carries a
 # long debug string; the build overlays this value onto /chosen/bootargs
@@ -42,7 +43,7 @@
 # there on purpose (lines 40-44: it keeps simplefb0 writing into the
 # bootloader framebuffer all session, which a desktop compositor cannot
 # draw over); in this repo it lives behind hardware.liuqin.boot.debug.
-, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init rootwait bootlog=0x9f000000,0x100000"
+, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init rootwait"
   # The downstream native build deliberately ships an empty header cmdline:
   # ABL concatenates its own bootargs after the header value and the kernel
   # already reads /chosen/bootargs from the DT; duplicating them in the
@@ -90,6 +91,15 @@ stdenvNoCC.mkDerivation {
     # 1+2: ABL board-selection metadata.
     dtc -@ -I dts -O dtb -o abl-overlay.dtbo ${ablOverlayDts}
     fdtoverlay -i "$base_dtb" -o boot-0.dtb abl-overlay.dtbo
+
+    ${lib.optionalString (extraOverlayDts != null) ''
+      # Installer-only overlays (currently the USB host keyboard role) are
+      # applied after the common ABL metadata overlay and before the symbol
+      # union is synthesized.
+      dtc -@ -q -I dts -O dtb -o extra-overlay.dtbo ${extraOverlayDts}
+      fdtoverlay -i boot-0.dtb -o boot-0-extra.dtb extra-overlay.dtbo
+      mv boot-0-extra.dtb boot-0.dtb
+    ''}
 
     # 1b: the kernel DTS carries the long debug bootargs; the product cmdline
     # is overlaid onto /chosen/bootargs like the downstream
@@ -139,18 +149,33 @@ stdenvNoCC.mkDerivation {
     echo "stock dtbo entries: $(ls $stockDtboDir | wc -l), base dtbs: $(ls $stockDtbDir | wc -l)"
 
 
-    # The sink node plus one symbol that forces __symbols__ to exist even if
-    # the mainline base ever ships one empty. The sink's phandle 0xdead0000
-    # is never dereferenced: ABL only consults the __symbols__ string table
-    # (label -> node path) to resolve its overlay fixups; it never walks the
-    # sink node itself. Symbols the base DTB already exports keep pointing
-    # at their real nodes here, whereas the downstream abl-symbols.py points
-    # every symbol at the sink (see docs/PORTING-NOTES.md).
+    # Allocate the inert sink after the largest phandle already present in the
+    # merged DTB. A fixed magic value can collide with a future kernel/DTBO;
+    # ABL only needs the symbol paths, but dtc still requires every phandle to
+    # be unique in the final tree.
+    max_phandle=$(dtc -I dtb -O dts boot-1.dtb | ${gawk}/bin/awk '
+      /(phandle|linux,phandle) = </ {
+        if (match($0, /0x[0-9a-fA-F]+/)) {
+          value = strtonum(substr($0, RSTART, RLENGTH))
+          if (value > max) max = value
+        }
+      }
+      END { printf "%u\n", max }
+    ')
+    test -n "$max_phandle"
+    test "$max_phandle" -lt 4294967295
+    sink_phandle=$((max_phandle + 1))
+    sink_phandle_hex=$(printf '0x%x' "$sink_phandle")
+    echo "dynamic sink phandle: $sink_phandle_hex (max was $max_phandle)"
+
+    # Symbols are deliberately all redirected to the inert sink. ABL applies
+    # stock overlays after handing us the DTB; allowing an exported symbol to
+    # point at a real mainline node would let those overlays mutate live state.
     {
       echo '/dts-v1/;'
       echo '/ {'
       echo '	liuqin-abl-overlay-sink {'
-      echo '		phandle = <0xdead0000>;'
+      echo "		phandle = <$sink_phandle_hex>;"
       echo '	};'
       echo '	__symbols__ {'
       while read -r sym; do
@@ -182,7 +207,7 @@ stdenvNoCC.mkDerivation {
         echo '/dts-v1/;'
         echo '/ {'
         echo '	liuqin-abl-overlay-sink {'
-        echo '		phandle = <0xdead0000>;'
+        echo "		phandle = <$sink_phandle_hex>;"
         echo '	};'
         echo '	__symbols__ {'
         while read -r sym; do
@@ -205,13 +230,13 @@ stdenvNoCC.mkDerivation {
         { print }
       ' boot-1.dts > boot-2.dts
       # Add the sink node too (before the final root brace).
-      awk '
+      awk -v phandle="$sink_phandle_hex" '
         /^	liuqin-abl-overlay-sink \{/ { have = 1 }
         /^\};$/ { last = NR; lines[NR] = $0; next }
         { lines[NR] = $0 }
         END {
           for (i = 1; i <= NR; i++) {
-            if (i == last && !have) print "\tliuqin-abl-overlay-sink {\n\t\tphandle = <0xdead0000>;\n\t};"
+            if (i == last && !have) print "\tliuqin-abl-overlay-sink {\n\t\tphandle = <" phandle ">;\n\t};"
             print lines[i]
           }
         }
@@ -221,7 +246,7 @@ stdenvNoCC.mkDerivation {
       # Insert children into the existing root node. Splicing the complete
       # '/ { ... };' wrapper from symbols-add.dts here would nest a second
       # root and make dtc reject boot-2.dts.
-      awk -v symbols=symbols.sorted '
+      awk -v symbols=symbols.sorted -v phandle="$sink_phandle_hex" '
         BEGIN {
           while ((getline sym < symbols) > 0)
             symbol_lines = symbol_lines "\t\t" sym " = \"/liuqin-abl-overlay-sink\";\n"
@@ -229,7 +254,7 @@ stdenvNoCC.mkDerivation {
         }
         /^\};$/ {
           print "\tliuqin-abl-overlay-sink {"
-          print "\t\tphandle = <0xdead0000>;"
+          print "\t\tphandle = <" phandle ">;"
           print "\t};"
           print "\t__symbols__ {"
           printf "%s", symbol_lines

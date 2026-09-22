@@ -17,13 +17,10 @@
 # from a flake of your own) instead of tracking nixos-unstable here; two pins
 # would only drift apart.
 #
-#   nix build .#rootfsImage     system + /boot, for the `linux` partition
-#   nix build .#rootfsImageSparse  sparse form for large fastboot transfers
 #   nix build .#bootdir         just the /boot payload (U-Boot path)
 #   nix build .#bootimg         ABL path: boot.img carrying the NixOS initrd
-#   nix build .#smoke-bootimg   RAM-only UFS/display bring-up image
+#   nix build .#installer-bootimg RAM-only live installer (the install path)
 #   nix run .#uboot-build       checked U-Boot RAM-boot artifact
-#   nix run .#installer -- --help
 #
 # Evaluation needs nothing special. *Building* the images needs aarch64
 # capability: the NixOS closure, the kernel and the initrd are aarch64
@@ -50,32 +47,24 @@
 
       # Deployable artifacts for that configuration. Both are produced by the
       # BSP so the ABL and U-Boot paths stay byte-compatible across consumers.
-      images = liuqin.lib.mkLiuqinImages configuration;
+      images = liuqin.lib.mkLiuqinBootImages configuration;
+      installer = liuqin.packages.${system}.installer-bootimg;
+      installerSafe = liuqin.packages.${system}.installer-bootimg-safe;
     in
     {
       nixosConfigurations.demo = configuration;
 
       packages.${system} = {
-        # U-Boot path: one flash to the `linux` partition installs the system
-        # and the /boot payload the bootloader reads.
-        rootfsImage = images.rootfsImage;
-        rootfsImageSparse = liuqin.packages.${system}.demo-rootfsImageSparse;
         bootdir = images.bootdir;
 
         # ABL path: a boot.img (kernel + initrd + command line in the Android
         # header) for a boot slot.
         bootimg = images.bootimg;
 
-        # These are BSP-level artifacts, exposed here so a copied consumer
-        # flake still has the complete first-install toolchain.
-        smoke-bootimg = liuqin.packages.${system}.smoke-bootimg;
+        # The RAM installer is the only supported first-install toolchain.
+        installer-bootimg = installer;
+        installer-bootimg-safe = installerSafe;
         uboot-build = liuqin.packages.${system}.uboot-build;
-
-        # Host-side fastboot installer, from the BSP.
-        installer = liuqin.packages.${system}.installer;
-
-        # Byte-consistency check for the initrd guard's root marker.
-        root-marker-check = images.rootMarkerCheck;
       };
 
       # Building this is the cheapest end-to-end proof that the configuration,

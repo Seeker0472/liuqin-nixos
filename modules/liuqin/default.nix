@@ -33,8 +33,9 @@ in
 
           "abl"    ABL's fastboot loads a boot.img from a boot slot; the kernel
                    command line travels in the Android boot header
-                   (pkgs/bootimg.nix), and the installer writes userdata or the
-                   `linux` partition.
+                   (pkgs/bootimg.nix). Initial installation is always performed
+                   from the RAM installer image; no host-side fastboot writer is
+                   part of this repository.
           "uboot"  U-Boot's `boot_linux` reads /boot/Image, /boot/initrd.img and
                    /boot/liuqin.dtb from the `linux` partition and calls booti.
                    The command line is baked into the DTB (pkgs/bootdir.nix)
@@ -45,7 +46,7 @@ in
 
     boot.debug = lib.mkEnableOption ''
       verbose debug boot parameters (ignore_loglevel, clk_ignore_unused,
-      pd_ignore_unused, panic/pstore diagnostics, keep_bootcon).
+      pd_ignore_unused, panic diagnostics, keep_bootcon).
       earlycon=simplefb is part of the base cmdline (downstream product
       native-bootargs), not gated here. Keep this off for daily use:
       clk/pd ignore flags keep every unclaimed clock and power domain alive
@@ -101,12 +102,6 @@ in
         # keeps /dev/console on the VT afterwards.
         "console=drm_log"
         "console=tty0"
-        # Same log, but machine-readable: patch 0011's console keeps it in a
-        # DRAM ring that survives a reset, so a boot that dies without a usable
-        # panel still leaves its log where U-Boot (liuqin_rdump) can collect it.
-        # The address has to match that command; 0x9f000000..0x9fd00000 is free
-        # DRAM between the mpss and adsp reservations.
-        "bootlog=0x9f000000,0x100000"
         # CS35L41 calibration is per-device state, provisioned from the
         # persist partition at boot; /lib/firmware is the read-only store
         # tree, so the firmware loader gets one extra writable path.
@@ -118,15 +113,13 @@ in
         "clk_ignore_unused"
         "pd_ignore_unused"
         "initcall_debug"
-        "mtdoops.dump_oops=1"
         "hung_task_panic=1"
         "softlockup_panic=1"
         "panic=0"
       ];
 
-    # /boot payload for the U-Boot loader path. lib.mkLiuqinImages copies it
-    # into the rootfs image's /boot when boot.loader = "uboot"; nothing
-    # references it otherwise, so it is not built for the ABL path.
+    # /boot payload for the U-Boot loader path. The flake exposes it through
+    # mkLiuqinBootImages when boot.loader = "uboot".
     system.build.liuqinBootDir = pkgs.liuqinBootdir {
       kernel = cfg.package;
       dtb = pkgs.liuqinKernelDtb;

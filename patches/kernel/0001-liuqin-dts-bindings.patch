@@ -520,7 +520,7 @@ Adjustments for v7.2.5:
 +};
 --- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
-@@ -0,0 +1,1496 @@
+@@ -0,0 +1,1493 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
 +
@@ -573,22 +573,19 @@ Adjustments for v7.2.5:
 +		 *
 +		 *   earlycon=simplefb   - a bare "earlycon" never reaches the DT,
 +		 *                         CONFIG_ACPI_SPCR_TABLE claims it first.
-+		 *   keep_bootcon        - console_init() runs before every initcall
-+		 *                         and registers the VT console as CON_CONSDEV,
-+		 *                         at which point printk unregisters every
-+		 *                         CON_BOOT console unless this is set.
 +		 *   console=drm_log     - enables the late-registering DRM console;
 +		 *                         its first write is what commits the initial
 +		 *                         atomic modeset. console=tty0 follows it so
 +		 *                         /dev/console remains the VT for userspace.
 +		 *   initcall_blacklist= - stops simplefb binding, so fbcon never takes
 +		 *     simplefb_driver_init  the same framebuffer and the two consoles
-+		 *                         do not draw over each other. Costs nothing:
-+		 *                         if the boot gets that far we have USB.
++		 *                         do not draw over each other. The SMMU and
++		 *                         display-clock blacklists live in the product
++		 *                         boot profile, not this DTS fallback.
 +		 * stdout-path is not used by either console -- it names the GENI debug
 +		 * UART, which is not brought out on a retail unit.
 +		 */
-+		bootargs = "earlycon=simplefb keep_bootcon console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init initcall_debug ignore_loglevel clk_ignore_unused pd_ignore_unused rootwait mtdoops.dump_oops=1 hung_task_panic=1 softlockup_panic=1 panic=15";
++		bootargs = "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait";
 +
 +		framebuffer: framebuffer@b8000000 {
 +			compatible = "simple-framebuffer";
