@@ -218,17 +218,24 @@ stdenvNoCC.mkDerivation {
       ' boot-2.dts > boot-2b.dts
       mv boot-2b.dts boot-2.dts
     else
-      # Append sink node and __symbols__ block before the trailing root brace.
-      awk -v add=symbols-add.dts '
-        BEGIN { while ((getline line < add) > 0) extra = extra "\n" line }
-        /^\};$/ { last = NR; lines[NR] = $0; next }
-        { lines[NR] = $0 }
-        END {
-          for (i = 1; i <= NR; i++) {
-            if (i == last) printf "%s\n", substr(extra, 2)
-            print lines[i]
-          }
+      # Insert children into the existing root node. Splicing the complete
+      # '/ { ... };' wrapper from symbols-add.dts here would nest a second
+      # root and make dtc reject boot-2.dts.
+      awk -v symbols=symbols.sorted '
+        BEGIN {
+          while ((getline sym < symbols) > 0)
+            symbol_lines = symbol_lines "\t\t" sym " = \"/liuqin-abl-overlay-sink\";\n"
+          close(symbols)
         }
+        /^\};$/ {
+          print "\tliuqin-abl-overlay-sink {"
+          print "\t\tphandle = <0xdead0000>;"
+          print "\t};"
+          print "\t__symbols__ {"
+          printf "%s", symbol_lines
+          print "\t};"
+        }
+        { print }
       ' boot-1.dts > boot-2.dts
     fi
     dtc -@ -I dts -O dtb -o boot.dtb boot-2.dts
