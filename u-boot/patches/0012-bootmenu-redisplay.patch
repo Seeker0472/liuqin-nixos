@@ -1,0 +1,31 @@
+diff --git a/cmd/bootmenu.c b/cmd/bootmenu.c
+--- a/cmd/bootmenu.c
++++ b/cmd/bootmenu.c
+@@ -621,6 +621,7 @@
+ {
+ 	char *delay_str = NULL;
+ 	int delay = 10;
++	enum bootmenu_ret ret;
+ 
+ #if defined(CONFIG_BOOTDELAY) && (CONFIG_BOOTDELAY >= 0)
+ 	delay = CONFIG_BOOTDELAY;
+@@ -635,7 +636,18 @@
+ 	if (delay_str)
+ 		delay = (int)simple_strtol(delay_str, NULL, 10);
+ 
+-	bootmenu_show(delay);
++	/*
++	 * Re-display the menu after an entry that completed normally, so the
++	 * informational entries (dump/scan) come back to the menu instead of
++	 * dropping the user into the shell. The implicit final "Exit" entry
++	 * returns BOOTMENU_RET_QUIT and leaves, and a failing command leaves
++	 * too, so the menu can never trap the user.
++	 */
++	do {
++		ret = bootmenu_show(delay);
++		delay = -1;
++	} while (ret == BOOTMENU_RET_SUCCESS || ret == BOOTMENU_RET_UPDATED);
++
+ 	return 0;
+ }
+ 

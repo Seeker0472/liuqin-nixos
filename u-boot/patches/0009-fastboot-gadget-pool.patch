@@ -1,0 +1,413 @@
+diff --git a/drivers/usb/gadget/f_fastboot.c b/drivers/usb/gadget/f_fastboot.c
+--- a/drivers/usb/gadget/f_fastboot.c
++++ b/drivers/usb/gadget/f_fastboot.c
+@@ -11,6 +11,7 @@
+  */
+ #include <command.h>
+ #include <config.h>
++#include <cyclic.h>
+ #include <env.h>
+ #include <errno.h>
+ #include <fastboot.h>
+@@ -38,12 +39,28 @@
+  * that expect bulk OUT requests to be divisible by maxpacket size.
+  */
+ 
++/* Response chunks are queued back-to-back from this pool. Aborting the
++ * in-flight transfer for every chunk (the single-request behaviour) upsets
++ * the DWC3 endpoint state machine badly: transfers then take seconds and can
++ * wedge the endpoint altogether. A verbose response (a long getvar) can emit
++ * many chunks in one burst, so keep the pool comfortably deep: when it runs
++ * dry the code falls back to aborting a transfer, which is what wedges the
++ * endpoint. */
++#define FASTBOOT_IN_REQ_POOL	64
++
+ struct f_fastboot {
+ 	struct usb_function usb_function;
+ 
+ 	/* IN/OUT EP's and corresponding requests */
+ 	struct usb_ep *in_ep, *out_ep;
+-	struct usb_request *in_req, *out_req;
++	struct usb_request *out_req;
++
++	/* The gadget, to pump the UDC while waiting for a free tx request */
++	struct usb_gadget *gadget;
++
++	/* Pool for the response (bulk IN) endpoint */
++	struct usb_request *in_pool[FASTBOOT_IN_REQ_POOL];
++	unsigned int in_pool_used[FASTBOOT_IN_REQ_POOL];
+ };
+ 
+ static char fb_ext_prop_name[] = "DeviceInterfaceGUID";
+@@ -197,19 +214,40 @@
+ 
+ static void fastboot_complete(struct usb_ep *ep, struct usb_request *req)
+ {
++	struct f_fastboot *f_fb = req->context;
+ 	int status = req->status;
++	unsigned int i;
++
++	if (f_fb) {
++		for (i = 0; i < FASTBOOT_IN_REQ_POOL; i++) {
++			if (f_fb->in_pool[i] == req) {
++				f_fb->in_pool_used[i] = 0;
++				break;
++			}
++		}
++	}
++
+ 	if (!status)
+ 		return;
+-	printf("status: %d ep '%s' trans: %d\n", status, ep->name, req->actual);
++
++	/*
++	 * -ESHUTDOWN/-ECONNRESET are normal on bus reset or gadget teardown.
++	 * Printing them on every transfer renders text on the (slow) panel
++	 * console and starves the USB stack, so keep it at debug level.
++	 */
++	debug("status: %d ep '%s' trans: %d\n", status, ep->name, req->actual);
+ }
+ 
+ static int fastboot_bind(struct usb_configuration *c, struct usb_function *f)
+ {
+ 	int id;
++	unsigned int i;
+ 	struct usb_gadget *gadget = c->cdev->gadget;
+ 	struct f_fastboot *f_fb = func_to_fastboot(f);
+ 	const char *s;
+ 
++	f_fb->gadget = gadget;
++
+ 	/* DYNAMIC interface numbers assignments */
+ 	id = usb_interface_id(c, f);
+ 	if (id < 0)
+@@ -278,19 +316,27 @@
+ static void fastboot_disable(struct usb_function *f)
+ {
+ 	struct f_fastboot *f_fb = func_to_fastboot(f);
++	unsigned int i;
+ 
+ 	usb_ep_disable(f_fb->out_ep);
+ 	usb_ep_disable(f_fb->in_ep);
+ 
++	/* the pooled requests are freed below, no slot may stay marked busy */
++	memset(f_fb->in_pool_used, 0, sizeof(f_fb->in_pool_used));
++
+ 	if (f_fb->out_req) {
+ 		free(f_fb->out_req->buf);
+ 		usb_ep_free_request(f_fb->out_ep, f_fb->out_req);
+ 		f_fb->out_req = NULL;
+ 	}
+-	if (f_fb->in_req) {
+-		free(f_fb->in_req->buf);
+-		usb_ep_free_request(f_fb->in_ep, f_fb->in_req);
+-		f_fb->in_req = NULL;
++	for (i = 0; i < FASTBOOT_IN_REQ_POOL; i++) {
++		struct usb_request *req = f_fb->in_pool[i];
++
++		if (!req)
++			continue;
++		free(req->buf);
++		usb_ep_free_request(f_fb->in_ep, req);
++		f_fb->in_pool[i] = NULL;
+ 	}
+ }
+ 
+@@ -317,6 +363,7 @@
+ 			    unsigned interface, unsigned alt)
+ {
+ 	int ret;
++	unsigned int i;
+ 	struct usb_composite_dev *cdev = f->config->cdev;
+ 	struct usb_gadget *gadget = cdev->gadget;
+ 	struct f_fastboot *f_fb = func_to_fastboot(f);
+@@ -347,13 +394,22 @@
+ 		goto err;
+ 	}
+ 
+-	f_fb->in_req = fastboot_start_ep(f_fb->in_ep);
+-	if (!f_fb->in_req) {
+-		puts("failed alloc req in\n");
+-		ret = -EINVAL;
+-		goto err;
++	/*
++	 * The pool is rebuilt from scratch here, so the busy flags must be
++	 * cleared with it: a stale "used" slot from the previous configuration
++	 * would never be handed out again.
++	 */
++	memset(f_fb->in_pool_used, 0, sizeof(f_fb->in_pool_used));
++	for (i = 0; i < FASTBOOT_IN_REQ_POOL; i++) {
++		f_fb->in_pool[i] = fastboot_start_ep(f_fb->in_ep);
++		if (!f_fb->in_pool[i]) {
++			puts("failed alloc req in\n");
++			ret = -EINVAL;
++			goto err;
++		}
++		f_fb->in_pool[i]->complete = fastboot_complete;
++		f_fb->in_pool[i]->context = f_fb;
+ 	}
+-	f_fb->in_req->complete = fastboot_complete;
+ 
+ 	ret = usb_ep_queue(f_fb->out_ep, f_fb->out_req, 0);
+ 	if (ret)
+@@ -398,23 +454,76 @@
+ }
+ DECLARE_GADGET_BIND_CALLBACK(usb_dnl_fastboot, fastboot_add);
+ 
+-static int fastboot_tx_write(const char *buffer, unsigned int buffer_size)
++/*
++ * Wait for a free response request.
++ *
++ * The original code called usb_ep_dequeue() here to reclaim the in-flight
++ * request, and upstream dequeues on every chunk. On the DWC3 that forces an
++ * EndTransfer, and DWC_usb31 cannot poll for its completion (GUCTL2[14] is
++ * not available), so aborting a transfer can desync the endpoint state
++ * machine: EP0 then stops answering and the host reports "device not
++ * responding to setup address".
++ *
++ * Instead of aborting anything, pump the UDC so that in-flight requests can
++ * complete and hand their buffer back. This only waits when the host is not
++ * draining the responses fast enough, and schedule() keeps the Gunyah
++ * watchdog fed while we do.
++ */
++static struct usb_request *fastboot_get_tx_req(struct f_fastboot *f_fb)
+ {
+-	struct usb_request *in_req = fastboot_func->in_req;
++	unsigned int i;
++
++	for (;;) {
++		for (i = 0; i < FASTBOOT_IN_REQ_POOL; i++) {
++			if (f_fb->in_pool[i] && !f_fb->in_pool_used[i]) {
++				f_fb->in_pool_used[i] = 1;
++				return f_fb->in_pool[i];
++			}
++		}
++
++		if (f_fb->gadget)
++			dm_usb_gadget_handle_interrupts(
++				(struct udevice *)f_fb->gadget->dev.parent);
++		schedule();
++	}
++}
++
++/*
++ * Returns the request the chunk was queued on (NULL on failure). Callers that
++ * need a completion callback must attach it to *this* request: the pool hands
++ * out the first free slot, so it is only the same request as f_fb->in_req while
++ * nothing else is in flight.
++ */
++static struct usb_request *fastboot_tx_write(const char *buffer,
++					     unsigned int buffer_size)
++{
++	struct f_fastboot *f_fb = fastboot_func;
++	struct usb_request *in_req;
++	unsigned int i;
+ 	int ret;
+ 
++	/*
++	 * Use a free request from the pool so this chunk is queued behind
++	 * whatever is still in flight; the UDC sends them in order.
++	 */
++	in_req = fastboot_get_tx_req(f_fb);
++
+ 	memcpy(in_req->buf, buffer, buffer_size);
+ 	in_req->length = buffer_size;
+ 
+-	usb_ep_dequeue(fastboot_func->in_ep, in_req);
++	ret = usb_ep_queue(f_fb->in_ep, in_req, 0);
++	if (ret) {
++		debug("Error %d on queue\n", ret);
++		for (i = 0; i < FASTBOOT_IN_REQ_POOL; i++)
++			if (f_fb->in_pool[i] == in_req)
++				f_fb->in_pool_used[i] = 0;
++		return NULL;
++	}
+ 
+-	ret = usb_ep_queue(fastboot_func->in_ep, in_req, 0);
+-	if (ret)
+-		printf("Error %d on queue\n", ret);
+-	return 0;
++	return in_req;
+ }
+ 
+-static int fastboot_tx_write_str(const char *buffer)
++static struct usb_request *fastboot_tx_write_str(const char *buffer)
+ {
+ 	return fastboot_tx_write(buffer, strlen(buffer));
+ }
+@@ -425,6 +534,19 @@
+ 	do_reset(NULL, 0, 0, NULL);
+ }
+ 
++/*
++ * The USB gadget path completes reboot commands here instead of going
++ * through fastboot_handle_boot().  Keep the board-specific normal reboot
++ * hand-off on this path as well; otherwise `fastboot reboot` would bypass
++ * the PMIC/SCM restart sequence and fall back to the generic PSCI reset.
++ */
++static void compl_do_fastboot_reboot(struct usb_ep *ep,
++					struct usb_request *req)
++{
++	g_dnl_unregister();
++	fastboot_reboot();
++}
++
+ static unsigned int rx_bytes_expected(struct usb_ep *ep)
+ {
+ 	int rx_remain = fastboot_data_remaining();
+@@ -497,6 +619,8 @@
+ }
+ 
+ static int multiresponse_cmd = -1;
++static void compl_release_multiresponse(struct usb_ep *ep, struct usb_request *req);
++
+ static void multiresponse_on_complete(struct usb_ep *ep, struct usb_request *req)
+ {
+ 	char response[FASTBOOT_RESPONSE_LEN] = {0};
+@@ -506,13 +630,52 @@
+ 
+ 	/* Call handler to obtain next response */
+ 	fastboot_multiresponse(multiresponse_cmd, response);
+-	fastboot_tx_write_str(response);
+ 
+ 	/* If response is final OKAY/FAIL response disconnect this handler and unset cmd */
+-	if (!strncmp("OKAY", response, 4) || !strncmp("FAIL", response, 4)) {
++	if (!strncmp("OKAY", response, 4) || !strncmp("FAIL", response, 4))
+ 		multiresponse_cmd = -1;
+-		fastboot_func->in_req->complete = fastboot_complete;
+-	}
++
++	/* Keep the chain on the request this chunk really goes out on */
++	req = fastboot_tx_write_str(response);
++	if (req)
++		req->complete = multiresponse_cmd == -1 ? fastboot_complete
++							: compl_release_multiresponse;
++}
++
++/*
++ * The callbacks below replace fastboot_complete() on a response, so they have to
++ * release that request's pool slot themselves - otherwise every boot/reboot/
++ * multiresponse reply leaks a slot and the pool runs dry after 64 of them.
++ */
++static void compl_release_multiresponse(struct usb_ep *ep, struct usb_request *req)
++{
++	fastboot_complete(ep, req);
++	multiresponse_on_complete(ep, req);
++}
++
++static void compl_release_bootm(struct usb_ep *ep, struct usb_request *req)
++{
++	fastboot_complete(ep, req);
++	do_bootm_on_complete(ep, req);
++}
++
++static void compl_release_exit(struct usb_ep *ep, struct usb_request *req)
++{
++	fastboot_complete(ep, req);
++	do_exit_on_complete(ep, req);
++}
++
++static void compl_release_reset(struct usb_ep *ep, struct usb_request *req)
++{
++	fastboot_complete(ep, req);
++	compl_do_reset(ep, req);
++}
++
++static void compl_release_fastboot_reboot(struct usb_ep *ep,
++						struct usb_request *req)
++{
++	fastboot_complete(ep, req);
++	compl_do_fastboot_reboot(ep, req);
+ }
+ 
+ static void do_acmd_complete(struct usb_ep *ep, struct usb_request *req)
+@@ -529,6 +692,8 @@
+ {
+ 	char *cmdbuf = req->buf;
+ 	char response[FASTBOOT_RESPONSE_LEN] = {0};
++	struct usb_request *resp_req;
++	bool more = false;
+ 	int cmd = -1;
+ 
+ 	if (req->status != 0 || req->length == 0)
+@@ -547,10 +712,8 @@
+ 		multiresponse_cmd = cmd;
+ 		fastboot_multiresponse(multiresponse_cmd, response);
+ 
+-		/* Only add complete callback if first is not a final OKAY/FAIL response */
+-		if (strncmp("OKAY", response, 4) && strncmp("FAIL", response, 4)) {
+-			fastboot_func->in_req->complete = multiresponse_on_complete;
+-		}
++		/* Only chain on if the first response is not a final OKAY/FAIL */
++		more = strncmp("OKAY", response, 4) && strncmp("FAIL", response, 4);
+ 	}
+ 
+ 	if (!strncmp("DATA", response, 4)) {
+@@ -558,31 +721,45 @@
+ 		req->length = rx_bytes_expected(ep);
+ 	}
+ 
+-	if (!strncmp("OKAY", response, 4)) {
+-		switch (cmd) {
+-		case FASTBOOT_COMMAND_BOOT:
+-			fastboot_func->in_req->complete = do_bootm_on_complete;
+-			break;
+-
+-		case FASTBOOT_COMMAND_CONTINUE:
+-			fastboot_func->in_req->complete = do_exit_on_complete;
+-			break;
+-
+-		case FASTBOOT_COMMAND_REBOOT:
+-		case FASTBOOT_COMMAND_REBOOT_BOOTLOADER:
+-		case FASTBOOT_COMMAND_REBOOT_FASTBOOTD:
+-		case FASTBOOT_COMMAND_REBOOT_RECOVERY:
+-			fastboot_func->in_req->complete = compl_do_reset;
+-			break;
+-		case FASTBOOT_COMMAND_ACMD:
+-			if (CONFIG_IS_ENABLED(FASTBOOT_UUU_SUPPORT))
+-				fastboot_func->in_req->complete = do_acmd_complete;
+-			break;
++	/*
++	 * The response goes out on whichever pool request is free right now, so a
++	 * callback has to be attached to *that* request. Attaching it to
++	 * f_fb->in_req (one fixed pool entry) only worked while the pool happened
++	 * to hand out that same entry, which stops being true as soon as anything
++	 * else is in flight or the response is sent in more than one chunk.
++	 */
++	resp_req = fastboot_tx_write_str(response);
++	if (resp_req) {
++		if (more) {
++			resp_req->complete = compl_release_multiresponse;
++		} else if (!strncmp("OKAY", response, 4)) {
++			switch (cmd) {
++			case FASTBOOT_COMMAND_BOOT:
++				resp_req->complete = compl_release_bootm;
++				break;
++
++			case FASTBOOT_COMMAND_CONTINUE:
++				resp_req->complete = compl_release_exit;
++				break;
++
++			case FASTBOOT_COMMAND_REBOOT:
++				resp_req->complete = compl_release_fastboot_reboot;
++				break;
++
++			case FASTBOOT_COMMAND_REBOOT_BOOTLOADER:
++			case FASTBOOT_COMMAND_REBOOT_FASTBOOTD:
++			case FASTBOOT_COMMAND_REBOOT_RECOVERY:
++				resp_req->complete = compl_release_reset;
++				break;
++
++			case FASTBOOT_COMMAND_ACMD:
++				if (CONFIG_IS_ENABLED(FASTBOOT_UUU_SUPPORT))
++					resp_req->complete = do_acmd_complete;
++				break;
++			}
+ 		}
+ 	}
+ 
+-	fastboot_tx_write_str(response);
+-
+ 	*cmdbuf = '\0';
+ 	req->actual = 0;
+ 	usb_ep_queue(ep, req, 0);

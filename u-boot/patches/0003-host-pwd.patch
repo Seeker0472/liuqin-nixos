@@ -1,0 +1,12 @@
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -157,7 +157,7 @@
+ # check that the output directory actually exists
+ saved-output := $(KBUILD_OUTPUT)
+ KBUILD_OUTPUT := $(shell mkdir -p $(KBUILD_OUTPUT) && cd $(KBUILD_OUTPUT) \
+-								&& /bin/pwd)
++								&& pwd)
+ $(if $(KBUILD_OUTPUT),, \
+      $(error failed to create output directory "$(saved-output)"))
+ 

@@ -28,8 +28,17 @@
 , gawk
 , coreutils
 , findutils
+, python3
 , mkbootimg
-, kernel
+# Payload source. The kernel's Image by default; the U-Boot port passes its
+# u-boot-nodtb.bin, which this ABL wants shaped like a Linux Image too (the
+# build pads it and it carries the same ARM64 header).
+, payload ? "${kernel}/Image"
+# The DTB that carries the ABL metadata contract: the kernel's own by default,
+# the U-Boot build's generated one for the bootloader image.
+, baseDtb ? "${kernel}/dtbs/${dtbName}"
+, version ? kernel.version
+, kernel ? null
 , dtbName ? "qcom/sm8475-xiaomi-liuqin.dtb"
 , ablOverlayDts ? ../dts/liuqin-abl-boot-overlay.dts
 , extraOverlayDts ? null
@@ -50,6 +59,15 @@
   # header would pass every argument twice.
 , headerCmdline ? ""
 , ramdisk ? null
+# Overlay the cmdline onto /chosen/bootargs and assert it survived. Only the
+# kernel image has that contract; the U-Boot image's DT is its own.
+, cmdlineOverlay ? true
+# Measured on the unit: this ABL never entered a 1.4 MiB U-Boot payload (the
+# entry marker never painted and it fell back to fastboot), while the same
+# payload zero-padded to 8 MiB boots and drives the panel. Pads after
+# decompression and fixes the ARM64 Image header's image_size to match; zeros
+# cost almost nothing compressed. Kernel images are already far larger.
+, padPayloadMiB ? 0
 }:
 
 let
@@ -63,14 +81,14 @@ let
 in
 # bootargs is interpolated verbatim into a double-quoted DTS string below;
 # a quote or backslash would corrupt the generated overlay (or worse).
-assert lib.assertMsg (builtins.match ''.*["\\].*'' bootargs == null)
+assert lib.assertMsg (!cmdlineOverlay || builtins.match ''.*["\\].*'' bootargs == null)
   "bootimg.nix: bootargs must not contain double quotes or backslashes";
 stdenvNoCC.mkDerivation {
   pname = "liuqin-bootimg";
-  version = kernel.version;
+  inherit version;
   dontUnpack = true;
 
-  nativeBuildInputs = [ dtc gzip gnugrep gawk coreutils findutils mkbootimg zstd ];
+  nativeBuildInputs = [ dtc gzip gnugrep gawk coreutils findutils python3 mkbootimg zstd ];
 
   buildPhase = ''
     runHook preBuild
@@ -81,11 +99,37 @@ stdenvNoCC.mkDerivation {
     tar --zstd -xf ${stockDtbo} -C "$stockDtboDir"
     tar --zstd -xf ${stockBaseDtbs} -C "$stockDtbDir"
 
-    image=${kernel}/Image
+    image=${payload}
     test -r "$image"
+
+    ${lib.optionalString (padPayloadMiB > 0) ''
+      # Pad the payload itself (still uncompressed here) and, when it starts
+      # with an ARM64 Image header, make that header's image_size match.
+      # Measured: this ABL refuses to hand over to a small payload.
+      python3 - "$image" payload-padded.bin ${toString padPayloadMiB} <<'PYEOF'
+import gzip
+import struct
+import sys
+
+src, dst, mb = sys.argv[1], sys.argv[2], int(sys.argv[3])
+raw = bytearray(open(src, "rb").read())
+if raw[:2] == b"\x1f\x8b":
+    raw = bytearray(gzip.decompress(bytes(raw)))
+target = mb * 1024 * 1024
+if len(raw) < target:
+    magic = struct.unpack_from("<I", raw, 56)[0] if len(raw) >= 60 else 0
+    raw += b"\0" * (target - len(raw))
+    if magic == 0x644D5241:
+        struct.pack_into("<Q", raw, 16, len(raw))
+print("padded payload to %d bytes" % len(raw))
+open(dst, "wb").write(bytes(raw))
+PYEOF
+      image=payload-padded.bin
+    ''}
+
     gzip -n -9 -c "$image" > Image.gz
 
-    base_dtb=${kernel}/dtbs/${dtbName}
+    base_dtb=${baseDtb}
     test -r "$base_dtb"
 
     # 1+2: ABL board-selection metadata.
@@ -101,17 +145,23 @@ stdenvNoCC.mkDerivation {
       mv boot-0-extra.dtb boot-0.dtb
     ''}
 
-    # 1b: the kernel DTS carries the long debug bootargs; the product cmdline
-    # is overlaid onto /chosen/bootargs like the downstream
-    # build-liuqin-native-boot.sh cmdline-overlay does.
-    {
-      echo '/dts-v1/;'
-      echo '/plugin/;'
-      echo '/ { fragment@0 { target-path = "/chosen";'
-      echo '  __overlay__ { bootargs = "${bootargs}"; }; }; };'
-    } > cmdline-overlay.dts
-    dtc -@ -q -I dts -O dtb -o cmdline-overlay.dtbo cmdline-overlay.dts
-    fdtoverlay -i boot-0.dtb -o boot-1.dtb cmdline-overlay.dtbo
+    ${lib.optionalString cmdlineOverlay ''
+      # 1b: the kernel DTS carries the long debug bootargs; the product cmdline
+      # is overlaid onto /chosen/bootargs like the downstream
+      # build-liuqin-native-boot.sh cmdline-overlay does.
+      {
+        echo '/dts-v1/;'
+        echo '/plugin/;'
+        echo '/ { fragment@0 { target-path = "/chosen";'
+        echo '  __overlay__ { bootargs = "${bootargs}"; }; }; };'
+      } > cmdline-overlay.dts
+      dtc -@ -q -I dts -O dtb -o cmdline-overlay.dtbo cmdline-overlay.dts
+      fdtoverlay -i boot-0.dtb -o boot-1.dtb cmdline-overlay.dtbo
+    ''}
+    ${lib.optionalString (!cmdlineOverlay) ''
+      # No cmdline contract on this payload: the DTB is used as built.
+      cp boot-0.dtb boot-1.dtb
+    ''}
 
     # 3: synthesize the __symbols__ union overlay. dtc decodes with -@ so
     # __symbols__ and __fixups__ survive the round trip.
@@ -283,7 +333,9 @@ stdenvNoCC.mkDerivation {
 
     # The kernel reads /chosen/bootargs; the header cmdline is independently
     # audited. Assert the DT bootargs text.
-    grep -qF 'bootargs = "${bootargs}";' boot-final.dts
+    ${lib.optionalString cmdlineOverlay ''
+      grep -qF 'bootargs = "${bootargs}";' boot-final.dts
+    ''}
 
     # Assert the simple-framebuffer earlycon contract survived the rewrites.
     for required in \

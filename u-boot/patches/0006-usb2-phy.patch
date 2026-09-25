@@ -1,0 +1,69 @@
+diff --git a/drivers/phy/qcom/phy-qcom-snps-eusb2.c b/drivers/phy/qcom/phy-qcom-snps-eusb2.c
+--- a/drivers/phy/qcom/phy-qcom-snps-eusb2.c
++++ b/drivers/phy/qcom/phy-qcom-snps-eusb2.c
+@@ -172,7 +172,12 @@
+ 
+ static int qcom_eusb2_ref_clk_init(struct qcom_snps_eusb2_phy_priv *qcom_snps_eusb2)
+ {
+-	unsigned long ref_clk_freq = clk_get_rate(qcom_snps_eusb2->ref_clk);
++	unsigned long ref_clk_freq = qcom_snps_eusb2->ref_clk ?
++		clk_get_rate(qcom_snps_eusb2->ref_clk) : 0;
++
++	/* SM8450 always runs this PHY from the 19.2 MHz CXO. */
++	if (!ref_clk_freq)
++		ref_clk_freq = 19200000;
+ 
+ 	switch (ref_clk_freq) {
+ 	case 19200000:
+@@ -297,7 +302,8 @@
+ 
+ 	/* TODO Repeater */
+ 
+-	clk_prepare_enable(qcom_snps_eusb2->ref_clk);
++	if (qcom_snps_eusb2->ref_clk)
++		clk_prepare_enable(qcom_snps_eusb2->ref_clk);
+ 
+ 	ret = reset_deassert_bulk(&qcom_snps_eusb2->resets);
+ 	if (ret)
+@@ -315,7 +321,8 @@
+ 	struct qcom_snps_eusb2_phy_priv *qcom_snps_eusb2 = dev_get_priv(phy->dev);
+ 
+ 	reset_assert_bulk(&qcom_snps_eusb2->resets);
+-	clk_disable_unprepare(qcom_snps_eusb2->ref_clk);
++	if (qcom_snps_eusb2->ref_clk)
++		clk_disable_unprepare(qcom_snps_eusb2->ref_clk);
+ 
+ 	return 0;
+ }
+@@ -329,11 +336,14 @@
+ 	if (IS_ERR(qcom_snps_eusb2->base))
+ 		return PTR_ERR(qcom_snps_eusb2->base);
+ 
+-	qcom_snps_eusb2->ref_clk = devm_clk_get(dev, "ref");
+-	if (IS_ERR(qcom_snps_eusb2->ref_clk)) {
+-		printf("%s: failed to get ref clk %d\n", __func__, ret);
++	/*
++	 * The ref clock is the always-on 19.2 MHz XO. U-Boot has no RPMh clock
++	 * driver on this platform, so treat it as optional and fall back to the
++	 * XO frequency (qcom_eusb2_ref_clk_init()).
++	 */
++	qcom_snps_eusb2->ref_clk = devm_clk_get_optional(dev, "ref");
++	if (IS_ERR(qcom_snps_eusb2->ref_clk))
+ 		return PTR_ERR(qcom_snps_eusb2->ref_clk);
+-	}
+ 
+ 	ret = reset_get_bulk(dev, &qcom_snps_eusb2->resets);
+ 	if (ret < 0) {
+@@ -353,6 +363,12 @@
+ 	{
+ 		.compatible = "qcom,sm8550-snps-eusb2-phy",
+ 	},
++	{
++		.compatible = "qcom,sm8450-snps-eusb2-phy",
++	},
++	{
++		.compatible = "qcom,usb-snps-eusb2-phy",
++	},
+ 	{}
+ };
+ 

@@ -1,0 +1,150 @@
+diff --git a/common/console.c b/common/console.c
+--- a/common/console.c
++++ b/common/console.c
+@@ -628,6 +628,26 @@
+ #define PRE_CONSOLE_FLUSHPOINT1_SERIAL			0
+ #define PRE_CONSOLE_FLUSHPOINT2_EVERYTHING_BUT_SERIAL	1
+ 
++/*
++ * Optional board hook: mirror every character sent to the console before
++ * stdio devices take over to a board-specific early renderer, e.g. a raw
++ * framebuffer console (liuqin: the ABL continuous-splash framebuffer).
++ * Weak, so boards may override it.
++ */
++void __weak board_pre_console_putc(int ch)
++{
++}
++
++/*
++ * Optional board hook: stdio devices are up and the pre-console buffer is
++ * about to be replayed through them. A board with an early renderer prepares
++ * the screen here, e.g. by wiping the text the early renderer drew so the
++ * replay is the only writer. Weak, so boards may override it.
++ */
++void __weak board_pre_console_flush(void)
++{
++}
++
+ #if CONFIG_IS_ENABLED(PRE_CONSOLE_BUFFER)
+ #define CIRC_BUF_IDX(idx) ((idx) % (unsigned long)CONFIG_VAL(PRE_CON_BUF_SZ))
+ 
+@@ -635,6 +655,13 @@
+ {
+ 	char *buffer;
+ 
++	/*
++	 * Mirror to the board early renderer before checking precon_buf_idx:
++	 * gd->precon_buf_idx stays -1 until the first flushpoint, but the
++	 * board renderer (e.g. liuqin framebuffer) works from the first char.
++	 */
++	board_pre_console_putc(c);
++
+ 	if (gd->precon_buf_idx < 0)
+ 		return;
+ 
+@@ -685,8 +712,17 @@
+ 	gd->precon_buf_idx = in;
+ }
+ #else
+-static inline void pre_console_putc(const char c) {}
+-static inline void pre_console_puts(const char *s) {}
++static inline void pre_console_putc(const char c)
++{
++	board_pre_console_putc(c);
++}
++
++static inline void pre_console_puts(const char *s)
++{
++	while (*s)
++		board_pre_console_putc(*s++);
++}
++
+ static inline void print_pre_console_buffer(int flushpoint) {}
+ #endif
+ 
+@@ -962,6 +998,17 @@
+ 	int flag;
+ 	struct stdio_dev *dev;
+ 
++	/*
++	 * console_setfile() writes through the jump table, which only exists
++	 * after jumptable_init(). A keyboard probed by stdio_add_devices()
++	 * runs earlier and would crash here with a NULL gd->jt (this really
++	 * happened); refuse the assignment until the table is up. Do NOT
++	 * refuse based on GD_FLG_DEVINIT: iomux_doenv() assigns the console
++	 * devices from within console_init_r(), before that flag is set.
++	 */
++	if (!gd->jt)
++		return -1;
++
+ 	/* Check for valid file */
+ 	flag = stdio_file_to_flags(file);
+ 	if (flag < 0)
+@@ -1172,6 +1219,7 @@
+ 
+ 	gd->flags |= GD_FLG_DEVINIT;	/* device initialization completed */
+ 
++	board_pre_console_flush();
+ 	print_pre_console_buffer(flushpoint);
+ 	return 0;
+ }
+@@ -1239,6 +1287,7 @@
+ 
+ 	gd->flags |= GD_FLG_DEVINIT;	/* device initialization completed */
+ 
++	board_pre_console_flush();
+ 	print_pre_console_buffer(flushpoint);
+ 	return 0;
+ }
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -6,7 +6,9 @@
+  * (C) Copyright 2004 DENX Software Engineering, Wolfgang Denk, wd@denx.de
+  */
+ 
++#include <asm/global_data.h>
+ #include <console.h>
++#include <cyclic.h>
+ #include <dm.h>
+ #include <env.h>
+ #include <errno.h>
+@@ -19,6 +21,8 @@
+ #endif
+ #include <linux/input.h>
+ 
++DECLARE_GLOBAL_DATA_PTR;
++
+ enum {
+ 	/* These correspond to the lights on the keyboard */
+ 	FLAG_SCROLL_LOCK	= 1 << 0,
+@@ -236,6 +240,12 @@
+ 			err = (*config->read_keys)(config);
+ 		if (err)
+ 			return -1;
++		/*
++		 * Run cyclic callbacks while waiting: a blocking consumer
++		 * (e.g. the bootmenu, which reads through getchar()) would
++		 * otherwise never let watchdogs be serviced.
++		 */
++		schedule();
+ 	}
+ 
+ 	if (++config->fifo_out == INPUT_BUFFER_LEN)
+@@ -679,6 +689,16 @@
+ 		/* check if this is the standard input device */
+ 		cstdin = env_get("stdin");
+ 		if (cstdin && !strcmp(cstdin, dev->name)) {
++			/*
++			 * The console subsystem only exists after
++			 * console_init_r() has run: a keyboard probed by
++			 * stdio_add_devices() must not fail just because the
++			 * assignment cannot be made yet - console_init_r()
++			 * selects this device from the environment itself.
++			 */
++			if (!(gd->flags & GD_FLG_DEVINIT))
++				return 0;
++
+ 			/* reassign the console */
+ 			if (OVERWRITE_CONSOLE ||
+ 			    console_assign(stdin, dev->name))

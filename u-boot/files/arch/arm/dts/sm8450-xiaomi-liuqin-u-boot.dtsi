@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Xiaomi Pad 6 Pro (liuqin) U-Boot-specific additions.
+ *
+ * Enable GENI I2C bus 5 (QUPv3 wrap0 SE5, GPIO26/27) and instantiate the
+ * NXP PTN3222 eUSB2 repeater at 0x4f so board code can program it and the
+ * DWC3 peripheral path can reach the outside world.
+ */
+
+#include <dt-bindings/clock/qcom,gcc-sm8450.h>
+#include <dt-bindings/gpio/gpio.h>
+
+/*
+ * U-Boot has no RPMh clock driver on this platform, but both the UFS
+ * controller and its PHY take the always-on 19.2 MHz CXO as their "ref"
+ * clock (the upstream DT points those at &rpmhcc). Model it as a fixed
+ * clock so the UFS stack can resolve its clocks.
+ */
+/ {
+	cxo_19m2: cxo-19m2 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <19200000>;
+		clock-output-names = "cxo";
+	};
+};
+
+&ufs_mem_hc {
+	clocks = <&gcc GCC_UFS_PHY_AXI_CLK>,
+		 <&gcc GCC_AGGRE_UFS_PHY_AXI_CLK>,
+		 <&gcc GCC_UFS_PHY_AHB_CLK>,
+		 <&gcc GCC_UFS_PHY_UNIPRO_CORE_CLK>,
+		 <&cxo_19m2>,
+		 <&gcc GCC_UFS_PHY_TX_SYMBOL_0_CLK>,
+		 <&gcc GCC_UFS_PHY_RX_SYMBOL_0_CLK>,
+		 <&gcc GCC_UFS_PHY_RX_SYMBOL_1_CLK>;
+};
+
+&ufs_mem_phy {
+	clocks = <&cxo_19m2>,
+		 <&gcc GCC_UFS_PHY_PHY_AUX_CLK>,
+		 <&gcc GCC_UFS_0_CLKREF_EN>;
+
+	/*
+	 * The upstream DT takes this PHY's reset from the UFS host controller
+	 * (a reset controller U-Boot does not implement). Use the GCC UFS PHY
+	 * block reset instead; it is the same reset the host controller itself
+	 * uses.
+	 */
+	resets = <&gcc GCC_UFS_PHY_BCR>;
+	reset-names = "ufsphy";
+};
+
+/*
+ * ABL is known to look at the root compatible when it force-applies the
+ * stock DTBOs. Keep the community-proven boot DTB's sm8475 token in front of
+ * the sm8450 one (mach-snapdragon reads the *last* compatible for $soc).
+ * Done here, not in the OF_UPSTREAM source, which is resynced from Linux.
+ */
+&{/} {
+	compatible = "xiaomi,liuqin", "qcom,sm8475", "qcom,sm8450";
+};
+
+/*
+ * The upstream state node only muxes the pads. The stock DTB's active state
+ * also carries the pad configuration (drive strength 2 and internal
+ * pull-ups); without the pulls the bus never idles high and the PTN3222
+ * NACKs every transfer (-EREMOTEIO). Keep these in sync with the stock
+ * qupv3_se5_i2c_active config.
+ */
+&qup_i2c5_data_clk {
+	drive-strength = <2>;
+	bias-pull-up;
+};
+
+/*
+ * U-Boot has no USB Type-C role switch driver, so force the controller into
+ * peripheral mode for the gadget paths (fastboot, CDC-ACM console) and drop
+ * the role-switch property the Linux DT uses.
+ */
+&usb_1_dwc3 {
+	dr_mode = "peripheral";
+	/delete-property/ usb-role-switch;
+};
+
+/*
+ * The SM8450 USB2 PHY is a SNPS eUSB2 PHY (which is why this board has an
+ * external eUSB2 repeater); it needs the eUSB2 init sequence (PLL dividers,
+ * APB logic reset, FSEL_SEL, HS signal tuning). The mainline compatible list
+ * points at the 7nm femto driver, which lacks all of that, so use the eUSB2
+ * driver here.
+ */
+&usb_1_hsphy {
+	compatible = "qcom,sm8450-snps-eusb2-phy", "qcom,usb-snps-eusb2-phy";
+
+	/*
+	 * U-Boot has no RPMh clock driver here and the CXO (19.2 MHz) is
+	 * always running, so drop the ref clock dependency: the eUSB2 PHY
+	 * driver falls back to the 19.2 MHz XO frequency.
+	 */
+	/delete-property/ clocks;
+	/delete-property/ clock-names;
+};
+
+&i2c5 {
+	status = "okay";
+
+	eusb2-repeater@4f {
+		compatible = "nxp,eusb2-repeater";
+		reg = <0x4f>;
+		reset-gpios = <&pm8350c_gpios 7 GPIO_ACTIVE_HIGH>;
+		vdd18-supply = <&pm8350_s10>;
+		vdd3-supply = <&pm8350_l2>;
+	};
+};
+
+/*
+ * U-Boot has no SM8450 RPMh power-domain driver, so the reference to
+ * rpmhpd would make the RSC (and therefore every RPMh regulator below it)
+ * unprobeable. The RSC is already powered when U-Boot runs.
+ */
+&apps_rsc {
+	/delete-property/ power-domains;
+};
+
+/*
+ * Do NOT mark &tlmm (or any of its pin configuration states) bootph-all:
+ * that binds the controller before relocation, where pinconfig_post_bind()
+ * only binds children that are themselves pre-reloc (PINCONF_RECURSIVE).
+ * Every other state node then stays unbound forever, because a device's
+ * post_bind is never re-run after relocation, and peripherals looking up
+ * their pinctrl state by phandle fail with -ENODEV.
+ */

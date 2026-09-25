@@ -1,0 +1,35 @@
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -1094,6 +1094,15 @@
+ 	imply OF_UPSTREAM
+ 	imply CMD_DM
+ 
++config LIUQIN_EARLY_VIDEO
++	bool "liuqin early framebuffer console"
++	depends on ARCH_SNAPDRAGON
++	help
++	  Render all U-Boot console output to the ABL continuous-splash
++	  framebuffer at 0xb8000000 (1800x2880 XRGB8888) with a 16x32
++	  bitmap font, from the first console line onwards. Only for the
++	  Xiaomi Pad 6 Pro (liuqin) board.
++
+ config ARCH_SOCFPGA
+ 	bool "Altera SOCFPGA family"
+ 	select ARCH_EARLY_INIT_R
+diff --git a/arch/arm/mach-snapdragon/Kconfig b/arch/arm/mach-snapdragon/Kconfig
+--- a/arch/arm/mach-snapdragon/Kconfig
++++ b/arch/arm/mach-snapdragon/Kconfig
+@@ -24,6 +24,12 @@
+ 	default 0x2000
+ 
+ config LNX_KRNL_IMG_TEXT_OFFSET_BASE
++	# ABL inspects the Linux Image header of the payload it boots, and the
++	# stock/community kernels carry text_offset 0. TEXT_OFFSET is computed
++	# as CONFIG_TEXT_BASE - LNX_KRNL_IMG_TEXT_OFFSET_BASE, and this symbol
++	# has no prompt, so the value must be chosen here (a defconfig or
++	# scripts/config override would be reset by olddefconfig).
++	default 0x0 if SYS_BOARD = "liuqin"
+ 	default 0x80000000
+ 
+ config SYS_BOARD

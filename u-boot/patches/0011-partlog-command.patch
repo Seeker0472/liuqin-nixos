@@ -1,0 +1,28 @@
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -3012,4 +3012,13 @@
+ 	help
+ 	  Enable useful commands for the Meson Soc family developed by Amlogic Inc.
+ 
++config CMD_PARTLOG
++	bool "Enable 'partlog' raw-partition log command"
++	depends on BLK
++	select PARTITIONS
++	help
++	  Append boot log records (magic header + seq + len + CRC32) to a raw
++	  GPT partition (e.g. minidump) or to a RAM ring buffer, so the log
++	  survives a crash and can be read back on the next boot.
++
+ endif
+diff --git a/cmd/Makefile b/cmd/Makefile
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -141,6 +141,7 @@
+ obj-$(CONFIG_CMD_ONENAND) += onenand.o
+ obj-$(CONFIG_CMD_OSD) += osd.o
+ obj-$(CONFIG_CMD_PART) += part.o
++obj-$(CONFIG_CMD_PARTLOG) += partlog.o
+ obj-$(CONFIG_CMD_PCAP) += pcap.o
+ ifdef CONFIG_PCI
+ obj-$(CONFIG_CMD_PCI) += pci.o

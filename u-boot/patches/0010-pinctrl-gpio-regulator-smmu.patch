@@ -1,0 +1,175 @@
+diff --git a/drivers/gpio/qcom_pmic_gpio.c b/drivers/gpio/qcom_pmic_gpio.c
+--- a/drivers/gpio/qcom_pmic_gpio.c
++++ b/drivers/gpio/qcom_pmic_gpio.c
+@@ -56,6 +56,7 @@
+ #define REG_DIG_VIN_VIN0       0
+ 
+ #define REG_DIG_PULL_CTL       0x42
++#define REG_DIG_PULL_UP_30     0x0	/* 30 uA pull-up, as dt-bindings */
+ #define REG_DIG_PULL_NO_PU     0x5
+ 
+ #define REG_LV_MV_OUTPUT_CTL	0x44
+@@ -127,9 +128,14 @@
+ 
+ 	_qcom_gpio_set_direction(dev, offset, input, value);
+ 
+-	/* Set the right pull (no pull) */
++	/*
++	 * Set the right pull. U-Boot's PMIC pinconf implementation cannot
++	 * express bias yet, so a pin configured as an input (e.g. the liuqin
++	 * volume-up key, bias-pull-up in the DT) would otherwise float and
++	 * read randomly. Give inputs the 30 uA pull-up the DT asks for.
++	 */
+ 	ret = pmic_reg_write(plat->pmic, gpio_base + REG_DIG_PULL_CTL,
+-			     REG_DIG_PULL_NO_PU);
++			     input ? REG_DIG_PULL_UP_30 : REG_DIG_PULL_NO_PU);
+ 	if (ret < 0)
+ 		return ret;
+ 
+@@ -348,6 +354,11 @@
+ 	{ .compatible = "qcom,pms405-gpio" },
+ 	{ .compatible = "qcom,pm6125-gpio" },
+ 	{ .compatible = "qcom,pm8150-gpio" },
++	{ .compatible = "qcom,pm8350-gpio" },
++	{ .compatible = "qcom,pm8350b-gpio" },
++	{ .compatible = "qcom,pm8350c-gpio" },
++	{ .compatible = "qcom,pmk8350-gpio" },
++	{ .compatible = "qcom,pmr735a-gpio" },
+ 	{ .compatible = "qcom,pm8450-gpio" },
+ 	{ .compatible = "qcom,pm8550-gpio" },
+ 	{ .compatible = "qcom,pm7325-gpio" },
+diff --git a/drivers/iommu/qcom-hyp-smmu.c b/drivers/iommu/qcom-hyp-smmu.c
+--- a/drivers/iommu/qcom-hyp-smmu.c
++++ b/drivers/iommu/qcom-hyp-smmu.c
+@@ -390,6 +390,7 @@
+ static const struct udevice_id qcom_smmu500_ids[] = {
+ 	{ .compatible = "qcom,sdm845-smmu-500" },
+ 	{ .compatible = "qcom,sc7280-smmu-500" },
++	{ .compatible = "qcom,sm8450-smmu-500" },
+ 	{ .compatible = "qcom,smmu-500", },
+ 	{ /* sentinel */ }
+ };
+diff --git a/drivers/pinctrl/pinctrl-uclass.c b/drivers/pinctrl/pinctrl-uclass.c
+--- a/drivers/pinctrl/pinctrl-uclass.c
++++ b/drivers/pinctrl/pinctrl-uclass.c
+@@ -155,8 +155,17 @@
+ 			return -EINVAL;
+ 		ret = device_bind_driver_to_node(dev, "pinconfig", name,
+ 						 node, NULL);
+-		if (ret)
+-			return ret;
++		if (ret) {
++			/*
++			 * Keep going: one unbindable state node must not hide
++			 * all the other pin configuration nodes (seen on
++			 * qcom/sm8450 where a single failure starved every
++			 * peripheral of its pinmux).
++			 */
++			debug("%s: cannot bind pinconfig node %s: %d\n",
++			      __func__, name, ret);
++			continue;
++		}
+ 	}
+ 
+ 	return 0;
+diff --git a/drivers/pinctrl/qcom/pinctrl-sm8450.c b/drivers/pinctrl/qcom/pinctrl-sm8450.c
+--- a/drivers/pinctrl/qcom/pinctrl-sm8450.c
++++ b/drivers/pinctrl/qcom/pinctrl-sm8450.c
+@@ -14,7 +14,28 @@
+ static char pin_name[MAX_PIN_NAME_LEN] __section(".data");
+ 
+ static const struct pinctrl_function msm_pinctrl_functions[] = {
++	{"qup0", 1},
++	{"qup1", 1},
++	{"qup2", 1},
++	{"qup3", 1},
++	{"qup4", 1},
++	{"qup5", 1},
++	{"qup6", 1},
+ 	{"qup7", 1},
++	{"qup8", 1},
++	{"qup9", 1},
++	{"qup10", 1},
++	{"qup11", 1},
++	{"qup12", 1},
++	{"qup13", 1},
++	{"qup14", 1},
++	{"qup15", 1},
++	{"qup16", 1},
++	{"qup17", 1},
++	{"qup18", 1},
++	{"qup19", 1},
++	{"qup20", 1},
++	{"qup21", 1},
+ 	{"gpio", 0},
+ };
+ 
+diff --git a/drivers/power/regulator/qcom-rpmh-regulator.c b/drivers/power/regulator/qcom-rpmh-regulator.c
+--- a/drivers/power/regulator/qcom-rpmh-regulator.c
++++ b/drivers/power/regulator/qcom-rpmh-regulator.c
+@@ -420,6 +420,15 @@
+ 	.n_modes = ARRAY_SIZE(pmic_mode_map_pmic5_smps),
+ };
+ 
++static const struct rpmh_vreg_hw_data pmic5_hfsmps510 = {
++	.regulator_type = VRM,
++	.ops = &rpmh_regulator_vrm_drms_ops,
++	.voltage_range = REGULATOR_LINEAR_RANGE(320000, 0, 215, 8000),
++	.n_voltages = 216,
++	.pmic_mode_map = pmic_mode_map_pmic5_smps,
++	.n_modes = ARRAY_SIZE(pmic_mode_map_pmic5_smps),
++};
++
+ static struct dm_regulator_mode pmic_mode_map_pmic5_ldo[] = {
+ 	{
+ 		.id = REGULATOR_MODE_RETENTION,
+@@ -641,6 +650,34 @@
+ 	return 0;
+ }
+ 
++/*
++ * PM8350 (SM8450). Subset needed by the liuqin board: s10/l2 power the PTN3222
++ * eUSB2 repeater, l2 also the USB2 HS PHY 3.0 V rail (all from the Linux
++ * qcom-rpmh-regulator tables). ldo5 (PHY vdda-pll) uses pmic5_nldo515, which
++ * shares the 320 mV/8 mV linear range with Linux's pmic5_nldo below 1.3 V.
++ */
++static const struct rpmh_vreg_init_data pm8350_vreg_data[] = {
++	RPMH_VREG("smps10", "smp%s10", &pmic5_hfsmps510, "vdd-s10"),
++	RPMH_VREG("ldo2",   "ldo%s2",  &pmic5_pldo,      "vdd-l2-l7"),
++	RPMH_VREG("ldo5",   "ldo%s5",  &pmic5_nldo515,   "vdd-l3-l5"),
++	/* ldo7 powers the UFS VCC rail, ldo9 the UFS VCCQ/vdd-hba rail */
++	RPMH_VREG("ldo7",   "ldo%s7",  &pmic5_pldo,      "vdd-l2-l7"),
++	RPMH_VREG("ldo9",   "ldo%s9",  &pmic5_nldo515,   "vdd-l6-l9-l10"),
++	{}
++};
++
++/*
++ * PM8350C (SM8450). ldo1 is the older DT's USB2 HS PHY vdda18 rail; ldo10 is
++ * the vdda12 (1.2 V) rail the PHY needs for its digital/UTMI section - the
++ * mainline liuqin DT moved the PHY over to it. Inputs are pm8350c_s1/bob,
++ * which the boot chain leaves enabled.
++ */
++static const struct rpmh_vreg_init_data pm8350c_vreg_data[] = {
++	RPMH_VREG("ldo1",   "ldo%s1",  &pmic5_pldo_lv,   "vdd-l1-l12"),
++	RPMH_VREG("ldo10",  "ldo%s10", &pmic5_nldo515,   "vdd-l10"),
++	{}
++};
++
+ static const struct udevice_id rpmh_regulator_ids[] = {
+ 	{
+ 		.compatible = "qcom,pm8150-rpmh-regulators",
+@@ -651,6 +688,14 @@
+ 		.data = (ulong)pm8150l_vreg_data,
+ 	},
+ 	{
++		.compatible = "qcom,pm8350-rpmh-regulators",
++		.data = (ulong)pm8350_vreg_data,
++	},
++	{
++		.compatible = "qcom,pm8350c-rpmh-regulators",
++		.data = (ulong)pm8350c_vreg_data,
++	},
++	{
+ 		.compatible = "qcom,pm8550-rpmh-regulators",
+ 		.data = (ulong)pm8550_vreg_data,
+ 	},

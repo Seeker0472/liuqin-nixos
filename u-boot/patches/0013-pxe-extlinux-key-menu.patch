@@ -1,0 +1,327 @@
+diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
+--- a/boot/pxe_utils.c
++++ b/boot/pxe_utils.c
+@@ -6,6 +6,7 @@
+ 
+ #define LOG_CATEGORY	LOGC_BOOT
+ 
++#include <ansi.h>
+ #include <command.h>
+ #include <dm.h>
+ #include <env.h>
+@@ -19,8 +20,10 @@
+ #include <linux/libfdt.h>
+ #include <linux/string.h>
+ #include <linux/ctype.h>
++#include <linux/delay.h>
+ #include <errno.h>
+ #include <linux/list.h>
++#include <watchdog.h>
+ 
+ #include <rng.h>
+ 
+@@ -268,11 +271,22 @@
+ 	free(label);
+ }
+ 
++/*
++ * State of the interactive label menu (see pxe_choice()). One menu is parsed
++ * at a time, so this is file scope rather than an allocation the caller owns.
++ */
++static struct pxe_label *pxe_active;	/* highlighted label */
++static struct pxe_label *pxe_default;	/* label the countdown picks */
++static struct pxe_label *pxe_leave;	/* label that exits without booting */
++static int pxe_countdown;		/* seconds left, 0 = no countdown */
++static struct cli_ch_state pxe_cch;
++
+ /**
+  * label_print() - Print a label and its string members if they're defined
+  *
+  * This is passed as a callback to the menu code for displaying each
+- * menu entry.
++ * menu entry. The highlighted entry is reversed out, so that a menu driven by
++ * arrow keys (see pxe_choice()) shows where the next ENTER will go.
+  *
+  * @data: Label to print (is cast to struct pxe_label *)
+  */
+@@ -280,8 +294,13 @@
+ {
+ 	struct pxe_label *label = data;
+ 	const char *c = label->menu ? label->menu : label->name;
++	bool active = label == pxe_active;
+ 
++	if (active)
++		puts(ANSI_COLOR_REVERSE);
+ 	printf("%s:\t%s\n", label->num, c);
++	if (active)
++		puts(ANSI_COLOR_RESET);
+ }
+ 
+ /**
+@@ -1455,6 +1474,175 @@
+ 	return cfg;
+ }
+ 
++/**
++ * pxe_choice_key() - Read one key for the label menu
++ *
++ * Returns: The key, in the bootmenu's key codes
++ */
++static enum bootmenu_key pxe_choice_key(void)
++{
++	int c;
++
++	c = cli_ch_process(&pxe_cch, 0);
++	if (!c) {
++		while (!c && !tstc()) {
++			schedule();
++			mdelay(10);
++		}
++		if (!c) {
++			c = getchar();
++			c = cli_ch_process(&pxe_cch, c);
++		}
++	}
++
++	return bootmenu_conv_key(c);
++}
++
++/**
++ * pxe_choice_wait() - Wait for a keypress, counting down like the bootmenu
++ *
++ * @secs: Seconds to wait
++ * Returns: true if a key arrived, false if the countdown ran out
++ */
++static bool pxe_choice_wait(int secs)
++{
++	int i, j;
++
++	for (i = secs; i > 0; i--) {
++		printf("\rHit any key to stop autoboot: %d ", i);
++		for (j = 0; j < 100; j++) {
++			if (tstc())
++				return true;
++			schedule();
++			mdelay(10);
++		}
++	}
++
++	printf("\r");
++	puts(ANSI_CLEAR_LINE_TO_END);
++
++	return false;
++}
++
++/**
++ * pxe_choice_step() - The label before or after another one
++ *
++ * @cfg: Menu the labels belong to
++ * @from: Label to step from
++ * @dir: -1 for the previous label, 1 for the next one
++ * Returns: The neighbouring label, or NULL at either end of the menu
++ */
++static struct pxe_label *pxe_choice_step(struct pxe_menu *cfg,
++					 struct pxe_label *from, int dir)
++{
++	struct list_head *pos;
++
++	pos = dir < 0 ? from->list.prev : from->list.next;
++	if (pos == &cfg->labels)
++		return NULL;
++
++	return list_entry(pos, struct pxe_label, list);
++}
++
++/**
++ * pxe_choice() - Pick a label with the arrow keys
++ *
++ * This is the menu's item_choice callback: it returns the key of the chosen
++ * item, or NULL to have the menu redrawn and asked again.
++ *
++ * Upstream leaves item_choice unset, so a choice can only be made by typing a
++ * number at the "Enter choice:" prompt. A board whose only input is a
++ * volume/power button pair cannot do that, and cli_readline()'s own timeout is
++ * entangled with the boot-retry timer (bootretry_tstc_timeout() compares
++ * against an endtime that only the shell ever sets), so the menu would either
++ * vanish instantly or never take input. The keys are decoded the way the
++ * bootmenu command decodes them, so the same buttons work here.
++ *
++ * @data: struct pxe_menu to choose from
++ * Returns: Key of the chosen item, or NULL if there is no choice yet
++ */
++static char *pxe_choice(void *data)
++{
++	struct pxe_menu *cfg = data;
++	struct pxe_label *label;
++	enum bootmenu_key key;
++
++	/* The countdown runs once, before the user has touched anything. */
++	if (pxe_countdown) {
++		bool keyed = pxe_choice_wait(pxe_countdown);
++
++		pxe_countdown = 0;
++		if (!keyed)
++			return pxe_default ? pxe_default->num : NULL;
++	}
++
++	for (;;) {
++		key = pxe_choice_key();
++
++		switch (key) {
++		case BKEY_UP:
++			label = pxe_choice_step(cfg, pxe_active, -1);
++			if (label)
++				pxe_active = label;
++			return NULL;
++		case BKEY_DOWN:
++			label = pxe_choice_step(cfg, pxe_active, 1);
++			if (label)
++				pxe_active = label;
++			return NULL;
++		case BKEY_SELECT:
++			return pxe_active ? pxe_active->num : NULL;
++		case BKEY_QUIT:
++			return pxe_leave ? pxe_leave->num : NULL;
++		default:
++			break;
++		}
++	}
++}
++
++/**
++ * pxe_add_leave_label() - Add the item that leaves the menu without booting
++ *
++ * A menu whose only exit is to boot something is a trap when the board has no
++ * Escape key: this item carries LOCALBOOT -1, which label_boot() accepts and
++ * boots nothing, so the caller gets control back and can show its own menu
++ * again.
++ *
++ * @cfg: Menu to add the item to
++ * Returns: The new label, or NULL on allocation failure
++ */
++static struct pxe_label *pxe_add_leave_label(struct pxe_menu *cfg)
++{
++	struct pxe_label *label;
++
++	label = label_create();
++	if (!label)
++		return NULL;
++
++	label->name = strdup("Back to device menu");
++	if (!label->name) {
++		label_destroy(label);
++		return NULL;
++	}
++
++	label->localboot = 1;
++	label->localboot_val = -1;
++	list_add_tail(&label->list, &cfg->labels);
++
++	return label;
++}
++
++/**
++ * pxe_menu_statusline() - Tell the user which keys the menu takes
++ *
++ * @m: Menu being displayed
++ */
++static void pxe_menu_statusline(struct menu *m)
++{
++	puts("Press UP/DOWN to move, ENTER to select");
++	puts(ANSI_CLEAR_LINE_TO_END);
++}
++
+ /*
+  * Converts a pxe_menu struct into a menu struct for use with U-Boot's generic
+  * menu code.
+@@ -1462,19 +1650,36 @@
+ static struct menu *pxe_menu_to_menu(struct pxe_menu *cfg)
+ {
+ 	struct pxe_label *label;
++	struct pxe_label *default_label = NULL;
++	struct pxe_label *override_label = NULL;
+ 	struct list_head *pos;
+ 	struct menu *m;
+ 	char *label_override;
+ 	int err;
+ 	int i = 1;
++	int prompt;
++	int timeout;
+ 	char *default_num = NULL;
+ 	char *override_num = NULL;
+ 
+ 	/*
++	 * pxe_no_menu is for an entry point that must not ask anything (say, a
++	 * menu item that boots the default configuration): the menu code then
++	 * takes DEFAULT - or pxe_label_override - straight away.
++	 */
++	prompt = cfg->prompt && env_get_yesno("pxe_no_menu") != 1;
++	timeout = DIV_ROUND_UP(cfg->timeout, 10);
++
++	/* An interactive menu needs a way out that does not boot anything. */
++	pxe_leave = prompt ? pxe_add_leave_label(cfg) : NULL;
++	if (prompt && !pxe_leave)
++		return NULL;
++
++	/*
+ 	 * Create a menu and add items for all the labels.
+ 	 */
+-	m = menu_create(cfg->title, DIV_ROUND_UP(cfg->timeout, 10),
+-			cfg->prompt, NULL, label_print, NULL, NULL);
++	m = menu_create(cfg->title, timeout, prompt, pxe_menu_statusline,
++			label_print, prompt ? pxe_choice : NULL, cfg);
+ 	if (!m)
+ 		return NULL;
+ 
+@@ -1489,18 +1694,24 @@
+ 			return NULL;
+ 		}
+ 		if (cfg->default_label &&
+-		    (strcmp(label->name, cfg->default_label) == 0))
++		    (strcmp(label->name, cfg->default_label) == 0)) {
+ 			default_num = label->num;
+-		if (label_override && !strcmp(label->name, label_override))
++			default_label = label;
++		}
++		if (label_override && !strcmp(label->name, label_override)) {
+ 			override_num = label->num;
++			override_label = label;
++		}
+ 	}
+ 
+ 	if (label_override) {
+-		if (override_num)
++		if (override_num) {
+ 			default_num = override_num;
+-		else
++			default_label = override_label;
++		} else {
+ 			printf("Missing override pxe label: %s\n",
+ 			      label_override);
++		}
+ 	}
+ 
+ 	/*
+@@ -1519,6 +1730,22 @@
+ 		}
+ 	}
+ 
++	if (prompt) {
++		pxe_active = default_label;
++		if (!pxe_active && !list_empty(&cfg->labels))
++			pxe_active = list_first_entry(&cfg->labels,
++						      struct pxe_label, list);
++		pxe_default = default_label;
++		pxe_countdown = timeout;
++		cli_ch_init(&pxe_cch);
++	} else {
++		/* Nothing here may point at a label of a previous menu. */
++		pxe_active = NULL;
++		pxe_default = NULL;
++		pxe_leave = NULL;
++		pxe_countdown = 0;
++	}
++
+ 	return m;
+ }
+ 

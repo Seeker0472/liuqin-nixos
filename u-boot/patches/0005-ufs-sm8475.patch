@@ -1,0 +1,551 @@
+diff --git a/drivers/phy/qcom/phy-qcom-qmp-ufs.c b/drivers/phy/qcom/phy-qcom-qmp-ufs.c
+--- a/drivers/phy/qcom/phy-qcom-qmp-ufs.c
++++ b/drivers/phy/qcom/phy-qcom-qmp-ufs.c
+@@ -16,6 +16,7 @@
+ #include <dm/devres.h>
+ #include <generic-phy.h>
+ #include <malloc.h>
++#include <power-domain.h>
+ #include <reset.h>
+ 
+ #include <asm/io.h>
+@@ -466,6 +467,59 @@
+ 	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_RX_HSG5_SYNC_WAIT_TIME, 0x9e),
+ };
+ 
++/*
++ * SM8475 ("cape") serdes tables, taken from the vendor's
++ * phy-qcom-ufs-qmp-v4-cape driver. Its rate-A table is identical for G4 and
++ * non-G4, and is followed by a rate-B override. U-Boot has no mode plumbing,
++ * so merge both into the base table and let the HS-B group below overwrite
++ * VCO_TUNE_MAP last - exactly what Linux (hs_rate = PA_HS_MODE_B) and the
++ * vendor PHY end up with.
++ */
++static const struct qmp_ufs_init_tbl sm8475_ufsphy_serdes[] = {
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_SYSCLK_EN_SEL, 0xd9),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_CMN_CONFIG_1, 0x16),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_HSCLK_SEL_1, 0x11),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_HSCLK_HS_SWITCH_SEL_1, 0x00),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_LOCK_CMP_EN, 0x01),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_VCO_TUNE_MAP, 0x04),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_IVCO, 0x0f),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_VCO_TUNE_INITVAL2, 0x00),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_BG_TIMER, 0x0e),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_DEC_START_MODE0, 0x82),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_CP_CTRL_MODE0, 0x14),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_RCTRL_MODE0, 0x18),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_CCTRL_MODE0, 0x18),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_LOCK_CMP1_MODE0, 0xff),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_LOCK_CMP2_MODE0, 0x0c),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_DEC_START_MODE1, 0x98),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_CP_CTRL_MODE1, 0x14),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_RCTRL_MODE1, 0x18),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_CCTRL_MODE1, 0x18),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_LOCK_CMP1_MODE1, 0x32),
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_LOCK_CMP2_MODE1, 0x0f),
++};
++
++/* Rate-B override; must be applied after the rate-A values above. */
++static const struct qmp_ufs_init_tbl sm8475_ufsphy_hs_b_serdes[] = {
++	QMP_PHY_INIT_CFG(QSERDES_V6_COM_VCO_TUNE_MAP, 0x44),
++};
++
++/*
++ * The stock bootloader's PHY tables (phy-qcom-ufs-qmp-v4-cape) use
++ * PLL_CNTL = 0x0b; mainline reuses the SM8550 PCS table here, which leaves
++ * the PHY PLL at 0x33. Follow the vendor tables that are proven on this
++ * device.
++ */
++static const struct qmp_ufs_init_tbl sm8475_ufsphy_pcs[] = {
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_TX_MID_TERM_CTRL1, 0x43),
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_PLL_CNTL, 0x0b),
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_TX_LARGE_AMP_DRV_LVL, 0x0f),
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_RX_SIGDET_CTRL2, 0x69),
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_TX_HSGEAR_CAPABILITY, 0x04),
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_RX_HSGEAR_CAPABILITY, 0x04),
++	QMP_PHY_INIT_CFG(QPHY_V6_PCS_UFS_MULTI_LANE_CTRL1, 0x02),
++};
++
+ static const struct qmp_ufs_init_tbl sm8650_ufsphy_serdes[] = {
+ 	QMP_PHY_INIT_CFG(QSERDES_V6_COM_SYSCLK_EN_SEL, 0xd9),
+ 	QMP_PHY_INIT_CFG(QSERDES_V6_COM_CMN_CONFIG_1, 0x16),
+@@ -1076,16 +1130,19 @@
+ 	/* Power down PHY */
+ 	qphy_setbits(pcs, cfg->regs[QPHY_PCS_POWER_DOWN_CONTROL], SW_PWRDN);
+ 
+-	qmp_ufs_init_registers(qmp, cfg);
+-
+-	if (cfg->no_pcs_sw_reset) {
+-		ret = qmp_ufs_do_reset(qmp);
+-		if (ret) {
+-			dev_err(phy->dev, "qmp reset failed\n");
+-			return ret;
+-		}
++	/*
++	 * Toggle the PHY reset, if the configuration provides one. Some SoCs
++	 * (e.g. SM8450) only have this external reset and the PHY stays in
++	 * reset - and never becomes PCS-ready - without it.
++	 */
++	ret = qmp_ufs_do_reset(qmp);
++	if (ret) {
++		dev_err(phy->dev, "qmp reset failed\n");
++		return ret;
+ 	}
+ 
++	qmp_ufs_init_registers(qmp, cfg);
++
+ 	/* Pull PHY out of reset state */
+ 	if (!cfg->no_pcs_sw_reset)
+ 		qphy_clrbits(pcs, cfg->regs[QPHY_SW_RESET], SW_RESET);
+@@ -1289,8 +1346,13 @@
+ static int qmp_ufs_probe(struct udevice *dev)
+ {
+ 	struct qmp_ufs_priv *qmp = dev_get_priv(dev);
++	struct power_domain pd;
+ 	int ret;
+ 
++	/* Bring up the PHY's power domain (GDSC) first. */
++	if (!power_domain_get(dev, &pd))
++		power_domain_on(&pd);
++
+ 	qmp->serdes = (void __iomem *)dev_read_addr(dev);
+ 	if (IS_ERR(qmp->serdes))
+ 		return PTR_ERR(qmp->serdes);
+@@ -1361,10 +1423,37 @@
+ 	.power_off = qmp_ufs_power_off,
+ };
+ 
++static const struct qmp_ufs_cfg sm8475_ufsphy_cfg = {
++	.lanes			= 2,
++
++	.offsets		= &qmp_ufs_offsets_v6,
++
++	.tbls = {
++		.serdes		= sm8475_ufsphy_serdes,
++		.serdes_num	= ARRAY_SIZE(sm8475_ufsphy_serdes),
++		.tx		= sm8550_ufsphy_tx,
++		.tx_num		= ARRAY_SIZE(sm8550_ufsphy_tx),
++		.rx		= sm8550_ufsphy_rx,
++		.rx_num		= ARRAY_SIZE(sm8550_ufsphy_rx),
++		.pcs		= sm8475_ufsphy_pcs,
++		.pcs_num	= ARRAY_SIZE(sm8475_ufsphy_pcs),
++	},
++	.tbls_hs_b = {
++		.serdes		= sm8475_ufsphy_hs_b_serdes,
++		.serdes_num	= ARRAY_SIZE(sm8475_ufsphy_hs_b_serdes),
++	},
++	.vreg_list		= qmp_ufs_vreg_l,
++	.num_vregs		= ARRAY_SIZE(qmp_ufs_vreg_l),
++	.reset_list		= qmp_ufs_reset_l,
++	.num_resets		= ARRAY_SIZE(qmp_ufs_reset_l),
++	.regs			= ufsphy_v6_regs_layout,
++};
++
+ static const struct udevice_id qmp_ufs_ids[] = {
+ 	{ .compatible = "qcom,sdm845-qmp-ufs-phy", .data = (ulong)&sdm845_ufsphy_cfg },
+ 	{ .compatible = "qcom,sm6115-qmp-ufs-phy", .data = (ulong)&sm6115_ufsphy_cfg },
+ 	{ .compatible = "qcom,sm8250-qmp-ufs-phy", .data = (ulong)&sm8250_ufsphy_cfg },
++	{ .compatible = "qcom,sm8475-qmp-ufs-phy", .data = (ulong)&sm8475_ufsphy_cfg },
+ 	{ .compatible = "qcom,sm8550-qmp-ufs-phy", .data = (ulong)&sm8550_ufsphy_cfg },
+ 	{ .compatible = "qcom,sm8650-qmp-ufs-phy", .data = (ulong)&sm8650_ufsphy_cfg },
+ 	{ .compatible = "qcom,sc7280-qmp-ufs-phy", .data = (ulong)&sc7280_ufsphy_cfg, },
+diff --git a/drivers/ufs/ufs-qcom.c b/drivers/ufs/ufs-qcom.c
+--- a/drivers/ufs/ufs-qcom.c
++++ b/drivers/ufs/ufs-qcom.c
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include <asm/io.h>
++#include <power-domain.h>
++#include <power/regulator.h>
+ #include <clk.h>
+ #include <dm.h>
+ #include <dm/device_compat.h>
+@@ -28,6 +30,23 @@
+ 
+ static void ufs_qcom_dev_ref_clk_ctrl(struct ufs_hba *hba, bool enable);
+ 
++static void ufs_qcom_enable_reg_by_name(struct udevice *dev, const char *name,
++					int uv)
++{
++	struct udevice *reg;
++	int ret;
++
++	ret = uclass_get_device_by_name(UCLASS_REGULATOR, name, &reg);
++	if (ret) {
++		dev_warn(dev, "regulator %s unavailable (%d)\n", name, ret);
++		return;
++	}
++
++	regulator_set_value(reg, uv);
++	ret = regulator_set_enable(reg, true);
++	dev_info(dev, "regulator %s %duV enable %d\n", name, uv, ret);
++}
++
+ static int ufs_qcom_enable_clks(struct ufs_qcom_priv *priv)
+ {
+ 	int err;
+@@ -473,6 +492,26 @@
+ 	}
+ }
+ 
++/*
++ * Program SYS1CLK_1US with the core clock frequency in cycles per microsecond.
++ * Writing this register is mandatory from UFS HCI v4.0.0 on (the controller
++ * runs its internal timers from it); Linux does it in ufs_qcom_cfg_timers()
++ * before link startup, U-Boot never wrote it at all.
++ */
++static void ufs_qcom_cfg_timers(struct ufs_hba *hba)
++{
++	/* core_clk max from the DT's freq-table-hz (75 MHz .. 300 MHz) */
++	const u32 cycles_per_us = 300;
++
++	if (readl_relaxed(hba->mmio_base + REG_UFS_SYS1CLK_1US) !=
++	    cycles_per_us) {
++		writel_relaxed(cycles_per_us,
++			       hba->mmio_base + REG_UFS_SYS1CLK_1US);
++		/* make sure the write is applied before link startup */
++		readl_relaxed(hba->mmio_base + REG_UFS_SYS1CLK_1US);
++	}
++}
++
+ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
+ 					enum ufs_notify_change_status status)
+ {
+@@ -480,6 +519,8 @@
+ 
+ 	switch (status) {
+ 	case PRE_CHANGE:
++		ufs_qcom_cfg_timers(hba);
++
+ 		err = ufs_qcom_set_core_clk_ctrl(hba);
+ 		if (err)
+ 			dev_err(hba->dev, "cfg core clk ctrl failed\n");
+@@ -625,8 +666,23 @@
+ static int ufs_qcom_probe(struct udevice *dev)
+ {
+ 	struct ufs_qcom_priv *priv = dev_get_priv(dev);
++	struct power_domain pd;
+ 	int ret;
+ 
++	/*
++	 * The UFS block lives in a QCOM GDSC power domain that the boot chain
++	 * may have left powered off (registers then read as zero). Bring it up
++	 * before touching the controller.
++	 */
++	ret = power_domain_get(dev, &pd);
++	if (!ret) {
++		ret = power_domain_on(&pd);
++		if (ret) {
++			dev_err(dev, "failed to enable power domain, ret:%d\n", ret);
++			return ret;
++		}
++	}
++
+ 	/* get resets */
+ 	ret = reset_get_by_name(dev, "rst", &priv->core_reset);
+ 	if (ret) {
+@@ -639,6 +695,17 @@
+ 		dev_err(dev, "Warning: cannot get reset GPIO\n");
+ 	}
+ 
++	/*
++	 * Power the attached device before probing: its VCC (2.5 V) and VCCQ
++	 * rails must be up before link startup, otherwise the UFS device does
++	 * not answer and ufshcd_link_startup() fails with "Device not present".
++	 * U-Boot's RPMh regulator driver cannot resolve these by phandle, hence
++	 * by name (pm8350 -> ldob, pm8350c -> ldoc). The PHY rails themselves
++	 * are already on from the boot chain or the USB bring-up.
++	 */
++	ufs_qcom_enable_reg_by_name(dev, "ldob7", 2504000);
++	ufs_qcom_enable_reg_by_name(dev, "ldob9", 1200000);
++
+ 	ret = ufshcd_probe(dev, &ufs_qcom_hba_ops);
+ 	if (ret) {
+ 		dev_err(dev, "ufshcd_probe() failed, ret:%d\n", ret);
+diff --git a/drivers/ufs/ufs.c b/drivers/ufs/ufs.c
+--- a/drivers/ufs/ufs.c
++++ b/drivers/ufs/ufs.c
+@@ -10,6 +10,7 @@
+ 
+ #include <bouncebuf.h>
+ #include <charset.h>
++#include <cyclic.h>
+ #include <dm.h>
+ #include <log.h>
+ #include <dm/device_compat.h>
+@@ -81,6 +82,12 @@
+ 				err = -ETIMEDOUT;
+ 			break;
+ 		}
++		/*
++		 * This spin runs for the whole controller/link bring-up. Let
++		 * cyclic callbacks (the board's watchdog servicing) run, or a
++		 * long bring-up trips the hypervisor watchdog.
++		 */
++		schedule();
+ 	}
+ 
+ 	return err;
+@@ -554,8 +561,10 @@
+  */
+ static int ufshcd_hba_enable(struct ufs_hba *hba)
+ {
+-	int retry;
++	int retry_outer = 3;
++	int retry_inner;
+ 
++start:
+ 	if (!ufshcd_is_hba_active(hba))
+ 		/* change controller state to "reset state" */
+ 		ufshcd_hba_stop(hba);
+@@ -577,16 +586,26 @@
+ 	 */
+ 	mdelay(1);
+ 
+-	/* wait for the host controller to complete initialization */
+-	retry = 10;
++	/*
++	 * Wait for the host controller to complete initialization. Retry the
++	 * whole sequence (which re-runs the PHY power-up and controller reset
++	 * via the PRE_CHANGE notifier) a few times: the vendor driver does the
++	 * same and some controllers only complete on a later attempt.
++	 */
++	retry_inner = 1000;
+ 	while (ufshcd_is_hba_active(hba)) {
+-		if (retry) {
+-			retry--;
++		if (retry_inner) {
++			retry_inner--;
+ 		} else {
+ 			dev_err(hba->dev, "Controller enable failed\n");
++			if (retry_outer) {
++				retry_outer--;
++				goto start;
++			}
+ 			return -EIO;
+ 		}
+-		mdelay(5);
++		schedule();
++		udelay(1000);
+ 	}
+ 
+ 	/* enable UIC related interrupts */
+@@ -1110,6 +1129,86 @@
+ 	return ret;
+ }
+ 
++/**
++ * ufshcd_query_attr() - send a UFS Query Attribute request
++ *
++ * The existing U-Boot driver had the Query opcode and the attribute ID in its
++ * definitions, but only implemented the flag and descriptor helpers.  In
++ * particular, bBootLunEn is not a GPT field: it is the UFS device attribute
++ * that PBL uses to choose xbl_a (LUN 1) or xbl_b (LUN 2).  Keep this path
++ * beside ufshcd_query_flag() so it uses the same command descriptor, response
++ * checking, cache maintenance, and timeout behavior as the other Query
++ * requests.
++ */
++static int ufshcd_query_attr(struct ufs_hba *hba, enum query_opcode opcode,
++			     enum attr_idn idn, u8 index, u8 selector,
++			     u32 *attr_val)
++{
++	struct ufs_query_req *request = NULL;
++	struct ufs_query_res *response = NULL;
++	int err;
++
++	if (!attr_val)
++		return -EINVAL;
++
++	ufshcd_init_query(hba, &request, &response, opcode, idn, index,
++			  selector);
++
++	switch (opcode) {
++	case UPIU_QUERY_OPCODE_WRITE_ATTR:
++		request->query_func = UPIU_QUERY_FUNC_STANDARD_WRITE_REQUEST;
++		request->upiu_req.value = cpu_to_be32(*attr_val);
++		break;
++	case UPIU_QUERY_OPCODE_READ_ATTR:
++		request->query_func = UPIU_QUERY_FUNC_STANDARD_READ_REQUEST;
++		break;
++	default:
++		dev_err(hba->dev,
++			"%s: expected read/write attribute opcode, got 0x%x\n",
++			__func__, opcode);
++		return -EINVAL;
++	}
++
++	err = ufshcd_exec_dev_cmd(hba, DEV_CMD_TYPE_QUERY, QUERY_REQ_TIMEOUT);
++	if (err) {
++		dev_err(hba->dev,
++			"%s: opcode 0x%x for idn %d failed, err = %d\n",
++			__func__, opcode, idn, err);
++		return err;
++	}
++
++	/* For a write this is the device's response value; for a read it is the
++	 * requested attribute.  Returning it makes the helper useful for both and
++	 * lets the board code verify a write with a separate read. */
++	*attr_val = be32_to_cpu(response->upiu_res.value);
++	return 0;
++}
++
++static int ufshcd_query_attr_retry(struct ufs_hba *hba,
++				   enum query_opcode opcode, enum attr_idn idn,
++				   u8 index, u8 selector, u32 *attr_val)
++{
++	int ret = -EIO;
++	int retries;
++
++	for (retries = 0; retries < QUERY_REQ_RETRIES; retries++) {
++		ret = ufshcd_query_attr(hba, opcode, idn, index, selector,
++					attr_val);
++		if (!ret)
++			break;
++		dev_dbg(hba->dev,
++			"%s: failed with error %d, retry %d\n",
++			__func__, ret, retries + 1);
++	}
++
++	if (ret)
++		dev_err(hba->dev,
++			"%s: opcode 0x%x, idn %d failed with error %d after %d retries\n",
++			__func__, opcode, idn, ret, retries);
++
++	return ret;
++}
++
+ static int __ufshcd_query_descriptor(struct ufs_hba *hba,
+ 				     enum query_opcode opcode,
+ 				     enum desc_idn idn, u8 index, u8 selector,
+@@ -1414,6 +1513,7 @@
+ 			ret = (status != PWR_OK) ? status : -1;
+ 			break;
+ 		}
++		schedule();
+ 	} while (status != PWR_LOCAL);
+ 
+ 	return ret;
+@@ -1515,11 +1615,21 @@
+ 	ufshcd_prepare_utp_scsi_cmd_upiu(hba, pccb, upiu_flags);
+ 	prepare_prdt_table(hba, pccb);
+ 
+-	ufshcd_cache_flush(pccb->pdata, pccb->datalen);
++	/*
++	 * Commands that carry no data - TEST UNIT READY during the bus scan,
++	 * SYNCHRONIZE CACHE for every GPT commit - have no buffer to clean or
++	 * invalidate.  This tree's ARM64 cache helpers *report* a NULL range on
++	 * the console ("NULL flush_dcache_range: 0x0 - 0x0"), and on a board
++	 * whose only log is the panel that costs lines the operator needs for
++	 * the reason a write did or did not happen (DEBUGGING.md §1).
++	 */
++	if (pccb->datalen)
++		ufshcd_cache_flush(pccb->pdata, pccb->datalen);
+ 
+ 	ufshcd_send_command(hba, TASK_TAG);
+ 
+-	ufshcd_cache_invalidate(pccb->pdata, pccb->datalen);
++	if (pccb->datalen)
++		ufshcd_cache_invalidate(pccb->pdata, pccb->datalen);
+ 
+ 	ocs = ufshcd_get_tr_ocs(hba);
+ 	switch (ocs) {
+@@ -2075,6 +2185,60 @@
+ 	return 0;
+ }
+ 
++static int ufs_get_hba(struct ufs_hba **hba)
++{
++	struct udevice *dev;
++	int ret;
++
++	if (!hba)
++		return -EINVAL;
++
++	ret = uclass_get_device(UCLASS_UFS, 0, &dev);
++	if (ret)
++		return ret;
++
++	*hba = dev_get_uclass_priv(dev);
++	return *hba ? 0 : -ENODEV;
++}
++
++int ufs_get_boot_lun(u32 *boot_lun)
++{
++	struct ufs_hba *hba;
++	int ret;
++
++	if (!boot_lun)
++		return -EINVAL;
++
++	ret = ufs_get_hba(&hba);
++	if (ret)
++		return ret;
++
++	return ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_READ_ATTR,
++				       QUERY_ATTR_IDN_BOOT_LU_EN, 0, 0,
++				       boot_lun);
++}
++
++int ufs_set_boot_lun(u32 boot_lun)
++{
++	struct ufs_hba *hba;
++	u32 value = boot_lun;
++	int ret;
++
++	/* bBootLunEn=0 means no boot LU and values above 2 are invalid for the
++	 * two-XBL device.  Refuse them here instead of sending a destructive
++	 * device-management request from board code. */
++	if (boot_lun != 1 && boot_lun != 2)
++		return -EINVAL;
++
++	ret = ufs_get_hba(&hba);
++	if (ret)
++		return ret;
++
++	return ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_WRITE_ATTR,
++				       QUERY_ATTR_IDN_BOOT_LU_EN, 0, 0,
++				       &value);
++}
++
+ U_BOOT_DRIVER(ufs_scsi) = {
+ 	.id = UCLASS_SCSI,
+ 	.name = "ufs_scsi",
+diff --git a/include/ufs.h b/include/ufs.h
+--- a/include/ufs.h
++++ b/include/ufs.h
+@@ -2,6 +2,8 @@
+ #ifndef _UFS_H
+ #define _UFS_H
+ 
++#include <linux/types.h>
++
+ struct udevice;
+ 
+ /**
+@@ -20,6 +22,25 @@
+  */
+ int ufs_probe_dev(int index);
+ 
++/**
++ * ufs_get_boot_lun() - read the UFS bBootLunEn attribute
++ *
++ * @boot_lun: receives the boot logical unit selected by the device (1 or 2
++ *            on this board)
++ *
++ * The attribute is the UFS-level half of an A/B boot-chain switch.  It is
++ * deliberately exposed as a small board-neutral API instead of leaking the
++ * driver's private struct ufs_hba into board code.
++ */
++int ufs_get_boot_lun(u32 *boot_lun);
++
++/**
++ * ufs_set_boot_lun() - write the UFS bBootLunEn attribute
++ *
++ * @boot_lun: boot logical unit to select (1 or 2)
++ */
++int ufs_set_boot_lun(u32 boot_lun);
++
+ /*
+  * ufs_scsi_bind() - Create a new scsi device as a child of the UFS device and
+  *		     bind it to the ufs_scsi driver

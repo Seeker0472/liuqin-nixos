@@ -1,0 +1,80 @@
+diff --git a/arch/arm/mach-snapdragon/board.c b/arch/arm/mach-snapdragon/board.c
+--- a/arch/arm/mach-snapdragon/board.c
++++ b/arch/arm/mach-snapdragon/board.c
+@@ -44,6 +44,17 @@
+ 
+ struct mm_region *mem_map = rbx_mem_map;
+ 
++/*
++ * Board hook for the cross-reset stage log (see board/qualcomm/liuqin): the
++ * board provides the real implementation, this default keeps the mach code
++ * buildable for the other snapdragon boards. Called from here because these
++ * are the earliest points that can still fail silently - a board with no UART
++ * that dies in board_fdt_blob_setup() or enable_caches() shows nothing at all.
++ */
++void __weak liuqin_stage(const char *what)
++{
++}
++
+ static void show_psci_version(void)
+ {
+ 	struct arm_smccc_res res;
+@@ -69,6 +80,8 @@
+ 	struct fdt_header *fdt;
+ 	bool internal_valid, external_valid;
+ 
++	liuqin_stage("fdt blob");
++
+ 	*err = 0;
+ 	fdt = (struct fdt_header *)get_prev_bl_fdt_addr();
+ 	external_valid = fdt && !fdt_check_header(fdt);
+@@ -92,9 +105,11 @@
+ 	 * There is no point returning an error here, U-Boot can't do anything useful in this situation.
+ 	 * Bail out while we can still print a useful error message.
+ 	 */
+-	if (!internal_valid && !external_valid)
++	if (!internal_valid && !external_valid) {
++		liuqin_stage("fdt invalid");
+ 		panic("Internal FDT is invalid and no external FDT was provided! (fdt=%#llx)\n",
+ 		      (phys_addr_t)fdt);
++	}
+ 
+ 	if (internal_valid) {
+ 		debug("Using built in FDT\n");
+@@ -109,6 +124,7 @@
+ 	 * this makes it easy to do other things early.
+ 	 */
+ 	qcom_parse_memory(internal_valid);
++	liuqin_stage("dram parsed");
+ 
+ 	return (void *)gd->fdt_blob;
+ }
+@@ -161,6 +177,13 @@
+ {
+ }
+ 
++/*
++ * Late board hook, called once the full driver model is up (see liuqin).
++ */
++void __weak qcom_board_late_init(void)
++{
++}
++
+ int board_init(void)
+ {
+ 	printf("## Current EL: %d\n", current_el());
+@@ -419,6 +442,8 @@
+ 
+ 	//gunyah_init();
+ 
++	qcom_board_late_init();
++
+ 	return 0;
+ }
+ 
+@@ -631,4 +656,5 @@
+ 
+ 	/* Some boards don't include the splash region in the memory map... */
+ 	map_framebuffer();
++	liuqin_stage("fb mapped");
+ }

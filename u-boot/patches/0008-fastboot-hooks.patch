@@ -1,0 +1,269 @@
+diff --git a/drivers/fastboot/fb_command.c b/drivers/fastboot/fb_command.c
+--- a/drivers/fastboot/fb_command.c
++++ b/drivers/fastboot/fb_command.c
+@@ -31,6 +31,7 @@
+ static u32 fastboot_bytes_expected;
+ 
+ static void okay(char *, char *);
++static void set_active(char *, char *);
+ static void getvar(char *, char *);
+ static void download(char *, char *);
+ static void flash(char *, char *);
+@@ -92,7 +93,7 @@
+ 	},
+ 	[FASTBOOT_COMMAND_SET_ACTIVE] =  {
+ 		.command = "set_active",
+-		.dispatch = okay
++		.dispatch = set_active
+ 	},
+ 	[FASTBOOT_COMMAND_OEM_FORMAT] = {
+ 		.command = "oem format",
+@@ -208,6 +209,25 @@
+ }
+ 
+ /**
++ * set_active() - Make a slot the next one to boot
++ *
++ * The response only says the request was understood and carried out; where the
++ * slot state lives is the board's business (fastboot_set_active_slot()).
++ */
++static void set_active(char *cmd_parameter, char *response)
++{
++	if (!cmd_parameter || !*cmd_parameter) {
++		fastboot_fail("missing slot suffix", response);
++		return;
++	}
++
++	if (fastboot_set_active_slot(cmd_parameter))
++		fastboot_fail("cannot set active slot", response);
++	else
++		fastboot_okay(NULL, response);
++}
++
++/**
+  * getvar() - Read a config/version variable
+  *
+  * @cmd_parameter: Pointer to command parameter
+diff --git a/drivers/fastboot/fb_common.c b/drivers/fastboot/fb_common.c
+--- a/drivers/fastboot/fb_common.c
++++ b/drivers/fastboot/fb_common.c
+@@ -122,6 +122,47 @@
+ 	return ret;
+ }
+ 
++/*
++ * The ordinary "fastboot reboot" has no reboot-mode reason to set.  Most
++ * boards can use U-Boot's generic reset directly, but Qualcomm boards with a
++ * vendor PS_HOLD hand-off need a board-specific normal reboot sequence.
++ */
++void __weak fastboot_reboot(void)
++{
++	do_reset(NULL, 0, 0, NULL);
++}
++
++/**
++ * fastboot_set_active_slot() - Switch the A/B boot slot
++ *
++ * See include/fastboot.h. Boards that keep their slot state somewhere other
++ * than the BCB (Qualcomm's GPT attributes, for instance) override this.
++ */
++int __weak fastboot_set_active_slot(const char *slot)
++{
++	return -ENOSYS;
++}
++
++/**
++ * fastboot_current_slot() - Report the A/B slot the bootloader would boot
++ *
++ * See include/fastboot.h.
++ */
++int __weak fastboot_current_slot(char *buf, size_t size)
++{
++	return -ENOSYS;
++}
++
++/**
++ * fastboot_has_slot() - Report whether a partition is A/B slotted
++ *
++ * See include/fastboot.h.
++ */
++int __weak fastboot_has_slot(const char *part)
++{
++	return -ENOSYS;
++}
++
+ /**
+  * fastboot_get_progress_callback() - Return progress callback
+  *
+@@ -193,6 +234,8 @@
+ 		break;
+ 
+ 	case FASTBOOT_COMMAND_REBOOT:
++		fastboot_reboot();
++		break;
+ 	case FASTBOOT_COMMAND_REBOOT_BOOTLOADER:
+ 	case FASTBOOT_COMMAND_REBOOT_FASTBOOTD:
+ 	case FASTBOOT_COMMAND_REBOOT_RECOVERY:
+diff --git a/drivers/fastboot/fb_getvar.c b/drivers/fastboot/fb_getvar.c
+--- a/drivers/fastboot/fb_getvar.c
++++ b/drivers/fastboot/fb_getvar.c
+@@ -68,12 +68,10 @@
+ 		.variable = "current-slot",
+ 		.dispatch = getvar_current_slot,
+ 		.list = true
+-#if IS_ENABLED(CONFIG_FASTBOOT_FLASH)
+ 	}, {
+ 		.variable = "has-slot",
+ 		.dispatch = getvar_has_slot,
+ 		.list = false
+-#endif
+ #if IS_ENABLED(CONFIG_FASTBOOT_FLASH_MMC)
+ 	}, {
+ 		.variable = "partition-type",
+@@ -183,40 +181,66 @@
+ 
+ static void getvar_current_slot(char *var_parameter, char *response)
+ {
+-	/* A/B not implemented, for now always return "a" */
+-	fastboot_okay("a", response);
++	char slot[8];
++
++	if (fastboot_current_slot(slot, sizeof(slot)))
++		/* No board hook: the generic answer, for now "a" */
++		fastboot_okay("a", response);
++	else
++		fastboot_okay(slot, response);
+ }
+ 
+-static void __maybe_unused getvar_has_slot(char *part_name, char *response)
++static void getvar_has_slot(char *part_name, char *response)
+ {
+-	char part_name_wslot[PART_NAME_LEN];
+-	size_t len;
+-	int r;
++	int board;
+ 
+-	if (!part_name || part_name[0] == '\0')
+-		goto fail;
++	if (!part_name || part_name[0] == '\0') {
++		fastboot_fail("invalid partition name", response);
++		return;
++	}
+ 
+-	/* part_name_wslot = part_name + "_a" */
+-	len = strlcpy(part_name_wslot, part_name, PART_NAME_LEN - 3);
+-	if (len >= PART_NAME_LEN - 3)
+-		goto fail;
+-	strcat(part_name_wslot, "_a");
+-
+-	r = getvar_get_part_info(part_name_wslot, response, NULL);
+-	if (r >= 0) {
+-		fastboot_okay("yes", response); /* part exists and slotted */
++	/*
++	 * Boards whose partitions do not come from the generic block-device
++	 * backend answer here; a negative return means "no opinion" and falls
++	 * through to the lookup below.
++	 */
++	board = fastboot_has_slot(part_name);
++	if (board >= 0) {
++		fastboot_okay(board ? "yes" : "no", response);
+ 		return;
+ 	}
+ 
+-	r = getvar_get_part_info(part_name, response, NULL);
+-	if (r >= 0)
+-		fastboot_okay("no", response); /* part exists but not slotted */
++#if IS_ENABLED(CONFIG_FASTBOOT_FLASH)
++	{
++		char part_name_wslot[PART_NAME_LEN];
++		size_t len;
++		int r;
++
++		/* part_name_wslot = part_name + "_a" */
++		len = strlcpy(part_name_wslot, part_name, PART_NAME_LEN - 3);
++		if (len >= PART_NAME_LEN - 3) {
++			fastboot_fail("invalid partition name", response);
++			return;
++		}
++		strcat(part_name_wslot, "_a");
++
++		r = getvar_get_part_info(part_name_wslot, response, NULL);
++		if (r >= 0) {
++			fastboot_okay("yes", response); /* exists and slotted */
++			return;
++		}
++
++		r = getvar_get_part_info(part_name, response, NULL);
++		if (r >= 0)
++			fastboot_okay("no", response); /* exists, not slotted */
+ 
+-	/* At this point response is filled with okay or fail string */
+-	return;
++		/* r < 0: the response is filled with the okay or fail string */
++		return;
++	}
++#endif
+ 
+-fail:
+-	fastboot_fail("invalid partition name", response);
++	/* Neither a board hook nor the flash backend can answer. */
++	fastboot_fail("no slot information", response);
+ }
+ 
+ static void __maybe_unused getvar_partition_type(char *part_name, char *response)
+diff --git a/include/fastboot.h b/include/fastboot.h
+--- a/include/fastboot.h
++++ b/include/fastboot.h
+@@ -106,6 +106,52 @@
+ int fastboot_set_reboot_flag(enum fastboot_reboot_reason reason);
+ 
+ /**
++ * fastboot_reboot() - Perform the ordinary fastboot reboot
++ *
++ * Boards whose normal reboot is not the generic U-Boot reset may override
++ * this hook.  The reboot-* variants still use their reason-specific path.
++ */
++void fastboot_reboot(void);
++
++/**
++ * fastboot_set_active_slot() - Switch the A/B boot slot
++ *
++ * Backend of the client's "set_active" command: make @slot the slot the
++ * bootloader boots next. The generic slot state of an ABL-managed board is not
++ * the AOSP BCB, so this is a no-op unless the board file overrides it.
++ *
++ * @slot: Slot suffix as the client sent it: "_a"/"a"/"_b"/"b"
++ * Return: 0 on success, negative errno on failure
++ */
++int fastboot_set_active_slot(const char *slot);
++
++/**
++ * fastboot_current_slot() - Report the A/B slot the bootloader would boot
++ *
++ * Should be overridden next to fastboot_set_active_slot(), so that the
++ * client's "getvar current-slot" and "set_active" cannot disagree.
++ *
++ * @buf: Buffer to write the slot suffix ("a" or "b") into
++ * @size: Size of @buf
++ * Return: 0 on success, negative errno if the board cannot tell
++ */
++int fastboot_current_slot(char *buf, size_t size);
++
++/**
++ * fastboot_has_slot() - Report whether a partition is A/B slotted
++ *
++ * Backend of the client's "has-slot:<partition>" query, which it uses (for the
++ * boot partition in particular) to decide whether the device supports slots at
++ * all before sending set_active. Override it on boards whose partitions do not
++ * come from the generic block-device backend.
++ *
++ * @part: Partition base name, without a slot suffix
++ * Return: 1 if "<part>_a" or "<part>_b" exists, 0 if not, negative errno to
++ *	   defer to the generic implementation
++ */
++int fastboot_has_slot(const char *part);
++
++/**
+  * fastboot_set_progress_callback() - set progress callback
+  *
+  * @progress: Pointer to progress callback

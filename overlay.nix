@@ -33,10 +33,14 @@ in
     gawk = final.buildPackages.gawk;
   };
 
-  # /boot payload for the U-Boot loader path (kernel + initrd + DTB carrying
-  # the command line). Built by the NixOS module via system.build; the
-  # arguments come from the configuration, so it is not instantiated here.
-  liuqinBootdir = args: final.callPackage ./pkgs/bootdir.nix args;
+  # --- U-Boot ---
+  # The bootloader this device boots, built here rather than in a sibling
+  # checkout: Qualcomm's U-Boot fork plus the liuqin port (u-boot/patches for
+  # the files it shares with its base, u-boot/files for the ones it adds;
+  # u-boot/verify-port.sh proves the three reproduce the dev tree byte for byte). The
+  # boot.img is packaged by pkgs/bootimg.nix, the same ABL pipeline as the
+  # kernel image. buildPackages is the x86_64 set that runs the host tools.
+  liuqinUboot = final.callPackage ./u-boot { hostPkgs = final.buildPackages; };
 
   # --- Device packages ---
   liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd.nix { };
