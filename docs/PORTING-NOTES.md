@@ -1,162 +1,193 @@
 # Porting notes: xiaomipad-6pro-mainline → liuqin-nixos
 
-This repository is a Nix expression of the device work in the downstream
-project. The comparison is source-level: downstream currently follows a Linux
-6.17 branch, while this repository reapplies the hardware changes to Linux
-7.2.5. A downstream behavior is therefore a candidate to port, not proof that
-the same initcall ordering is safe on 7.2.5.
+Nix expression of the downstream device work, on Linux 7.2.5 (downstream is on
+6.17). A downstream behaviour is a candidate to port, not proof it is safe here.
 
-## Kernel patch series
+## Kernel
 
-There are **ten** kernel patches, applied in filename order to Linux 7.2.5:
+Twelve patches, applied in filename order:
 
-1. `0001` DTS and bindings for SM8475/liuqin;
-2. `0002` Nanosic WN8030 keyboard bridge;
-3. `0003` Novatek NT36523 SPI touchscreen;
-4. `0004` Novatek NT36532 DSI panel;
-5. `0005` AudioReach/TDM/CS35L41 audio;
-6. `0006` PON, battmgr and PMIC GLINK;
-7. `0007` Iris video decoder adaptation;
-8. `0008` misc, UBWC and the simplefb early console;
-9. `0009` I2C eUSB2 repeater;
-10. `0010` SM8475 TLMM pinctrl.
+| # | content |
+|---|---|
+| 0001 | DTS and bindings for SM8475/liuqin |
+| 0002 | Nanosic WN8030 keyboard bridge |
+| 0003 | Novatek NT36523 SPI touchscreen |
+| 0004 | Novatek NT36532 DSI panel |
+| 0005 | AudioReach/TDM/CS35L41 audio |
+| 0006 | PON, battmgr, PMIC GLINK |
+| 0007 | Iris video decoder adaptation |
+| 0008 | misc, UBWC, simplefb early console |
+| 0009 | I2C eUSB2 repeater |
+| 0010 | SM8475 TLMM pinctrl |
+| 0011 | gpio function flag in that pinctrl driver |
+| 0012 | dirtyfb flush for CPU-written framebuffers |
 
-The experimental DRAM-resident console patch was removed. It was not proven
-reliable on this device and is not part of the kernel or cmdline anymore.
+Three config inputs:
 
-The downstream configuration is split into desktop, keyboard, sensors and
-firstboot fragments. This tree combines the applicable options in
-`kernel/config.nix` and `kernel/liuqin-firstboot.config`. The normal kernel
-keeps the tested display hand-off; the installer kernel adds built-in USB and
-HID options because its RAM image has no module tree.
+- `kernel/config.nix` — structured answers, installed system;
+- `kernel/liuqin-firstboot.config` — raw fragment appended in `postConfigure`
+  for symbols a structured answer cannot settle (Kconfig question order, or
+  `olddefconfig` downgrading `=y` to `=m`), then `make olddefconfig` and an
+  assertion that each symbol is `=y`;
+- `kernel/installer.config` — same mechanism, installer kernel only (its RAM
+  image has no module tree, so the USB/HID gadget paths are built in).
 
-## What is intentionally different
+The experimental DRAM-resident console patch was removed: unreliable on this
+device.
 
-### Display and early console
+## Command line
 
-The local `0008` implementation does not clear the whole framebuffer when it
-wraps. It clears each line as it is reused, preserving the newest screenful.
-That behavior is intentional because the tablet has no accessible UART and the
-screen is the only early failure channel.
-
-The normal installed-system command line remains:
+Installed system:
 
 ```text
 earlycon=simplefb console=drm_log console=tty0
-initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init rootwait
+initcall_blacklist=simplefb_driver_init rootwait
 ```
 
-The SMMU and display-clock blacklists are not treated as proven upstream
-requirements. They remain pending an A/B test against the downstream-style
-`simplefb_driver_init`-only profile on the actual device.
+`earlycon=simplefb` plus `keep_bootcon` plus `console=tty0` keep a console
+alive from the first line; the console loglevel stays at the kernel default
+(NixOS' `loglevel=4` hid the log). The SMMU/display-clock blacklist and the
+option that enabled it (`hardware.liuqin.boot.legacySmmuDispccBlacklist`) are
+gone: a configuration with those initcalls disabled crashes this unit.
 
-The default RAM installer uses that downstream-style profile so UFS/PCIe/Wi-Fi
-and display initcalls are exercised together. `installer-bootimg-safe` retains
-the earlier local SMMU/dispcc workaround as a rollback image if this unit still
-shows the old white-screen failure.
+`0008`'s early framebuffer clears each reused line rather than the whole
+screen, so the newest screenful survives a wrap.
 
-### Ramoops
+Ramoops: the reserved-memory node exists in the DTS, and
+`dts/liuqin-abl-boot-overlay.dts` disables it, because ABL supplies the same
+region in the final DT and two copies overlap.
 
-The kernel DTS contains the stock-compatible
-`/reserved-memory/ramoops@a7000000`, but
-`dts/liuqin-abl-boot-overlay.dts` sets that node to `status = "disabled"`.
-ABL already supplies the same region when it hands the kernel its final DT;
-keeping a second copy creates an overlap. This is a deliberate installer and
-normal-image choice, not an omitted feature.
+## Display
 
-### Touchscreen firmware
+- Panel `xiaomi,pipa-nt36532`, CSOT module `m81_42_02_0b`, `MIPI_DSI_MODE_VIDEO`,
+  two DSI hosts, DPMS on, KTZ8866 backlight at 1500/2047. The DTS fallback
+  `novatek/liuqin/novatek_nt36532_m81_fw_csot.bin` is correct for this unit;
+  automatic TM/CSOT selection is not implemented.
+- DRM client is `DRM_CLIENT_DEFAULT_FBDEV` (asserted), giving `fb0`/`msmdrmfb`
+  and a getty on `tty1`. `fb0: framebuffer is not in virtual address space` is
+  informational: `sys_fillrect()` warns and still calls `fb_fillrect()`.
+- `0011`: the backported `pinctrl-sm8475.c` declared its gpio function with
+  `MSM_PIN_FUNCTION()`, and 7.2.5's pinmux core refuses a GPIO request on a pin
+  whose mux function lacks `PINFUNCTION_FLAG_GPIO`. Without
+  `MSM_GPIO_PIN_FUNCTION()` the panel reset (`gpio0`), the four CS35L41 resets
+  (`gpio1/3/87/92`) and the gpio-keys hall lines (`gpio10/23`) all fail.
+- `0012`: the damage chain (`sys_*` → damage → `damage_work` → `fb_dirty`) ran,
+  but `msm_framebuffer_dirtyfb()` returned early on
+  `refcount_read(&dirtyfb) == 1`, so `drm_atomic_helper_dirtyfb()` never ran and
+  console output stayed invisible until an unrelated commit. The interface is
+  `INTF_MODE_VIDEO` (debugfs `encoder-0/status`, `crtc-0` `intf_mode: 2`).
+  The skip now also requires that nothing has the framebuffer CPU-mapped
+  (`msm_obj->vmap_count == 0`); GPU-written framebuffers are unchanged.
+- `liuqin-screen-refresh` blanks/unblanks once after multi-user; that commit
+  redraws the console scrollback, including what was printed before the DRM
+  fbdev took over, into the framebuffer the panel scans.
+- Touchscreen: the driver downloads firmware on resume, so without the payload
+  above it closes the device on the first blank/unblank. The installer does not
+  ship it (its panel is output-only); the installed system carries the full
+  firmware set.
+- The `-safe` installer profile (blacklisting `arm_smmu_init` and
+  `disp_cc_sm8450_driver_init`) went white and then rebooted on this unit, and
+  was removed. One installer image remains.
+- The kernel's touchscreen firmware parser should validate ranges as
+  `offset <= length && size <= length - offset` before checksums or copies; the
+  7.2.5 adaptation does not do this yet.
 
-This device is observed as panel module `m81_42_02_0b` (CSOT), so the DTS
-fallback remains:
+## Installer
 
-```text
-novatek/liuqin/novatek_nt36532_m81_fw_csot.bin
-```
+- RAM-only live root. `installer-bootimg` is the only image.
+- Channel: USB2 peripheral NCM gadget at `192.168.7.2/24`, DHCP and telnet on
+  `192.168.7.2:2323`, sshd on port 22. Stage 2 recreates the gadget.
+- Toolchain: `sgdisk`, `parted`, `mkfs.ext4`, `e2fsck`, `resize2fs`,
+  `resize.f2fs`, `mkfs.f2fs`, `nmtui`, and `liuqin-install-nixos`, which bundles
+  `nixos-install`, requires a mounted `/mnt`, never partitions or formats by
+  itself, and checks the target's storage identity against the flake.
+- The initrd disables NixOS' generic PC module list: this kernel has UFS, SCSI,
+  ext4, IOMMU and USB built in, and the generic list's absent modules
+  (`ata_piix`) fail before the guard runs.
+- The initrd firmware tree is at `/var/lib/firmware`, matching
+  `firmware_class.path` and avoiding the read-only `/lib` symlink.
 
-The downstream driver additionally selects TM for
-`m81_36_02_0a` and CSOT for `m81_42_02_0b` from the bootloader command line.
-That selection should be retained when the two-panel-batch support is needed;
-the fixed CSOT fallback is correct for the current unit.
+Four defects fixed to get here, each verified on the unit:
 
-The firmware parser must validate ranges as
-`offset <= length && size <= length - offset` before checksums or copies.
-Adding the equivalent overflow hardening to the 7.2.5 adaptation is a
-correctness improvement; firmware is local input, so this is not treated as a
-remote security issue.
+| defect | fix |
+|---|---|
+| `CONFIG_SQUASHFS_CHOICE_DECOMP_BY_MOUNT` unset, so mount's `loop,threads=multi` answered `EINVAL` and `/sysroot/nix/.ro-store` never mounted | set in `kernel/installer.config`, asserted |
+| stage 1's `init=` lookup resolved inside `/sysroot`, and ABL appends its own `init=/init` last | `ExecStartPre` plants the marker, listed in `boot.initrd.systemd.storePaths` |
+| the filtered live toplevel dropped `boot.json`, which stage 1 needs for the etc image and `env`/`modprobe` | keep `boot.json`, with `kernel`/`initrd` repointed |
+| `CONFIG_EROFS_FS` unset, so the `/etc` EROFS image failed and the initrd stopped in emergency mode | enabled in `kernel/liuqin-firstboot.config`, asserted in both check loops |
 
-### Audio, USB and charging
+Measured: gadget up at ~10 s, telnet answering during the initrd, sshd and the
+telnet shell at ~30 s after switch_root, `systemctl is-system-running` =
+`running` with no failed units, `/etc` on the EROFS overlay, three USB units
+active.
 
-The local DTS currently implements the validated four-speaker TDM path. The
-downstream 6.17 DTS also describes the WCD938x/SoundWire/LPASS microphone
-capture graph; that is a separate feature to enable and test, not an installer
-boot dependency.
+## Storage
 
-The local base DTS remains USB2 peripheral-only. The installer image has a
-separate USB-host overlay and built-in XHCI/HID support for a wired keyboard;
-the normal boot image is not silently changed to an untested USB3/OTG role.
-
-The downstream device repository's 3a9363d adds the userspace Xiaomi
-MiPPS/PPS authentication daemon. Local `0006` currently exposes the kernel
-transport/raw attributes only. Porting the daemon is a later normal-system
-feature and must not be enabled in the installer by default.
-
-## Installation architecture
-
-The initial-install path is deliberately only the RAM installer image:
-
-```text
-ABL fastboot boot installer-bootimg
-  → live NixOS tty/NetworkManager
-  → measured partition selection/creation
-  → mount /mnt
-  → liuqin-install-nixos
-  → nixos-install + marker provisioning
-```
-
-The former host-side fastboot installer, `fetch` backup path, pre-built
-rootfs/sparse-image outputs and BusyBox diagnostic image have
-been removed. This avoids maintaining two incompatible installation models and
-ensures every first install has the same storage checks and marker setup.
-
-The installed initrd still has a fail-closed storage identity guard. It checks
-the configured by-partlabel device, filesystem label, root marker and UFS
-read-only state before opening the target root read-write. The live installer
-writes `/etc/liuqin-nixos-root` after `nixos-install`, because stage-2 tmpfiles
-cannot provision a file before the first initrd probe.
+- `hardware.liuqin.storage.layout`: `whole-userdata` (default) or
+  `linux-partition` (Android keeps userdata; NixOS owns a `linux` partition).
+- The root is always `/dev/disk/by-partlabel/<name>` with label `LIUQIN_ROOT`.
+  Partition numbers, starts and sizes differ between the 256 GB and 512 GB GPTs,
+  so no geometry constant exists in the repository.
+- The initrd guard verifies the identity (partlabel, filesystem label, and
+  `/etc/liuqin-nixos-root` content, mode, owner, size and sha256), forces every
+  other `sd*` node read-only, opens only the root rw and then reasserts ro on
+  the siblings; `tmpfiles f+` repairs the marker and `sysroot.mount` depends on
+  the guard.
+- The marker bytes live in `lib/liuqin-root-marker.nix`, shared by the guard and
+  by `config/installer.nix`, which writes the file after `nixos-install`.
+- A oneshot grows the root filesystem with `resize2fs`.
 
 ## ABL DTB and symbol contract
 
-`pkgs/bootimg.nix` applies the ABL metadata overlay, optionally applies the
-installer USB overlay, then builds the `__symbols__` union from every stock
-DTBO entry and base DTB. Every exported symbol is redirected to the inert
-`liuqin-abl-overlay-sink` node so ABL cannot mutate a live mainline node when it
-force-applies stock overlays.
+`pkgs/bootimg.nix` applies the ABL metadata overlay, optionally the installer
+USB overlay, then builds the `__symbols__` union from every stock DTBO entry and
+base DTB. Every exported symbol points at the inert `liuqin-abl-overlay-sink`
+node, so ABL cannot mutate a live mainline node when it force-applies stock
+overlays. The sink phandle is not fixed: the build decompiles the merged DTB,
+takes the largest existing `phandle`/`linux,phandle` and emits `max + 1`.
 
-The sink phandle is **not fixed**. The build decompiles the merged DTB, finds
-the largest existing `phandle`/`linux,phandle`, and emits `max + 1`. This avoids
-collisions when a kernel or stock DT archive gains a higher phandle.
-
-The checked-in stock archive contains 38 DTBO entries and 11 base DTBs, and the
+The checked-in stock archive holds 38 DTBO entries and 11 base DTBs, and the
 build asserts a 1744-symbol union. The downstream analysis tree uses 44/14 and
-1781 symbols from another OS build; that count is not a correctness condition
+1781 symbols from another OS build; those counts are not correctness conditions
 for this archive.
 
 ## Firmware inputs
 
-`pkgs/firmware.nix` assembles the operator-provided touch, DSP, GPU, Bluetooth,
-WLAN, VPU and audio-topology archives. The installer stage-1 bundle carries the
-ath11k tree, board data and signed regulatory database needed before
-switch-root; the installed system carries the full tree. Proprietary archives
-must not be published.
+`pkgs/firmware.nix` fetches the downstream v0.1.0 release's `boot.img` by hash
+and takes the firmware tree out of its ramdisk (196 files, the count the
+upstream port pins). That tree is byte-identical to the archives this
+repository used to require, so the kernel sees the same files. Two payloads
+are not in it and stay operator inputs, registered with
+`nix-store --add-fixed sha256`: the VPU image (from the official MIUI V14
+extraction) and the SSC sensor config (in the release, but in three ~2 GB
+rootfs volumes rather than the ramdisk). Regulatory databases come from
+nixpkgs' `wireless-regdb`.
 
-## Downstream features not yet enabled by default
+The initrd subset carries the ath11k tree, its board data and the signed
+regulatory database, and nothing else; the installed system carries the whole
+tree. Nothing proprietary is committed: the release is fetched by hash and the
+operator inputs are `requireFile`. Two archives stay in the tree because the
+release does not carry them (`data/stock-base-dtbs.nix`,
+`data/stock-dtbo-entries.nix`; it ships no `vendor_boot.img`).
 
-- TM/CSOT automatic selection for machines other than this CSOT unit;
-- WCD938x/SoundWire microphone capture;
-- normal-system USB3/OTG role switching;
-- Xiaomi MiPPS/PPS userspace authentication;
-- removal of the SMMU/dispcc blacklists;
+## Not enabled by default
+
+- TM/CSOT automatic selection for other panel batches;
+- WCD938x/SoundWire microphone capture (the four-speaker TDM path is
+  implemented; the downstream 6.17 DTS also describes the capture graph);
+- USB3/OTG role switching (base DTS and installer overlay both select the
+  validated USB2 peripheral role);
+- Xiaomi MiPPS/PPS userspace authentication (`0006` exposes the kernel transport
+  and raw attributes only);
+- the touchscreen firmware payload in the installer;
 - re-enabling the duplicate ramoops region.
 
-Each item needs a separate kernel/profile or device test. None should be folded
-into the installer merely because it exists in the downstream 6.17 tree.
+Each item needs its own kernel profile or device test, not an installer change.
+
+## Known refactors (TODO)
+
+- `config/installer.nix`: move `usbGadgetSetup` and `installNixos` (114 and 158
+  lines of embedded shell) into `pkgs/` as `writeShellApplication` with
+  `runtimeInputs`, following `pkgs/liuqin-power-keyd/`.
+- `modules/liuqin/initrd-guard.nix`: same treatment for the ~150-line guard
+  script.

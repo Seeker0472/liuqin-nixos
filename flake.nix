@@ -8,18 +8,12 @@
     let
       lib = nixpkgs.lib;
 
-      # requireFile payloads (firmware, SSC config) count as unfree; the same
-      # predicate mkLiuqinSystem injects, applied to the flake's own package
-      # sets so `nix flake check` can evaluate them.
+      # The two requireFile payloads that have no public source (the VPU image
+      # and the SSC sensor config; see pkgs/firmware.nix) count as unfree.  The
+      # same predicate serves the flake's own package sets and mkLiuqinSystem.
       allowLiuqinUnfree = pkg:
         builtins.elem (lib.getName pkg) [
           "liuqin-ssc-config.tar.zst"
-          "liuqin-firmware-touch.tar.zst"
-          "liuqin-firmware-dsp.tar.zst"
-          "liuqin-firmware-gpu.tar.zst"
-          "liuqin-firmware-bt.tar.zst"
-          "liuqin-firmware-wlan-board.tar.zst"
-          "liuqin-firmware-topology.tar.zst"
           "liuqin-firmware-vpu.tar.zst"
         ];
 
@@ -47,15 +41,25 @@
         #
         #   nixosConfigurations.mypad = liuqin.lib.mkLiuqinSystem {
         #     modules = [ ./my-machine.nix ];
+        #     crossBuild = true;
         #   };
-        mkLiuqinSystem = { modules, system ? "aarch64-linux" }:
+        # `crossBuild` is opt-in for consumers because this flake's pkgsArm
+        # package set is deliberately x86_64-hosted. The repository's own
+        # configurations enable it below, so their full system/initrd can be
+        # built on the standard x86_64 development host without binfmt.
+        mkLiuqinSystem = { modules, system ? "aarch64-linux", crossBuild ? false }:
           lib.nixosSystem {
             inherit system;
             modules = [
-              {
+              (if crossBuild then {
+                # Keep the normal system on the same cross package set as the
+                # RAM installer. This avoids trying to execute aarch64
+                # builders on an x86_64 host with no binfmt registration.
+                nixpkgs.pkgs = pkgsArm;
+              } else {
                 nixpkgs.overlays = [ self.overlays.default ];
                 nixpkgs.config.allowUnfreePredicate = allowLiuqinUnfree;
-              }
+              })
               self.nixosModules.liuqin
             ]
             ++ modules;
@@ -88,18 +92,6 @@
             cfg = configuration.config;
             toplevel = cfg.system.build.liuqinLiveToplevel;
             bootargs = cfg.boot.kernelParams ++ [ "init=${toplevel}/init" ];
-            # Keep the empirically conservative local display profile as an
-            # explicit fallback. The default installer above follows the
-            # downstream simplefb-only profile so SMMU/UFS, PCIe/Wi-Fi and
-            # display ordering can be tested independently.
-            safeBootParams = map (
-              param:
-              if param == "initcall_blacklist=simplefb_driver_init" then
-                "initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init"
-              else
-                param
-            ) cfg.boot.kernelParams;
-            safeBootargs = safeBootParams ++ [ "init=${toplevel}/init" ];
             mkImage = imageBootargs: pkgsArm.callPackage ./pkgs/bootimg.nix {
               kernel = cfg.boot.kernelPackages.kernel;
               gawk = pkgsHost.gawk;
@@ -110,7 +102,6 @@
           in
           {
             bootimg = mkImage bootargs;
-            safeBootimg = mkImage safeBootargs;
             inherit (cfg.system.build) netbootRamdisk squashfsStore toplevel;
           };
 
@@ -132,24 +123,40 @@
               );
               ramdisk = cfg.system.build.initialRamdisk + "/initrd";
             };
+          }
+          // lib.optionalAttrs (cfg.hardware.liuqin.boot.loader == "uboot") {
             bootdir = cfg.system.build.liuqinBootDir;
           };
       };
 
       packages.x86_64-linux =
         let
-          exampleImages = self.lib.mkLiuqinBootImages self.nixosConfigurations.liuqin;
+          normalConfiguration = self.nixosConfigurations.liuqin;
+          normalKernel = normalConfiguration.config.hardware.liuqin.package;
+          installerConfiguration = self.nixosConfigurations.liuqin-installer;
+          installerKernel = installerConfiguration.config.boot.kernelPackages.kernel;
+          exampleImages = self.lib.mkLiuqinBootImages normalConfiguration;
           demoImages = self.lib.mkLiuqinBootImages self.nixosConfigurations.demo;
           installerImages = self.lib.mkLiuqinInstallerImages
-            self.nixosConfigurations.liuqin-installer;
+            installerConfiguration;
           mkbootimgTool = pkgsHost.callPackage ./pkgs/mkbootimg.nix { };
         in
         {
-          kernel = pkgsArm.liuqinKernel;
-          installer-kernel = pkgsArm.liuqinInstallerKernel;
+          # Keep these outputs tied to the kernels selected by the actual
+          # configurations. That makes package inspection unambiguous: the
+          # normal kernel is the installed-system kernel and the installer
+          # kernel is the built-in-USB variant.
+          kernel = normalKernel;
+          installer-kernel = installerKernel;
           dtb = pkgsArm.liuqinKernelDtb;
           installer-dtb = pkgsArm.liuqinInstallerKernelDtb;
-          bootimg = pkgsArm.liuqinBootimg;
+          # Low-level bring-up artifact only: this has an empty ramdisk and
+          # no `init=` command line. Use installer-bootimg or bootimg-nixos
+          # for a bootable NixOS environment.
+          bootimg-kernel-only = pkgsArm.callPackage ./pkgs/bootimg.nix {
+            kernel = normalKernel;
+            gawk = pkgsHost.gawk;
+          };
           power-keyd = pkgsArm.liuqinPowerKeyd;
           # Boot image for the EXAMPLE configuration (config/example.nix).
           # Your own configuration: use lib.mkLiuqinBootImages instead.
@@ -160,9 +167,6 @@
           # overlay packed into the ABL boot.img ramdisk. This is the only
           # supported initial-install path and is RAM-boot-only.
           installer-bootimg = installerImages.bootimg;
-          # Fallback for the previously validated local display workaround;
-          # the default installer is intentionally downstream-style.
-          installer-bootimg-safe = installerImages.safeBootimg;
           installer-ramdisk = installerImages.netbootRamdisk;
           installer-squashfs = installerImages.squashfsStore;
           # Host wrapper for the checked-in U-Boot pipeline. The dualboot tree
@@ -196,12 +200,14 @@
       # deployments define their own via lib.mkLiuqinSystem; this one backs
       # the flake's packages and eval check.
       nixosConfigurations.liuqin = self.lib.mkLiuqinSystem {
+        crossBuild = true;
         modules = [ ./config/example.nix ];
       };
 
       # Complete demo system (GNOME, touch, network, audio, Bluetooth, sensors)
       # on the dual-boot layout; see config/demo.nix.
       nixosConfigurations.demo = self.lib.mkLiuqinSystem {
+        crossBuild = true;
         modules = [ ./config/demo.nix ];
       };
 

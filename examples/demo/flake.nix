@@ -22,13 +22,10 @@
 #   nix build .#installer-bootimg RAM-only live installer (the install path)
 #   nix run .#uboot-build       checked U-Boot RAM-boot artifact
 #
-# Evaluation needs nothing special. *Building* the images needs aarch64
-# capability: the NixOS closure, the kernel and the initrd are aarch64
-# derivations, so either
-#   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
-# on the host (plus qemu binfmt), or an aarch64 builder in `--builders`. The
-# kernel and the boot.img assembly also cross-compile from x86_64, but the
-# initrd and the closure cannot.
+# Evaluation needs nothing special. The example enables the BSP's
+# x86_64→aarch64 cross package set, so its system and initrd can also be built
+# on a normal x86_64 host. Native builds remain possible by omitting
+# `crossBuild` and providing an aarch64 builder or binfmt.
 {
   description = "liuqin demo machine configuration (consumer of liuqin-nixos)";
 
@@ -43,13 +40,13 @@
       # our own modules.
       configuration = liuqin.lib.mkLiuqinSystem {
         modules = [ ./configuration.nix ];
+        crossBuild = true;
       };
 
       # Deployable artifacts for that configuration. Both are produced by the
       # BSP so the ABL and U-Boot paths stay byte-compatible across consumers.
       images = liuqin.lib.mkLiuqinBootImages configuration;
       installer = liuqin.packages.${system}.installer-bootimg;
-      installerSafe = liuqin.packages.${system}.installer-bootimg-safe;
     in
     {
       nixosConfigurations.demo = configuration;
@@ -63,7 +60,6 @@
 
         # The RAM installer is the only supported first-install toolchain.
         installer-bootimg = installer;
-        installer-bootimg-safe = installerSafe;
         uboot-build = liuqin.packages.${system}.uboot-build;
       };
 

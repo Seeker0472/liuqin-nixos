@@ -3,7 +3,12 @@
 # Firmware needed while the netboot initrd is still running. Keep this
 # separate from the full device firmware tree: the initrd must be able to
 # bring up ath11k before switch_root, but it does not need DSP, GPU, VPU,
-# touchscreen, or Bluetooth payloads just to mount the live root.
+# touchscreen, or Bluetooth payloads just to mount the live root - and the
+# touchscreen stays out on purpose.  Without its firmware nvt_ts_resume()
+# closes the device on the first blank/unblank ("resume failed closed: -2"),
+# but the installer's panel is an output-only fallback channel (there is no
+# keyboard to type on it), so the payload buys nothing here; the installed
+# system carries the full firmware set and does have touch.
 { runCommand, firmware }:
 
 runCommand "liuqin-initrd-firmware" { } ''

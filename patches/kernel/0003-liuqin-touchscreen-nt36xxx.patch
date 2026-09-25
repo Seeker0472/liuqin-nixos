@@ -66,7 +66,7 @@ new file mode 100644
 new file mode 100644
 --- /dev/null
 +++ b/drivers/input/touchscreen/nt36523/nt36xxx.c
-@@ -0,0 +1,2333 @@
+@@ -0,0 +1,2334 @@
 +/*
 + * Copyright (C) 2010 - 2018 Novatek, Inc.
 + * Copyright (C) 2021 XiaoMi, Inc.
@@ -1848,7 +1848,8 @@ new file mode 100644
 +	NVT_LOG("NVT_TOUCH_ESD_PROTECT is %d\n", NVT_TOUCH_ESD_PROTECT);
 +#if NVT_TOUCH_ESD_PROTECT
 +	INIT_DELAYED_WORK(&nvt_esd_check_work, nvt_esd_check_func);
-+	nvt_esd_check_wq = alloc_workqueue("nvt_esd_check_wq", WQ_MEM_RECLAIM, 1);
++	nvt_esd_check_wq = alloc_workqueue("nvt_esd_check_wq",
++					  WQ_PERCPU | WQ_MEM_RECLAIM, 1);
 +	if (!nvt_esd_check_wq) {
 +		NVT_ERR("nvt_esd_check_wq create workqueue failed\n");
 +		ret = -ENOMEM;

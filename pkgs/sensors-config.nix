@@ -12,9 +12,11 @@ assert sscConfigHash != null -> sscConfigHash != lib.fakeHash;
 let
   sscConfig = requireFile {
     name = "liuqin-ssc-config.tar.zst";
-    # Extract from the operator's stock ROM vendor partition:
-    # super -> vendor/etc/sensors/config (see docs/PORTING-NOTES.md for the
-    # exact commands). Record the sha256 via
+    # Extracted from the stock ROM's vendor partition:
+    # super -> vendor/etc/sensors/config.  The same files sit in the
+    # downstream v0.1.0 release's rootfs volumes, which ship as three ~2 GB
+    # tarball parts, so they are registered by hand instead of fetched.
+    # Record the sha256 via
     # hardware.liuqin.sensors.sscConfigHash in the NixOS configuration.
     hash =
       if sscConfigHash == null then

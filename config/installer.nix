@@ -4,6 +4,14 @@
 # intentionally separate from the installed desktop configuration: it boots
 # from a tmpfs/overlay root, so it must not run the persistent-root guard or
 # any service that reads device-private state from persist.
+#
+# TODO: about two thirds of this file is embedded shell (usbGadgetSetup and
+# installNixos alone are 114 and 158 lines).  Move those scripts into pkgs/
+# following the pkgs/liuqin-power-keyd/ pattern, and switch them from
+# writeShellScriptBin with absolute store paths to writeShellApplication with
+# runtimeInputs, which is how installNixos already works.  That should bring
+# the module down to roughly 250 lines.  Deferred on purpose: this is the
+# install path, so refactor it once an install has been exercised end to end.
 { config, lib, modulesPath, pkgs, ... }:
 
 let
@@ -20,11 +28,191 @@ let
     ) old.buildInputs;
   });
 
+  # Match the downstream first-boot control channel.  The installer kernel
+  # already contains DWC3 gadget/configfs/NCM/ECM support; this helper only
+  # creates the configfs function and claims the USB2 UDC. It is deliberately
+  # idempotent because it runs once in the initrd and once after switch_root.
+  # Bytes of /etc/liuqin-nixos-root, shared with the initrd storage guard so
+  # the installer and the guard cannot disagree (see lib/liuqin-root-marker.nix).
+  liuqinRootMarker = import ../lib/liuqin-root-marker.nix { inherit lib; };
+
+  usbGadgetSetup = pkgs.writeShellScriptBin "liuqin-usb-gadget" ''
+    set -eu
+
+    configfs=/sys/kernel/config
+    gadget=$configfs/usb_gadget/liuqin
+    ready=/run/liuqin-usb-ready
+
+    log() {
+      echo "liuqin-usb: $*" >/dev/console 2>/dev/null || true
+    }
+
+    fail() {
+      log "$*"
+      rm -f "$ready" 2>/dev/null || true
+      exit 1
+    }
+
+    mkdir -p "$configfs" /run || fail "could not create configfs or /run"
+    if ! ${pkgs.util-linux}/bin/mountpoint -q "$configfs"; then
+      ${pkgs.util-linux}/bin/mount -t configfs configfs "$configfs" 2>/dev/null \
+        || fail "could not mount configfs"
+    fi
+    if [ ! -d "$configfs/usb_gadget" ]; then
+      fail "configfs USB gadget support is unavailable"
+    fi
+
+    mkdir -p "$gadget" || fail "could not create the USB gadget"
+    printf '0x1d6b\n' >"$gadget/idVendor" 2>/dev/null || true
+    printf '0x1040\n' >"$gadget/idProduct" 2>/dev/null || true
+    printf '0x0100\n' >"$gadget/bcdDevice" 2>/dev/null || true
+    printf '0x0200\n' >"$gadget/bcdUSB" 2>/dev/null || true
+
+    mkdir -p "$gadget/strings/0x409" || fail "could not create USB string descriptors"
+    printf '000000000001\n' >"$gadget/strings/0x409/serialnumber" 2>/dev/null || true
+    printf 'Xiaomi Pad 6 Pro mainline\n' >"$gadget/strings/0x409/manufacturer" 2>/dev/null || true
+    printf 'liuqin NixOS installer\n' >"$gadget/strings/0x409/product" 2>/dev/null || true
+
+    mkdir -p "$gadget/configs/c.1/strings/0x409" \
+      || fail "could not create USB configuration descriptors"
+    printf 'USB network installer\n' >"$gadget/configs/c.1/strings/0x409/configuration" 2>/dev/null || true
+    printf '500\n' >"$gadget/configs/c.1/MaxPower" 2>/dev/null || true
+
+    function_name=
+    for candidate in ncm.usb0 ecm.usb0; do
+      if [ -d "$gadget/functions/$candidate" ]; then
+        function_name=$candidate
+        break
+      fi
+    done
+    if [ -z "$function_name" ]; then
+      if mkdir "$gadget/functions/ncm.usb0" 2>/dev/null; then
+        function_name=ncm.usb0
+      elif mkdir "$gadget/functions/ecm.usb0" 2>/dev/null; then
+        function_name=ecm.usb0
+      else
+        fail "could not create an NCM or ECM gadget function"
+      fi
+    fi
+    printf '02:00:00:00:07:02\n' >"$gadget/functions/$function_name/dev_addr" 2>/dev/null || true
+    printf '02:00:00:00:07:01\n' >"$gadget/functions/$function_name/host_addr" 2>/dev/null || true
+    if [ ! -e "$gadget/configs/c.1/$function_name" ]; then
+      ln -s "$gadget/functions/$function_name" "$gadget/configs/c.1/$function_name" 2>/dev/null \
+        || fail "could not link the USB function into the configuration"
+    fi
+    [ -e "$gadget/configs/c.1/$function_name" ] \
+      || fail "USB function is not present in the configuration"
+
+    udc_name=
+    if [ -r "$gadget/UDC" ]; then
+      udc_name=$(${pkgs.coreutils}/bin/cat "$gadget/UDC" 2>/dev/null || true)
+      [ "$udc_name" = none ] && udc_name=
+    fi
+    if [ -z "$udc_name" ]; then
+      # The initrd has no UCSI userspace helper.  If the role switch has not
+      # selected device mode yet, request it before looking for the UDC.
+      for role_path in /sys/class/usb_role/*/role; do
+        [ -w "$role_path" ] || continue
+        printf 'device\n' >"$role_path" 2>/dev/null || true
+      done
+      for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        for udc_path in /sys/class/udc/*; do
+          [ -e "$udc_path" ] || continue
+          udc_name=$(${pkgs.coreutils}/bin/basename "$udc_path")
+          break
+        done
+        [ -n "$udc_name" ] && break
+        ${pkgs.coreutils}/bin/sleep 1
+      done
+      if [ -n "$udc_name" ]; then
+        if ! printf '%s\n' "$udc_name" >"$gadget/UDC"; then
+          fail "failed to bind USB gadget to UDC $udc_name"
+        fi
+      fi
+    fi
+    if [ -z "$udc_name" ]; then
+      fail "no USB device controller found"
+    fi
+
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      [ -e /sys/class/net/usb0 ] && break
+      ${pkgs.coreutils}/bin/sleep 1
+    done
+    if [ ! -e /sys/class/net/usb0 ]; then
+      fail "UDC is bound but usb0 did not appear"
+    fi
+
+    ${pkgs.iproute2}/bin/ip link set usb0 up 2>/dev/null \
+      || fail "could not bring usb0 up"
+    ${pkgs.iproute2}/bin/ip address replace 192.168.7.2/24 dev usb0 2>/dev/null \
+      || fail "could not assign 192.168.7.2/24 to usb0"
+    : >"$ready" || fail "could not create the USB ready marker"
+    log "USB $function_name ready at 192.168.7.2/24"
+  '';
+
+  usbShellLogin = pkgs.writeShellScriptBin "liuqin-usb-login" ''
+    exec ${pkgs.busybox}/bin/busybox sh -i "$@"
+  '';
+
+  screenRefresh = pkgs.writeShellScriptBin "liuqin-screen-refresh" ''
+    set -eu
+    for blank in /sys/class/graphics/fb*/blank; do
+      [ -e "$blank" ] || continue
+      echo 1 > "$blank"
+      ${pkgs.coreutils}/bin/sleep 1
+      echo 0 > "$blank"
+    done
+  '';
+
+  usbDhcpConfig = pkgs.writeText "liuqin-usb-udhcpd.conf" ''
+    start 192.168.7.10
+    end 192.168.7.19
+    interface usb0
+    lease_file /run/liuqin-usb-udhcpd.leases
+    pidfile /run/liuqin-usb-udhcpd.pid
+    max_leases 10
+    option subnet 255.255.255.0
+  '';
+
+  # The RAM installer carries its kernel and initial ramdisk inside the ABL
+  # boot image, so the filtered live toplevel has no store copy of either. Its
+  # bootspec must still parse and must not reference the kernel output (which
+  # would drag every module and DTB into the squashfs), so both payload fields
+  # point at this note.
+  bootPayload = pkgs.writeText "liuqin-installer-boot-payload" ''
+    This NixOS live system is a RAM image. Its kernel and initial ramdisk are
+    supplied by the ABL boot image built from this flake
+    (lib.mkLiuqinInstallerImages), not by the Nix store, so the bootspec's
+    kernel/initrd fields point here instead of at a second copy.
+  '';
+
+  # nixos-init's stage 1 locates the live closure by resolving the kernel
+  # command line's init= inside /sysroot, and only proceeds when that path
+  # exists. ABL appends its own init=/init after the one we pass and the last
+  # value wins, so on this device the lookup always lands on /sysroot/init.
+  # Plant the usual marker before either lookup unit runs. The marker points at
+  # the live closure's init as an in-root path, which is what the lookup
+  # resolves; the closure lives in the store that stage 1 has already mounted.
+  plantSysrootInit = pkgs.writeShellScript "liuqin-plant-sysroot-init" ''
+    set -eu
+    closure=$(${pkgs.coreutils}/bin/ls -d /sysroot/nix/store/*-liuqin-installer-live-toplevel 2>/dev/null \
+      | ${pkgs.coreutils}/bin/head -1)
+    if [ -z "$closure" ]; then
+      echo "liuqin-plant-sysroot-init: no live closure in /sysroot/nix/store" >&2
+      exit 1
+    fi
+    # /sysroot/init is resolved inside the live root, so strip the /sysroot
+    # prefix the glob sees.
+    ${pkgs.coreutils}/bin/ln -sfn "/nix/store/''${closure##*/}/init" /sysroot/init
+    echo "liuqin-plant-sysroot-init: /sysroot/init -> $(${pkgs.coreutils}/bin/readlink /sysroot/init)"
+  '';
+
   installNixos = pkgs.writeShellApplication {
     name = "liuqin-install-nixos";
     runtimeInputs = with pkgs; [
       coreutils
       findutils
+      nix
       nixos-install
       util-linux
     ];
@@ -38,15 +226,125 @@ let
         liuqin-install-nixos [nixos-install options]
 
       Before running this command, partition and format the target, mount its
-      root filesystem at /mnt, and put the target configuration under
-      /mnt/etc/nixos or provide --flake. This helper never partitions or
-      formats a device on its own.
+      ext4 root filesystem at /mnt. The default storage contract uses the
+      filesystem label LIUQIN_ROOT and a GPT partlabel matching the selected
+      layout (linux for linux-partition, userdata for whole-userdata). Put the
+      target configuration under /mnt/etc/nixos or provide --flake. With
+      --flake, this helper reads the selected liuqin storage options and
+      rejects a mismatched target before installing. For a local
+      configuration.nix, set LIUQIN_EXPECTED_PARTLABEL (and, if needed,
+      LIUQIN_EXPECTED_ROOT_LABEL) when using custom names. This helper never
+      partitions or formats a device on its own.
       EOF
       }
 
       if [ ! -d /mnt ] || ! findmnt --mountpoint /mnt >/dev/null 2>&1; then
         echo "liuqin-install-nixos: mount the target root filesystem at /mnt first" >&2
         exit 2
+      fi
+
+      # Validate the storage identity before nixos-install writes anything.
+      # With a flake, read the exact root device and filesystem label from the
+      # selected liuqin configuration; this catches selecting the linux
+      # partition while the configuration expects userdata (and vice versa).
+      install_args=( "$@" )
+      flake_spec=
+      i=0
+      while [ "$i" -lt "''${#install_args[@]}" ]; do
+        arg="''${install_args[$i]}"
+        case "$arg" in
+          --flake)
+            i=$((i + 1))
+            if [ "$i" -ge "''${#install_args[@]}" ]; then
+              echo "liuqin-install-nixos: --flake needs a flake#configuration argument" >&2
+              exit 2
+            fi
+            flake_spec="''${install_args[$i]}"
+            ;;
+          --flake=*)
+            flake_spec="''${arg#--flake=}"
+            ;;
+        esac
+        i=$((i + 1))
+      done
+
+      expected_partlabel="''${LIUQIN_EXPECTED_PARTLABEL:-}"
+      expected_root_label="''${LIUQIN_EXPECTED_ROOT_LABEL:-LIUQIN_ROOT}"
+      if [ -n "$flake_spec" ]; then
+        case "$flake_spec" in
+          *#*)
+            flake_ref="''${flake_spec%%#*}"
+            flake_config="''${flake_spec#*#}"
+            ;;
+          *)
+            echo "liuqin-install-nixos: --flake must name a configuration as FLAKE#NAME" >&2
+            exit 2
+            ;;
+        esac
+
+        flake_attr="nixosConfigurations.$flake_config.config.hardware.liuqin"
+        expected_root_device=$(nix eval --raw \
+          "$flake_ref#$flake_attr.storage.rootDevice" 2>/dev/null) || {
+          echo "liuqin-install-nixos: cannot evaluate $flake_attr.storage.rootDevice" >&2
+          echo "Use a liuqin configuration and check the flake before installing." >&2
+          exit 2
+        }
+        expected_root_label=$(nix eval --raw \
+          "$flake_ref#$flake_attr.storage.rootLabel" 2>/dev/null) || {
+          echo "liuqin-install-nixos: cannot evaluate $flake_attr.storage.rootLabel" >&2
+          exit 2
+        }
+        case "$expected_root_device" in
+          /dev/disk/by-partlabel/*)
+            expected_partlabel="''${expected_root_device##*/}"
+            ;;
+          *)
+            echo "liuqin-install-nixos: unsupported liuqin rootDevice $expected_root_device" >&2
+            echo "It must use /dev/disk/by-partlabel/<name> for the initrd guard." >&2
+            exit 2
+            ;;
+        esac
+      fi
+
+      target_source=$(findmnt -n -o SOURCE --target /mnt 2>/dev/null || true)
+      target_fstype=$(findmnt -n -o FSTYPE --target /mnt 2>/dev/null || true)
+      [ "$target_fstype" = ext4 ] || {
+        echo "liuqin-install-nixos: /mnt is $target_fstype, expected ext4" >&2
+        exit 2
+      }
+      target_device=$(readlink -f "$target_source" 2>/dev/null || true)
+      [ -b "$target_device" ] || {
+        echo "liuqin-install-nixos: /mnt is not backed by a block device ($target_source)" >&2
+        exit 2
+      }
+      [ "$(lsblk -ndo TYPE "$target_device" 2>/dev/null || true)" = part ] || {
+        echo "liuqin-install-nixos: target $target_device is not a partition" >&2
+        exit 2
+      }
+
+      label_device=$(findfs "LABEL=$expected_root_label" 2>/dev/null || true)
+      label_device=$(readlink -f "$label_device" 2>/dev/null || true)
+      [ -n "$label_device" ] && [ "$label_device" = "$target_device" ] || {
+        echo "liuqin-install-nixos: /mnt must be labelled $expected_root_label" >&2
+        echo "The label must resolve to $target_device, not ''${label_device:-nothing}." >&2
+        exit 2
+      }
+
+      target_partlabel=$(lsblk -ndo PARTLABEL "$target_device" 2>/dev/null || true)
+      if [ -n "$expected_partlabel" ]; then
+        [ "$target_partlabel" = "$expected_partlabel" ] || {
+          echo "liuqin-install-nixos: target partlabel is $target_partlabel, expected $expected_partlabel" >&2
+          exit 2
+        }
+      else
+        case "$target_partlabel" in
+          linux|userdata) ;;
+          *)
+            echo "liuqin-install-nixos: target partlabel must be linux or userdata" >&2
+            echo "Set LIUQIN_EXPECTED_PARTLABEL for a custom configuration." >&2
+            exit 2
+            ;;
+        esac
       fi
 
       if [ "$#" -eq 0 ] && [ ! -f /mnt/etc/nixos/configuration.nix ]; then
@@ -60,7 +358,7 @@ let
       # therefore cannot rely on tmpfiles/activation from the first boot.  A
       # nixos-install invocation does not boot the target, so install the
       # guard marker explicitly while /mnt is still mounted.
-      printf 'LIUQIN_NIXOS_ROOT_V1\n' > /mnt/etc/liuqin-nixos-root
+      printf '${liuqinRootMarker.escaped}' > /mnt/etc/liuqin-nixos-root
       chmod 0644 /mnt/etc/liuqin-nixos-root
       chown root:root /mnt/etc/liuqin-nixos-root
     '';
@@ -73,8 +371,8 @@ in
   ];
 
   # The installer deliberately uses its own kernel variant. It keeps the
-  # validated display hand-off/earlycon behaviour, but promotes the USB/input
-  # path to built-in so a RAM-only image never depends on a module tree.
+  # validated display hand-off/earlycon behaviour, but promotes the USB gadget
+  # and input paths to built-in so a RAM-only image never depends on modules.
   boot.kernelPackages = pkgs.linuxPackagesFor pkgs.liuqinInstallerKernel;
   # The generic NixOS default list contains PC storage modules such as
   # ata_piix. This kernel is intentionally device-specific and does not ship
@@ -105,10 +403,21 @@ in
     # the live image needs IOMMU-backed UFS/PCIe (Wi-Fi) as well.
     "initcall_blacklist=simplefb_driver_init"
     "earlycon=simplefb"
-    "console=drm_log"
+    # The screen is the only early failure channel on this board. Keep the
+    # early console registered for the whole session: console=tty0 alone lets
+    # the DRM fbdev take over from the ABL framebuffer and disable the early
+    # console at 0.0057 s, which loses the log that says what went wrong.
+    "keep_bootcon"
+    # console=tty0 is what gets the log and the getty; with the fbdev DRM
+    # client that is fbcon on the DRM framebuffer, which patch 0012 also keeps
+    # updated per draw.
     "console=tty0"
     "firmware_class.path=/var/lib/firmware:${pkgs.liuqinInitrdFirmware}/lib/firmware"
   ];
+  # NixOS defaults to loglevel=4, which would hide nearly all of that log and
+  # (with the previous log DRM client) left the panel cleared and black. Keep
+  # the kernel's own default instead, as the downstream image does.
+  boot.consoleLogLevel = 7;
 
   # WLAN firmware is needed before the netboot system has switched to its
   # squashfs-backed root. Keep the installer device-specific:
@@ -122,6 +431,148 @@ in
   boot.initrd.systemd.contents."/var/lib/firmware".source =
     "${pkgs.liuqinInitrdFirmware}/lib/firmware";
 
+  # make-initrd-ng copies explicit store paths; it does not infer files from
+  # the text of an ExecStart command. Keep every executable/configuration
+  # path used by the initrd USB services in the image explicitly.
+  boot.initrd.systemd.storePaths = with pkgs; [
+    busybox
+    coreutils
+    iproute2
+    util-linux
+    usbGadgetSetup
+    usbShellLogin
+    usbDhcpConfig
+    plantSysrootInit
+  ];
+
+  # The downstream first-boot image brings up the USB gadget before the live
+  # root is handed over. Do the same here so a display failure does not also
+  # remove the only practical diagnostic/control channel. The initrd services
+  # are stopped during switch_root; the stage-2 copies below recreate the same
+  # channel for the actual installation shell.
+  boot.initrd.systemd.services.liuqin-usb-gadget = {
+    description = "Create the liuqin USB NCM/ECM gadget in the initrd";
+    wantedBy = [ "initrd.target" ];
+    path = with pkgs; [ coreutils iproute2 util-linux ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${usbGadgetSetup}/bin/liuqin-usb-gadget";
+      RemainAfterExit = true;
+      Restart = "on-failure";
+      RestartSec = "1s";
+    };
+  };
+
+  boot.initrd.systemd.services.liuqin-usb-dhcp = {
+    description = "Serve DHCP on the liuqin initrd USB network";
+    wantedBy = [ "initrd.target" ];
+    requires = [ "liuqin-usb-gadget.service" ];
+    after = [ "liuqin-usb-gadget.service" ];
+    path = with pkgs; [ busybox coreutils ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStartPre = [
+        "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready"
+        "${pkgs.coreutils}/bin/touch /run/liuqin-usb-udhcpd.leases"
+      ];
+      ExecStart = "${pkgs.busybox}/bin/busybox udhcpd -f -S ${usbDhcpConfig}";
+      # switch_root stops initrd services; the stage-2 copies recreate the
+      # channel. During the initrd lifetime, recover from a daemon crash.
+      Restart = "on-failure";
+      RestartSec = "1s";
+    };
+  };
+
+  boot.initrd.systemd.services.liuqin-usb-shell = {
+    description = "Provide the liuqin initrd USB rescue shell";
+    wantedBy = [ "initrd.target" ];
+    requires = [ "liuqin-usb-gadget.service" ];
+    after = [ "liuqin-usb-gadget.service" ];
+    path = with pkgs; [ busybox coreutils ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStartPre = "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready";
+      ExecStart = "${pkgs.busybox}/bin/busybox telnetd -F -S -b 192.168.7.2:2323 -l ${usbShellLogin}/bin/liuqin-usb-login";
+      Restart = "on-failure";
+      RestartSec = "1s";
+    };
+  };
+
+  # The two stage-1 lookups below decide which closure this image boots and
+  # where its etc image lives. Both resolve init= inside /sysroot, and ABL's
+  # trailing init=/init makes that /sysroot/init, which a netboot tmpfs root
+  # does not carry. Plant the marker first; without it both units fail and the
+  # live system never starts, which also removes the USB channel it provides.
+  boot.initrd.systemd.services.initrd-find-nixos-closure.serviceConfig =
+    { ExecStartPre = [ "${plantSysrootInit}" ]; };
+
+  boot.initrd.systemd.services.initrd-find-etc.serviceConfig.ExecStartPre = [ "${plantSysrootInit}" ];
+
+# The panel is the only channel that survives a USB failure, and it starts
+# out showing nothing the console drew before the DRM fbdev took over: that
+# went to a different buffer. One blank/unblank makes fbcon redraw the whole
+# console buffer (its scrollback included) into the framebuffer the panel
+# scans, so the complete boot log ends up visible. Per-draw flushing is
+# handled in the kernel by patch 0012 and needs nothing from userspace.
+  systemd.services.liuqin-screen-refresh = {
+    description = "Redraw the console into the panel framebuffer";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = "${screenRefresh}/bin/liuqin-screen-refresh";
+    };
+  };
+
+  # initrd systemd stops its own services at switch_root. Recreate the same
+  # gadget/control channel in the live NixOS stage so the operator can keep
+  # using the USB cable while preparing /mnt and running nixos-install.
+  systemd.services.liuqin-usb-gadget = {
+    description = "Create the liuqin USB NCM/ECM gadget";
+    wantedBy = [ "multi-user.target" ];
+    path = with pkgs; [ coreutils iproute2 util-linux ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${usbGadgetSetup}/bin/liuqin-usb-gadget";
+      RemainAfterExit = true;
+      Restart = "on-failure";
+      RestartSec = "1s";
+    };
+  };
+
+  systemd.services.liuqin-usb-dhcp = {
+    description = "Serve DHCP on the liuqin USB network";
+    wantedBy = [ "multi-user.target" ];
+    requires = [ "liuqin-usb-gadget.service" ];
+    after = [ "liuqin-usb-gadget.service" ];
+    path = with pkgs; [ busybox coreutils ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStartPre = [
+        "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready"
+        "${pkgs.coreutils}/bin/touch /run/liuqin-usb-udhcpd.leases"
+      ];
+      ExecStart = "${pkgs.busybox}/bin/busybox udhcpd -f -S ${usbDhcpConfig}";
+      Restart = "on-failure";
+      RestartSec = "1s";
+    };
+  };
+
+  systemd.services.liuqin-usb-shell = {
+    description = "Provide the liuqin USB rescue shell";
+    wantedBy = [ "multi-user.target" ];
+    requires = [ "liuqin-usb-gadget.service" ];
+    after = [ "liuqin-usb-gadget.service" ];
+    path = with pkgs; [ busybox coreutils ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStartPre = "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready";
+      ExecStart = "${pkgs.busybox}/bin/busybox telnetd -F -S -b 192.168.7.2:2323 -l ${usbShellLogin}/bin/liuqin-usb-login";
+      Restart = "on-failure";
+      RestartSec = "1s";
+    };
+  };
+
   networking.hostName = "liuqin-installer";
   networking.networkmanager.enable = true;
   networking.networkmanager.package = networkmanager;
@@ -130,6 +581,12 @@ in
   # the live image larger and can race NetworkManager for the same interface.
   networking.useDHCP = lib.mkForce false;
   networking.firewall.enable = false;
+  # The USB address is assigned by the gadget setup helper. Keep NetworkManager
+  # from replacing it with a DHCP client profile when usb0 appears.
+  environment.etc."NetworkManager/conf.d/20-liuqin-usb.conf".text = ''
+    [keyfile]
+    unmanaged-devices=interface-name:usb0
+  '';
   # NetworkManager enables these by default, but the installer has no modem.
   networking.modemmanager.enable = lib.mkForce false;
   security.polkit.enable = lib.mkForce false;
@@ -198,7 +655,10 @@ in
   environment.etc."motd".text = ''
     liuqin NixOS live installer
 
-    Network: use nmtui or nmcli. Target root must be mounted at /mnt.
+    USB control: telnet 192.168.7.2 2323 (direct trusted cable only)
+    Network: use nmtui or nmcli. Target root must be ext4, labelled
+    LIUQIN_ROOT, and mounted at /mnt. Its GPT partlabel must match the
+    selected target configuration (linux or userdata).
     Install: liuqin-install-nixos --flake FLAKE
     The live image never partitions or formats storage automatically.
   '';
@@ -214,8 +674,19 @@ in
     cp -a ${config.system.build.toplevel}/. "$out/"
     chmod -R u+w "$out"
     rm -f "$out/kernel" "$out/kernel-modules" "$out/dtbs" \
-      "$out/initrd" "$out/firmware" "$out/boot.json" \
+      "$out/initrd" "$out/firmware" \
       "$out/extra-dependencies"
+
+    # boot.json is the bootspec that NixOS' stage-1 reads to find the etc
+    # image, the environment/modprobe binaries and the firmware path. Keep it,
+    # but drop the two payload paths that exist only inside the RAM boot image:
+    # the store copy must not pull a second kernel and initial ramdisk into the
+    # squashfs. A NixOS init is recognised from prepare-root, which stays.
+    ${pkgs.buildPackages.jq}/bin/jq --arg payload "${bootPayload}" \
+      '."org.nixos.bootspec.v1".kernel = $payload
+       | ."org.nixos.bootspec.v1".initrd = $payload' \
+      "$out/boot.json" > "$out/boot.json.new"
+    mv "$out/boot.json.new" "$out/boot.json"
 
     # The live system must retain its stage-2 activation entry point: it sets
     # up the mutable /etc overlay, users, firmware path, and /run/current-system.

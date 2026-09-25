@@ -8,6 +8,21 @@
 # from an already-generated .config; the defconfig+structured answers flow
 # lives in buildLinux, which is what this uses. The generate-config step is
 # an ImportFromDerivation, allowed explicitly.
+#
+# Three config inputs, on purpose, because they answer different questions:
+#   config.nix              structured answers for the installed system; they
+#                           are the record of what this port wants, and they
+#                           are applied in one Kconfig pass.
+#   liuqin-firstboot.config raw fragment appended afterwards (see the
+#                           postConfigure hook below) for the symbols that a
+#                           structured answer cannot settle - either because
+#                           Kconfig asks about them before their dependency,
+#                           or because olddefconfig would downgrade them to
+#                           =m.  Appending and re-resolving is what the
+#                           downstream build script does with oldconfig.
+#   installer.config        the same mechanism for the RAM installer only.
+# Each fragment ends with an assertion that the symbols really are =y in the
+# final .config, so a silent downgrade fails the build instead of the boot.
 { lib
 , fetchurl
 , buildLinux
@@ -100,7 +115,7 @@ in
     # unloadable (BRINGUP-LOG 53.13).
     for sym in DRM DRM_MSM DRM_PANEL_NOVATEK_NT36532 SM_GPUCC_8450 SM_DISPCC_8450 \
                BACKLIGHT_CLASS_DEVICE BACKLIGHT_KTZ8866 FB_SIMPLE \
-               DRM_CLIENT_LOG DRM_CLIENT_DEFAULT_LOG; do
+               DRM_CLIENT_LOG DRM_CLIENT_DEFAULT_LOG EROFS_FS; do
       grep -qx "CONFIG_$sym=y" "$buildRoot/.config" || {
         echo "error: CONFIG_$sym is not =y in the final .config:" >&2
         grep -E "^CONFIG_$sym=|^# CONFIG_$sym is not set" "$buildRoot/.config" >&2 || echo "  (absent)" >&2
@@ -110,9 +125,11 @@ in
     ${lib.optionalString installer ''
       cat ${./installer.config} >> "$buildRoot/.config"
       make ARCH=arm64 O="$buildRoot" olddefconfig
-      for sym in HID_GENERIC HID_MULTITOUCH HID_NANOSIC USB_HID \
-                 USB_DWC3 USB_DWC3_DUAL_ROLE USB_DWC3_QCOM \
-                 USB_XHCI_HCD USB_XHCI_PLATFORM \
+      for sym in HID_GENERIC HID_MULTITOUCH HID_NANOSIC \
+                 USB_DWC3 USB_DWC3_QCOM USB_DWC3_GADGET \
+                 USB_GADGET CONFIGFS_FS USB_CONFIGFS USB_CONFIGFS_NCM \
+                 USB_CONFIGFS_ECM PHY_SNPS_EUSB2 \
+                 SQUASHFS_CHOICE_DECOMP_BY_MOUNT EROFS_FS DRM_CLIENT_DEFAULT_FBDEV \
                  CFG80211 MAC80211 ATH11K ATH11K_PCI MHI_BUS QRTR QRTR_MHI \
                  PCI_PWRCTRL PCI_PWRCTRL_PWRSEQ INPUT_EVDEV; do
         grep -qx "CONFIG_$sym=y" "$buildRoot/.config" || {

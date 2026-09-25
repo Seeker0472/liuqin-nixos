@@ -3,3 +3,13 @@
 /out/
 *.img
 __pycache__/
+
+# Private payloads consumed through requireFile: register them with
+# `nix-store --add-fixed sha256 <file>` instead of tracking them here.  Only
+# the VPU image (liuqin-firmware-vpu) and the SSC config are still required:
+# the other liuqin-firmware-* archives were replaced by the firmware tree in
+# the downstream release's boot.img (pkgs/firmware.nix), so local copies of
+# them are stale.
+# The stock-*.tar.zst archives are NOT listed: data/stock-*.nix imports them
+# with builtins.path, so they must stay in the tree for a boot image to build.
+data/liuqin-*.tar.zst

@@ -12,7 +12,8 @@
 
     sensors = {
       # data/liuqin-ssc-config.tar.zst (stock ROM vendor/etc/sensors/config,
-      # pinned; add via `nix-store --add-fixed sha256` on other machines).
+      # pinned; register it with `nix-store --add-fixed sha256` on other
+      # machines).
       sscConfigHash = "sha256-9IzksIEZq8NveGBaD5cBSgzNLCh7KmvdjKnEaubCOdU=";
     };
   };

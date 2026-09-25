@@ -43,7 +43,7 @@
 # there on purpose (lines 40-44: it keeps simplefb0 writing into the
 # bootloader framebuffer all session, which a desktop compositor cannot
 # draw over); in this repo it lives behind hardware.liuqin.boot.debug.
-, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init rootwait"
+, bootargs ? "earlycon=simplefb console=drm_log console=tty0 initcall_blacklist=simplefb_driver_init rootwait"
   # The downstream native build deliberately ships an empty header cmdline:
   # ABL concatenates its own bootargs after the header value and the kernel
   # already reads /chosen/bootargs from the DT; duplicating them in the
@@ -93,9 +93,9 @@ stdenvNoCC.mkDerivation {
     fdtoverlay -i "$base_dtb" -o boot-0.dtb abl-overlay.dtbo
 
     ${lib.optionalString (extraOverlayDts != null) ''
-      # Installer-only overlays (currently the USB host keyboard role) are
-      # applied after the common ABL metadata overlay and before the symbol
-      # union is synthesized.
+      # Installer-only overlays (currently the USB peripheral gadget role,
+      # which replaces the USB2 host path) are applied after the common ABL
+      # metadata overlay and before the symbol union is synthesized.
       dtc -@ -q -I dts -O dtb -o extra-overlay.dtbo ${extraOverlayDts}
       fdtoverlay -i boot-0.dtb -o boot-0-extra.dtb extra-overlay.dtbo
       mv boot-0-extra.dtb boot-0.dtb
@@ -326,6 +326,9 @@ stdenvNoCC.mkDerivation {
       printf "" | gzip -n -9 > ramdisk.cpio.gz
     ''}
 
+    # These fixed offsets are the downstream Qualcomm ABL contract. They look
+    # unusual for a large ramdisk, but changing them would make this image
+    # diverge from the bootloader path that has actually been exercised.
     mkbootimg.py \
       --header_version 2 \
       --pagesize 4096 \
@@ -340,12 +343,38 @@ stdenvNoCC.mkDerivation {
       --cmdline '${headerCmdline}' \
       --output $out/boot.img
 
-    # 192 MiB boot partition.
-    test "$(stat -c %s $out/boot.img)" -le 201326592
+    boot_image_size=$(stat -c %s $out/boot.img)
+    # 192 MiB boot partition, and the ABL fastboot download limit observed on
+    # this device (805306368 bytes). Keep both limits explicit in the build.
+    test "$boot_image_size" -le 201326592
+    test "$boot_image_size" -le 805306368
 
     # Round-trip verification, mirroring the downstream unpack checks.
     mkdir unpack
     unpack_bootimg.py --boot_img $out/boot.img --out unpack --format info > $out/boot.img.info
+
+    # The current downstream offsets put the large installer ramdisk across
+    # the literal DTB address. ABL may relocate these payloads, as suggested
+    # by the known-good community image, but that behavior is not proven for
+    # this larger image. Preserve the downstream offsets and record the risk
+    # in the artifact so every build carries the same diagnostic fact.
+    ramdisk_offset=$((0x01000000))
+    dtb_offset=$((0x01f00000))
+    ramdisk_size=$(stat -c %s ramdisk.cpio.gz)
+    dtb_size=$(stat -c %s boot.dtb)
+    ramdisk_end=$((ramdisk_offset + ramdisk_size))
+    {
+      printf 'liuqin payload layout: ramdisk_offset=0x%x ramdisk_size=%u ramdisk_end=0x%x dtb_offset=0x%x dtb_size=%u\n' \
+        "$ramdisk_offset" "$ramdisk_size" "$ramdisk_end" "$dtb_offset" "$dtb_size"
+      if [ "$dtb_offset" -lt "$ramdisk_end" ]; then
+        overlap=$((ramdisk_end - dtb_offset))
+        printf 'liuqin header-layout-warning: literal ramdisk/DTB ranges overlap by %u bytes; fixed offsets are retained for the downstream ABL contract and relocation is unverified\n' "$overlap"
+        printf 'bootimg: warning: literal ramdisk/DTB ranges overlap by %u bytes; fixed downstream ABL offsets retained, relocation unverified\n' "$overlap" >&2
+      else
+        printf 'liuqin payload layout: literal ramdisk/DTB ranges do not overlap\n'
+      fi
+    } >> $out/boot.img.info
+
     cmp Image.gz unpack/kernel
     cmp boot.dtb unpack/dtb
     cmp ramdisk.cpio.gz unpack/ramdisk

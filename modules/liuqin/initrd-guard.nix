@@ -11,6 +11,12 @@
 # partition number, start or size is baked in — those differ per capacity
 # variant (256 GB vs 512 GB) and per layout.
 #
+# TODO: the guard below is roughly 150 lines of embedded shell.  Move it into
+# pkgs/ and use writeShellApplication with runtimeInputs, as config/installer.nix
+# already does for liuqin-install-nixos.  Not urgent: this is the safety net
+# that keeps the wrong partition from being opened writable, so it wants the
+# same care as the rest of the storage path rather than a hurried rewrite.
+#
 # This is the declarative equivalent of the downstream 1216-line busybox
 # init's storage section: same checks, same fail-closed behavior, expressed
 # as systemd initrd units instead of shell control flow. The probe mount is
@@ -30,20 +36,18 @@ let
   partNameOk =
     lib.hasPrefix "/dev/disk/by-partlabel/" cfg.storage.rootDevice
     && builtins.match "[^/\n]+" partName != null;
+  rootDeviceUnit = "dev-disk-by\\x2dpartlabel-${partName}.device";
 
   # The root marker: a real regular file (not an environment.etc symlink).
   # The guard verifies content, ownership, mode and size, mirroring the
   # downstream init's marker contract (regular file, 644 root:root, exact
-  # sha256). The RAM installer writes this file immediately after
-  # nixos-install, before the target is ever booted.
-  markerContent = "LIUQIN_NIXOS_ROOT_V1\n";
-  markerSha256 = builtins.hashString "sha256" markerContent;
-  markerSize = builtins.stringLength markerContent;
-  # tmpfiles arguments are single-line: the trailing newline must be the
-  # literal two-character escape \n (tmpfiles expands it when writing).
-  # Interpolating markerContent verbatim would embed a raw newline and
-  # silently truncate the written file to 20 bytes instead of 21.
-  markerArgument = lib.replaceStrings [ "\n" ] [ "\\n" ] markerContent;
+  # sha256).  The bytes live in lib/liuqin-root-marker.nix, shared with the
+  # RAM installer that writes the file straight after nixos-install.
+  marker = import ../../lib/liuqin-root-marker.nix { inherit lib; };
+  markerContent = marker.content;
+  markerSha256 = marker.sha256;
+  markerSize = marker.size;
+  markerArgument = marker.escaped;
 
   guardScript = pkgs.writeShellScript "liuqin-storage-guard" ''
     set -eu
@@ -168,7 +172,10 @@ in
       description = ''
         Exact content (with trailing newline) of /etc/liuqin-nixos-root, the
         identity marker the initrd storage guard requires on the rootfs.
-        The RAM installer writes the byte-identical marker after nixos-install.
+        config/installer.nix writes the same bytes after nixos-install, from
+        its own literal: the two are independent and must agree, since a
+        mismatch makes the guard fail the first boot before tmpfiles can
+        repair the file.
       '';
     };
 
@@ -202,6 +209,15 @@ in
 
     boot.initrd.systemd = {
       enable = true;
+      # The initrd systemd image does not infer these paths from the shell
+      # text in ExecStart. The guard and all commands in its PATH must be
+      # copied into the image explicitly.
+      storePaths = [
+        guardScript
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.util-linux
+      ];
       extraBin = {
         blockdev = "${pkgs.util-linux}/bin/blockdev";
         findfs = "${pkgs.util-linux}/bin/findfs";
@@ -213,9 +229,17 @@ in
         description = "liuqin persistent-root identity guard";
         wantedBy = [ "initrd.target" ];
         before = [ "sysroot.mount" "initrd-fs.target" ];
-        after = [ "systemd-udev-settle.service" ];
-        wants = [ "systemd-udev-settle.service" ];
-        unitConfig.DefaultDependencies = false;
+        # The legacy udev-settle unit is not provided by this systemd/NixOS
+        # generation. Waiting for the actual by-partlabel device gives the
+        # guard the udev ordering it needs without a dangling dependency.
+        after = [ rootDeviceUnit ];
+        wants = [ rootDeviceUnit ];
+        unitConfig = {
+          DefaultDependencies = false;
+          # A missing UFS partition must become a visible dependency failure,
+          # not leave the guard job pending forever behind the .device unit.
+          JobTimeoutSec = "30s";
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;

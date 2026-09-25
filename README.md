@@ -17,23 +17,73 @@ The image is RAM-only and must not be flashed to `boot_a` or `boot_b`. It is a
 small NixOS live environment with:
 
 - Wi-Fi through NetworkManager and the device's ath11k firmware;
-- built-in USB/input support for a keyboard, including the Nanosic keyboard
-  bridge;
+- a USB2 peripheral NCM control channel at `192.168.7.2`, with ECM fallback,
+  DHCP and a temporary root telnet shell on port `2323`;
 - the ABL simple-framebuffer early console and tested display hand-off;
 - `nixos-install`, filesystem tools and a root tty.
 
+After connecting the tablet to a Linux host, let the host obtain an address
+through USB DHCP and connect to the installer shell with:
+
+```sh
+telnet 192.168.7.2 2323
+```
+
+If the host does not obtain an address automatically, assign `192.168.7.1/24`
+to the host-side USB network interface (replace `<usb-if>` with the name shown
+by `ip link`) and retry the same command:
+
+```sh
+sudo ip address replace 192.168.7.1/24 dev <usb-if>
+telnet 192.168.7.2 2323
+```
+
+This is an unauthenticated root channel intended only for a direct, trusted
+USB cable during installation.
+
 From the live tty, connect Wi-Fi with `nmtui` or `nmcli`, measure the device's
-GPT, create or select the target partition, mount it at `/mnt`, and run:
+GPT, create or select the target partition, and prepare its identity before
+mounting it at `/mnt`:
+
+- `storage.layout = "linux-partition"` (the dual-boot/demo layout) requires a
+  GPT partition label of `linux` and an ext4 filesystem label of `LIUQIN_ROOT`.
+- `storage.layout = "whole-userdata"` (the default minimal layout) requires a
+  GPT partition label of `userdata` and the same ext4 filesystem label. This
+  layout consumes Android's userdata partition.
+
+For a newly-created dual-boot partition, the relevant commands are equivalent
+to:
+
+```sh
+sgdisk --change-name=PARTNO:linux /dev/DEVICE
+mkfs.ext4 -L LIUQIN_ROOT /dev/disk/by-partlabel/linux
+mount /dev/disk/by-partlabel/linux /mnt
+findmnt -no SOURCE,FSTYPE /mnt
+findfs LABEL=LIUQIN_ROOT
+```
+
+Replace `PARTNO`, `DEVICE`, and the layout-specific partlabel after measuring
+the actual tablet. The live installer deliberately never partitions or formats
+the device. Once the target is mounted, run:
 
 ```sh
 liuqin-install-nixos --flake /path/to/flake#configuration-name
 ```
 
-The wrapper invokes `nixos-install`, then writes the identity marker required by
-the installed initrd. It never guesses partition geometry and never writes a
-partition merely by booting. The installer image is now the only installation
-interface; the former host-side fastboot installer and prebuilt rootfs-image
-path have been removed.
+The wrapper first verifies that `/mnt` is an ext4 partition with the expected
+filesystem label and GPT partlabel; with `--flake` it reads those expectations
+from the selected configuration. `/nix` is created by `nixos-install`; the
+marker is created by the wrapper. The initrd subsequently verifies the GPT
+partlabel, the filesystem label, the marker and the mounted root before opening
+it read-write. It never guesses partition geometry and never writes a partition
+merely by booting. The installer image is now the only installation interface;
+the former host-side fastboot installer and prebuilt rootfs-image path have
+been removed.
+
+When installing from `/mnt/etc/nixos/configuration.nix` without `--flake`, the
+wrapper accepts the two built-in partlabels (`linux` and `userdata`); set
+`LIUQIN_EXPECTED_PARTLABEL` and, for a custom filesystem label,
+`LIUQIN_EXPECTED_ROOT_LABEL` to make the preflight exact.
 
 The current dual-boot layout keeps Android in `boot_a`, creates a measured
 `linux` partition at the userdata tail, and uses U-Boot from `boot_b` to load
@@ -45,25 +95,40 @@ sector values are embedded in this repository.
 
 ```sh
 nix build .#kernel
-nix build .#bootimg
+nix build .#bootimg-kernel-only
 nix build .#bootimg-nixos
 nix build .#installer-kernel
 nix build .#installer-bootimg
-nix build .#installer-bootimg-safe
 nix flake check
 ```
 
-`installer-bootimg` is the normal first-install artifact and follows the
-downstream simplefb-only display profile. `installer-bootimg-safe` is an
-explicit fallback carrying the local SMMU/dispcc blacklist that was used by
-the earlier bring-up workaround. `installer-kernel`
+`installer-bootimg` is the installer artifact; its display profile keeps
+ABL's framebuffer alive (`earlycon=simplefb`, `keep_bootcon`, `console=tty0`)
+and hands the console over to the fbdev DRM client. `installer-kernel`
 and `installer-dtb` expose its kernel and DTB separately for inspection.
+`bootimg-kernel-only` is a low-level bring-up artifact with an empty ramdisk
+and no `init=` command line; it is not a normal bootable NixOS system image.
 `bootimg-nixos` is the normal ABL RAM-boot image for an installed system;
 `demo-bootimg` and `demo-bootdir` are the corresponding demo/U-Boot artifacts.
 `uboot-build` wraps the checked-in U-Boot packaging pipeline.
 
-The kernel and boot image cross-build on x86_64. The complete aarch64 NixOS
-closure and initrd need an aarch64 builder or enabled aarch64 binfmt.
+The ABL image keeps the downstream fixed payload offsets
+(`ramdisk=0x01000000`, `dtb=0x01f00000`) because those offsets are part of
+the exercised Qualcomm bootloader contract. The current installer ramdisk is
+large enough that its literal range crosses the DTB offset; the build records
+this as a `liuqin header-layout-warning` in `boot.img.info` and prints it
+during the build. This image has since been RAM-booted on the unit many times
+through `fastboot boot` without trouble; writing it to a boot partition is
+still not exercised, so that remains the operation to approach deliberately. The build also enforces the 192 MiB boot
+partition limit and the observed 805306368-byte fastboot download limit.
+
+The repository's built-in installed configurations use the same x86_64→aarch64
+cross package set as the installer, so their system closure and initrd can be
+built on x86_64 without enabled aarch64 binfmt. Consumers of
+`lib.mkLiuqinSystem` can opt into the same behavior with `crossBuild = true`;
+native aarch64 builds remain available with the default `false`. The complete
+desktop closure still requires the operator-supplied private `requireFile`
+payloads in `data/`.
 
 ## Use as a flake input
 
@@ -76,12 +141,17 @@ closure and initrd need an aarch64 builder or enabled aarch64 binfmt.
       system = "x86_64-linux";
       machine = liuqin.lib.mkLiuqinSystem {
         modules = [ ./configuration.nix ];
+        crossBuild = true;
       };
       images = liuqin.lib.mkLiuqinBootImages machine;
     in {
       nixosConfigurations.mypad = machine;
-      packages.${system}.bootimg = images.bootimg;
-      packages.${system}.bootdir = images.bootdir;
+      packages.${system} = {
+        bootimg = images.bootimg;
+      } // builtins.optionalAttrs
+        (machine.config.hardware.liuqin.boot.loader == "uboot") {
+          bootdir = images.bootdir;
+        };
       packages.${system}.installer-bootimg =
         liuqin.packages.${system}.installer-bootimg;
     };
@@ -100,15 +170,15 @@ profile retains the empirically required display hand-off:
 ```text
 earlycon=simplefb
 console=drm_log console=tty0
-initcall_blacklist=simplefb_driver_init,arm_smmu_init,disp_cc_sm8450_driver_init
+initcall_blacklist=simplefb_driver_init
 rootwait
 ```
 
-The normal installed-system profile keeps the SMMU/dispcc entries until an
-actual device-side A/B test proves they are unnecessary on Linux 7.2.5. The
-default live installer deliberately follows the downstream simplefb-only
-profile; use `installer-bootimg-safe` if that experiment shows the earlier
-white-screen behavior on this unit.
+The installed-system profile uses the downstream simplefb-only profile. The
+`arm_smmu_init`/`disp_cc_sm8450_driver_init` blacklist is gone entirely: it
+left IOMMU-backed UFS/PCIe/display consumers without their provider, the
+installer variant carrying it crashed and was removed, and the option that
+enabled it was deleted with it (see docs/PORTING-NOTES.md).
 
 The early framebuffer implementation keeps the most recent screenful when it
 wraps instead of clearing the entire display. This is deliberate: the panel is
@@ -126,8 +196,9 @@ reliable on this device and is no longer part of the kernel, cmdline or tools.
 `pkgs/bootimg.nix`:
 
 1. applies the ABL metadata overlay;
-2. applies the installer-only USB host overlay when building
-   `installer-bootimg`;
+2. applies the installer-only USB2 peripheral overlay when building
+   `installer-bootimg`; the initrd then creates the downstream-compatible
+   configfs NCM gadget (falling back to ECM);
 3. collects symbols referenced by all stock DTBO entries and base DTBs;
 4. redirects every exported symbol to an inert sink;
 5. chooses the sink phandle dynamically as `max(existing phandles) + 1`;
@@ -153,7 +224,7 @@ flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
 modules/liuqin/           installed-system hardware and initrd modules
 kernel/                   Linux configuration and installer profile
-patches/kernel/           Linux 7.2.5 device patches (0001–0010)
+patches/kernel/           Linux 7.2.5 device patches (0001–0012)
 pkgs/bootimg.nix          ABL boot image and DTB construction
 pkgs/bootdir.nix          U-Boot /boot payload
 dts/                      ABL and installer DT overlays

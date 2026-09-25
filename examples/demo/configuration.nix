@@ -5,11 +5,11 @@
 # and the validated U-Boot path starts it. Persistent boot_b installation is a
 # separate, explicitly deferred hardware step.
 #
-# This is a normal NixOS module and the only file to edit to make it yours:
-# the equivalent configuration shipped inside the BSP is config/demo.nix, and
-# the two are deliberately separate copies (a self-contained consumer here, the
-# BSP's own example configuration there). Change one, change the other - the flake
-# check that would catch drift does not exist yet:
+# This is a normal NixOS module and the only file to edit to make it yours.
+# The BSP builds this very file as its demo target (`nixosConfigurations.demo`
+# comes in through config/demo.nix, which is a one-line import of this module),
+# so it is exercised by the BSP's own build and there is no second copy to keep
+# in sync:
 # hostname, users, timezone, storage layout, desktop. Everything device-specific
 # (kernel, firmware, touch/audio/Wi-Fi/sensor plumbing, the initrd storage
 # guard, GNOME policy) is injected by liuqin-nixos.
@@ -31,9 +31,10 @@
     boot.loader = "uboot";
     storage.layout = "linux-partition";
 
-    # SSC sensor registry/config from this unit's own stock dump, vendored in
-    # the BSP at data/liuqin-ssc-config.tar.zst. A different unit must
-    # re-derive it; see the BSP's docs/PORTING-NOTES.md.
+    # SSC sensor registry/config payload, from the stock ROM's
+    # vendor/etc/sensors/config (the same bytes are in the downstream
+    # release's rootfs). A different unit must re-derive it; see the BSP's
+    # docs/PORTING-NOTES.md.
     sensors.sscConfigHash = "sha256-9IzksIEZq8NveGBaD5cBSgzNLCh7KmvdjKnEaubCOdU=";
   };
 

@@ -1,0 +1,44 @@
+pinctrl: qcom: flag the SM8475 gpio function as GPIO
+
+The 7.2.5 pinmux core only recognizes a pin as usable as GPIO when the
+function it is currently muxed with carries PINFUNCTION_FLAG_GPIO
+(drivers/pinctrl/pinmux.c:pinmux_generic_function_is_gpio()). This driver
+inherits .strict = true and .function_is_gpio from pinctrl-msm.c, so with an
+unflagged "gpio" function every pin that a device claims through its pinctrl
+state and then requests as a GPIO is refused:
+
+  sm8475-tlmm f100000.pinctrl: pin GPIO_0 already requested by ae94000.dsi.0;
+    cannot claim for f100000.pinctrl:551
+  panel-nt36532 ae94000.dsi.0: error -EINVAL: Failed to get reset-gpios
+  panel-nt36532 ae94000.dsi.0: probe with driver panel-nt36532 failed with error -22
+
+The same pattern hits the four CS35L41 reset lines (gpio1/3/87/92, holders
+0-0040/0-0043/1-0040/1-0041) and the gpio-keys hall lines (gpio10/23): the
+panel never probes, so there is no display, and the installed system would
+inherit exactly the same failure.
+
+The downstream tree this file was backported from does not hit this only
+because its pinctrl-msm.c advertises neither .strict nor .function_is_gpio.
+The 7.2.5 baseline does advertise both, and its own SoC drivers declare the
+gpio function with MSM_GPIO_PIN_FUNCTION()
+(drivers/pinctrl/qcom/pinctrl-sm8450.c:1269), which expands to
+PINCTRL_GPIO_PINFUNCTION() in pinctrl-msm.h. Use the same macro here, so
+function_is_gpio() reports the muxed function as GPIO and the device's GPIO
+request becomes the single owner of the pin. The pinctrl state still sets
+the pad configuration (drive strength, bias); only its mux claim disappears,
+which is what the GPIO request then performs itself.
+
+Verified on the unit: with the flag set, GPIO_0 keeps a single owner, the
+panel probes and its reset-gpios request succeeds.
+
+--- a/drivers/pinctrl/qcom/pinctrl-sm8475.c
++++ b/drivers/pinctrl/qcom/pinctrl-sm8475.c
+@@ -1275,7 +1275,7 @@
+ };
+ 
+ static const struct pinfunction sm8475_functions[] = {
+-	MSM_PIN_FUNCTION(gpio),
++	MSM_GPIO_PIN_FUNCTION(gpio),
+ 	MSM_PIN_FUNCTION(aon_cam),
+ 	MSM_PIN_FUNCTION(atest_char),
+ 	MSM_PIN_FUNCTION(atest_usb),

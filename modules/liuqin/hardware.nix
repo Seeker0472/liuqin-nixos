@@ -38,7 +38,11 @@ in
 
     # The touchscreen (nvt_ts) request_firmware() fires during probe, before
     # switch_root, so the firmware tree must be in the initrd too.
-    boot.initrd.systemd.contents."/lib/firmware".source =
+    # The initrd's /lib is a read-only symlink to the kernel module store, so
+    # placing a second tree below /lib/firmware makes systemd's initrd image
+    # builder fail. Use the same writable firmware_class.path that carries
+    # the device-specific calibration files after switch-root.
+    boot.initrd.systemd.contents."/var/lib/firmware".source =
       "${pkgs.liuqinFirmware}/lib/firmware";
 
     # --- Backlight ---------------------------------------------------------
@@ -83,8 +87,6 @@ in
     systemd.services.liuqin-wlan-mac = {
       description = "liuqin private WLAN MAC admission";
       before = [ "NetworkManager.service" "network-pre.target" ];
-      after = [ "systemd-udev-settle.service" ];
-      wants = [ "systemd-udev-settle.service" ];
       path = with pkgs; [ iproute2 coreutils gnugrep gawk ];
       script = ''
         set -eu

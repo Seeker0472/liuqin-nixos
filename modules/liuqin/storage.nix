@@ -10,11 +10,11 @@
 #   whole-userdata   NixOS root is the whole stock userdata partition. Android
 #                    and NixOS then cannot both keep /data.
 #   linux-partition  NixOS root is a dedicated `linux` partition carved out of
-#                    the tail of userdata by the explicit partitioning step
-#                    in the RAM installer. Android keeps its own userdata,
-#                    so both systems boot and store data independently - this
-#                    is the layout the dual-boot flow (U-Boot on boot_b,
-#                    Android on boot_a) is built around.
+#                    the tail of userdata by an operator-reviewed partitioning
+#                    step before the filesystem is mounted. Android keeps its
+#                    own userdata, so both systems boot and store data
+#                    independently - this is the layout the dual-boot flow
+#                    (U-Boot on boot_b, Android on boot_a) is built around.
 #
 # Partition numbers, start and size are capacity-specific (the stock 256 GB
 # and 512 GB GPTs differ; this repository was originally written against a
@@ -34,8 +34,9 @@ in
       description = ''
         Root storage layout. "whole-userdata" uses the entire stock userdata
         partition as the NixOS root; "linux-partition" uses the dedicated
-        `linux` partition carved out of userdata's tail from the RAM installer
-        after live geometry measurement and a GPT backup.
+        `linux` partition carved out of userdata's tail after live geometry
+        measurement and a GPT backup. The installer does not create or format
+        either layout automatically.
       '';
     };
 
@@ -76,9 +77,9 @@ in
         options = [ "noatime" ];
       };
 
-      # Grow the filesystem to fill its partition on first boot. The RAM
-      # installer formats the target before nixos-install, so only the
-      # filesystem needs growing; GPT geometry remains operator-selected.
+      # Grow the filesystem to fill its partition on first boot. The operator
+      # formats the target before nixos-install, so only the filesystem needs
+      # growing; GPT geometry remains operator-selected.
       systemd.services.liuqin-growfs-root = {
         description = "Grow the liuqin NixOS root filesystem to fill its partition";
         wantedBy = [ "multi-user.target" ];
