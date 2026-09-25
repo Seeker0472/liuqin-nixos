@@ -2,10 +2,11 @@
 #
 # The persistent-root identity marker: the single source of truth for the
 # bytes the initrd storage guard verifies.  Both consumers derive from this
-# file - the guard (modules/liuqin/initrd-guard.nix) and the RAM installer
-# (config/installer.nix, which writes the file after nixos-install) - so the
-# two cannot drift.  A mismatch would make the guard fail the first boot
-# before tmpfiles gets a chance to repair the file.
+# file - the guard (modules/liuqin/initrd-guard.nix) and the activation script
+# that provisions /etc/liuqin-nixos-root (same module, so nixos-install and
+# every later nixos-rebuild write it) - so the two cannot drift.  A mismatch
+# would make the guard fail the first boot before tmpfiles gets a chance to
+# repair the file.
 { lib }:
 let
   content = "LIUQIN_NIXOS_ROOT_V1\n";

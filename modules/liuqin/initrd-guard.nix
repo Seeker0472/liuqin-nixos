@@ -12,8 +12,8 @@
 # variant (256 GB vs 512 GB) and per layout.
 #
 # TODO: the guard below is roughly 150 lines of embedded shell.  Move it into
-# pkgs/ and use writeShellApplication with runtimeInputs, as config/installer.nix
-# already does for liuqin-install-nixos.  Not urgent: this is the safety net
+# pkgs/ and use writeShellApplication with runtimeInputs, following the
+# pkgs/liuqin-power-keyd/ pattern.  Not urgent: this is the safety net
 # that keeps the wrong partition from being opened writable, so it wants the
 # same care as the rest of the storage path rather than a hurried rewrite.
 #
@@ -107,7 +107,8 @@ let
       echo "liuqin-storage-guard: $part is correctly labelled but EMPTY" >&2
       echo "(freshly formatted, no NixOS rootfs)." >&2
       echo "Recovery: boot the RAM installer image again, mount the target at /mnt," >&2
-      echo "and run liuqin-install-nixos after checking the filesystem." >&2
+      echo "and run nixos-install --root /mnt --no-channel-copy after checking the" >&2
+      echo "filesystem (README.md, Installation model)." >&2
       fail "empty rootfs: reinstall from the liuqin RAM installer"
     fi
 
@@ -127,7 +128,7 @@ let
 
     # Probe-mount the root read-only and require the root marker to be a
     # regular file owned 644 root:root whose sha256 matches exactly the
-    # installer-provisioned marker and repaired by systemd-tmpfiles at boot
+    # activation-provisioned marker and repaired by systemd-tmpfiles at boot
     # (see systemd.tmpfiles below).
     marker=$probe/etc/liuqin-nixos-root
     marker_ok=0
@@ -194,11 +195,18 @@ in
       }
     ];
 
-    # The marker the guard requires. environment.etc would place a symlink
-    # into /etc; the guard demands a regular file on the rootfs, so
-    # systemd-tmpfiles writes it (f+ also repairs a drifted copy on boot).
-    # Fresh installs get the file from the RAM install wrapper; tmpfiles is the
-    # drift repair, not the initial provisioning.
+    # The marker the guard requires is provisioned by activation, not by an
+    # installer: nixos-install runs the target's activation inside the target
+    # (it calls `switch-to-configuration boot` via nixos-enter), and so does
+    # every later nixos-rebuild, so the installed system writes its own marker
+    # from the same source the guard checks. environment.etc would place a
+    # symlink, which the guard rejects, so the file is written directly; the
+    # tmpfiles rule below is then only drift repair.
+    system.activationScripts.liuqin-root-marker.text = ''
+      printf '${markerArgument}' > /etc/liuqin-nixos-root
+      chmod 0644 /etc/liuqin-nixos-root
+      chown root:root /etc/liuqin-nixos-root
+    '';
     systemd.tmpfiles.rules = [
       "f+ /etc/liuqin-nixos-root 0644 root root - ${markerArgument}"
     ];

@@ -98,9 +98,11 @@ region in the final DT and two copies overlap.
 - Channel: USB2 peripheral NCM gadget at `192.168.7.2/24`, DHCP and telnet on
   `192.168.7.2:2323`, sshd on port 22. Stage 2 recreates the gadget.
 - Toolchain: `sgdisk`, `parted`, `mkfs.ext4`, `e2fsck`, `resize2fs`,
-  `resize.f2fs`, `mkfs.f2fs`, `nmtui`, and `liuqin-install-nixos`, which bundles
-  `nixos-install`, requires a mounted `/mnt`, never partitions or formats by
-  itself, and checks the target's storage identity against the flake.
+  `resize.f2fs`, `mkfs.f2fs`, `nmtui`, and upstream `nixos-install`: the
+  operator partitions, formats and mounts the target, and the closure reaches
+  `/mnt/nix/store` either through `--substituters` or through a `nix copy` into
+  the mountpoint followed by `--system <path>`. There is no liuqin wrapper
+  around it; the target's own activation writes the initrd guard's marker.
 - The initrd disables NixOS' generic PC module list: this kernel has UFS, SCSI,
   ext4, IOMMU and USB built in, and the generic list's absent modules
   (`ata_piix`) fail before the guard runs.
@@ -192,8 +194,10 @@ Each item needs its own kernel profile or device test, not an installer change.
 
 ## Known refactors (TODO)
 
-- `config/installer.nix`: move `usbGadgetSetup` and `installNixos` (114 and 158
-  lines of embedded shell) into `pkgs/` as `writeShellApplication` with
-  `runtimeInputs`, following `pkgs/liuqin-power-keyd/`.
+- `config/installer.nix`: move `usbGadgetSetup` / `usbShellLogin` /
+  `screenRefresh` (the embedded shell that remains) into `pkgs/` as
+  `writeShellApplication` with `runtimeInputs`, following
+  `pkgs/liuqin-power-keyd/`. The install path itself is no longer in this file:
+  upstream `nixos-install` runs against the operator's mounted target.
 - `modules/liuqin/initrd-guard.nix`: same treatment for the ~150-line guard
   script.

@@ -59,34 +59,73 @@ to:
 
 ```sh
 sgdisk --change-name=PARTNO:linux /dev/DEVICE
-mkfs.ext4 -L LIUQIN_ROOT /dev/disk/by-partlabel/linux
+mkfs.ext4 -O ^orphan_file -L LIUQIN_ROOT /dev/disk/by-partlabel/linux
 mount /dev/disk/by-partlabel/linux /mnt
 findmnt -no SOURCE,FSTYPE /mnt
 findfs LABEL=LIUQIN_ROOT
 ```
 
+Three things about that list. `sgdisk --change-name` only **renames** an
+existing entry; it does not create one, and creating the `linux` partition
+itself has no recipe in this repository yet. The stock `userdata` filesystem is
+**f2fs** (`partition-type:userdata` in the ABL getvar dump), which cannot be
+shrunk in place, so freeing the space means destroying Android's `/data` first
+- a decision to take deliberately, not a command to paste. Any GPT write also
+has to keep the `boot_a`/`boot_b` attribute bytes that ABL's slot state lives
+on, keep a copy of both GPTs off the device before it touches them, and end
+with a sync before any reset. And `-O ^orphan_file` is not decoration:
+e2fsprogs enables that incompat feature by default and this U-Boot's ext4 does
+not know it (`fs/ext4/ext4_common.c` warns "fs uses incompatible features" and
+carries on), which risks read errors on the one partition U-Boot has to read.
+
 Replace `PARTNO`, `DEVICE`, and the layout-specific partlabel after measuring
-the actual tablet. The live installer deliberately never partitions or formats
-the device. Once the target is mounted, run:
+the actual tablet. The live image deliberately never partitions or formats the
+device, and there is no liuqin install wrapper either: with the target mounted
+at `/mnt`, the installation is plain upstream NixOS.
 
 ```sh
-liuqin-install-nixos --flake /path/to/flake#configuration-name
+nixos-install --root /mnt --no-channel-copy
 ```
 
-The wrapper first verifies that `/mnt` is an ext4 partition with the expected
-filesystem label and GPT partlabel; with `--flake` it reads those expectations
-from the selected configuration. `/nix` is created by `nixos-install`; the
-marker is created by the wrapper. The initrd subsequently verifies the GPT
-partlabel, the filesystem label, the marker and the mounted root before opening
-it read-write. It never guesses partition geometry and never writes a partition
-merely by booting. The installer image is now the only installation interface;
-the former host-side fastboot installer and prebuilt rootfs-image path have
-been removed.
+`nixos-install` fetches (or builds) the closure into `/mnt/nix/store` and then
+activates the system inside the target, which is also what installs the loader:
+with `hardware.liuqin.boot.loader = "uboot"` that writes
+`/boot/extlinux/extlinux.conf` plus this generation's kernel, initrd and device
+tree into the `linux` partition, and the initrd guard's marker file is written
+by the target's own activation. Point it at a configuration (`--flake
+/path/to/flake#configuration-name`; `-I`, `--option`, `-j` and `--substituters`
+pass through) or drop a `configuration.nix` at `/mnt/etc/nixos` first.
 
-When installing from `/mnt/etc/nixos/configuration.nix` without `--flake`, the
-wrapper accepts the two built-in partlabels (`linux` and `userdata`); set
-`LIUQIN_EXPECTED_PARTLABEL` and, for a custom filesystem label,
-`LIUQIN_EXPECTED_ROOT_LABEL` to make the preflight exact.
+Decide where the closure comes from before running it: a mainline liuqin kernel
+is not on `cache.nixos.org`, so without help `nixos-install` builds the whole
+system on the tablet. Both ways below keep that on the host instead:
+
+```sh
+# (a) let the tablet fetch from a store the host serves
+#     (`nix-serve` on the host, or an ssh-ng:// store it accepts)
+tablet# nixos-install --root /mnt --no-channel-copy --flake <flake> \
+          --substituters http://<host>:<port>
+
+# (b) copy the closure into the target, then install that path
+host$   nix build <flake>#nixosConfigurations.demo.config.system.build.toplevel
+tablet# nix copy --from http://<host>:<port> --to /mnt --no-check-sigs /nix/store/<system>
+tablet# nixos-install --root /mnt --no-channel-copy --system /nix/store/<system>
+```
+
+Check what the device menu will look for, then unmount and sync before
+restarting:
+
+```sh
+sed -n '1,12p' /mnt/boot/extlinux/extlinux.conf
+umount /mnt
+sync
+```
+
+The initrd then verifies the GPT partlabel, the filesystem label, the marker
+and the mounted root before opening it read-write. It never guesses partition
+geometry and never writes a partition merely by booting. The RAM installer
+image is the only installation interface; the former host-side fastboot
+installer and prebuilt rootfs-image path have been removed.
 
 The current dual-boot layout keeps Android in `boot_a`, creates a measured
 `linux` partition at the userdata tail, and boots NixOS from `boot_b`'s U-Boot

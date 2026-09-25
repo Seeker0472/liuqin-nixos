@@ -5,13 +5,18 @@
 # from a tmpfs/overlay root, so it must not run the persistent-root guard or
 # any service that reads device-private state from persist.
 #
-# TODO: about two thirds of this file is embedded shell (usbGadgetSetup and
-# installNixos alone are 114 and 158 lines).  Move those scripts into pkgs/
-# following the pkgs/liuqin-power-keyd/ pattern, and switch them from
-# writeShellScriptBin with absolute store paths to writeShellApplication with
-# runtimeInputs, which is how installNixos already works.  That should bring
-# the module down to roughly 250 lines.  Deferred on purpose: this is the
-# install path, so refactor it once an install has been exercised end to end.
+# The install itself is upstream and is not represented here: the operator
+# partitions, formats and mounts the target, then runs nixos-install, which
+# evaluates or fetches the closure into that mountpoint and activates it there
+# (README.md, "Installation model"). What it carries is what this device needs
+# and nixpkgs does not have: the USB control channel, the display and firmware
+# hand-off, and the trimming that keeps the live root out of the squashfs.
+#
+# TODO: usbGadgetSetup / usbShellLogin / screenRefresh are still embedded shell
+# with absolute store paths. Move them into pkgs/ following the
+# pkgs/liuqin-power-keyd/ pattern and switch them to writeShellApplication with
+# runtimeInputs. Deferred on purpose: this is the channel an install runs over,
+# so refactor it once an install has been exercised end to end.
 { config, lib, modulesPath, pkgs, ... }:
 
 let
@@ -32,10 +37,6 @@ let
   # already contains DWC3 gadget/configfs/NCM/ECM support; this helper only
   # creates the configfs function and claims the USB2 UDC. It is deliberately
   # idempotent because it runs once in the initrd and once after switch_root.
-  # Bytes of /etc/liuqin-nixos-root, shared with the initrd storage guard so
-  # the installer and the guard cannot disagree (see lib/liuqin-root-marker.nix).
-  liuqinRootMarker = import ../lib/liuqin-root-marker.nix { inherit lib; };
-
   usbGadgetSetup = pkgs.writeShellScriptBin "liuqin-usb-gadget" ''
     set -eu
 
@@ -186,183 +187,55 @@ let
     kernel/initrd fields point here instead of at a second copy.
   '';
 
-  # nixos-init's stage 1 locates the live closure by resolving the kernel
-  # command line's init= inside /sysroot, and only proceeds when that path
-  # exists. ABL appends its own init=/init after the one we pass and the last
-  # value wins, so on this device the lookup always lands on /sysroot/init.
-  # Plant the usual marker before either lookup unit runs. The marker points at
-  # the live closure's init as an in-root path, which is what the lookup
-  # resolves; the closure lives in the store that stage 1 has already mounted.
+  # The stage 1 this configuration selects (systemd's, i.e. the
+  # !system.nixos-init.enable path forced below) locates the live closure by
+  # resolving the kernel command line's init= inside /sysroot, and only
+  # proceeds when that path exists. Ours is the first init=, from the boot
+  # image's bootargs (init=<liuqinLiveToplevel>/init), but ABL appends its own
+  # init=/init after it and the last value wins, so the raw lookup would land
+  # on /sysroot/init. Take the first init= that resolves under /sysroot and
+  # fall back to the store glob only when the command line carries nothing
+  # usable: the glob depends on this derivation's name, and a rename must not
+  # be able to turn into a silent no-boot.
   plantSysrootInit = pkgs.writeShellScript "liuqin-plant-sysroot-init" ''
     set -eu
-    closure=$(${pkgs.coreutils}/bin/ls -d /sysroot/nix/store/*-liuqin-installer-live-toplevel 2>/dev/null \
-      | ${pkgs.coreutils}/bin/head -1)
-    if [ -z "$closure" ]; then
-      echo "liuqin-plant-sysroot-init: no live closure in /sysroot/nix/store" >&2
+
+    init_path=
+    tried=
+    for arg in $(${pkgs.coreutils}/bin/cat /proc/cmdline); do
+      case "$arg" in
+        init=*)
+          candidate=''${arg#init=}
+          [ -n "$candidate" ] || continue
+          if [ -x "/sysroot$candidate" ]; then
+            init_path="$candidate"
+            break
+          fi
+          tried="$tried $candidate"
+          ;;
+      esac
+    done
+
+    if [ -z "$init_path" ]; then
+      # Fallback for a command line that lost our init= entirely.
+      dir=$(${pkgs.coreutils}/bin/ls -d /sysroot/nix/store/*-liuqin-installer-live-toplevel 2>/dev/null \
+        | ${pkgs.coreutils}/bin/head -1)
+      if [ -n "$dir" ]; then
+        init_path="''${dir#/sysroot}/init"
+      fi
+    fi
+
+    if [ -z "$init_path" ]; then
+      echo "liuqin-plant-sysroot-init: no live closure; init= values tried:$tried; store glob matched nothing" >&2
       exit 1
     fi
-    # /sysroot/init is resolved inside the live root, so strip the /sysroot
-    # prefix the glob sees.
-    ${pkgs.coreutils}/bin/ln -sfn "/nix/store/''${closure##*/}/init" /sysroot/init
+
+    # /sysroot/init is resolved inside the live root, so the link target is an
+    # in-root path, which is what the lookup reads back.
+    ${pkgs.coreutils}/bin/ln -sfn "$init_path" /sysroot/init
     echo "liuqin-plant-sysroot-init: /sysroot/init -> $(${pkgs.coreutils}/bin/readlink /sysroot/init)"
   '';
 
-  installNixos = pkgs.writeShellApplication {
-    name = "liuqin-install-nixos";
-    runtimeInputs = with pkgs; [
-      coreutils
-      findutils
-      nix
-      nixos-install
-      util-linux
-    ];
-    text = ''
-      set -eu
-
-      usage() {
-        cat >&2 <<'EOF'
-      Usage:
-        liuqin-install-nixos --flake FLAKE [nixos-install options]
-        liuqin-install-nixos [nixos-install options]
-
-      Before running this command, partition and format the target, mount its
-      ext4 root filesystem at /mnt. The default storage contract uses the
-      filesystem label LIUQIN_ROOT and a GPT partlabel matching the selected
-      layout (linux for linux-partition, userdata for whole-userdata). Put the
-      target configuration under /mnt/etc/nixos or provide --flake. With
-      --flake, this helper reads the selected liuqin storage options and
-      rejects a mismatched target before installing. For a local
-      configuration.nix, set LIUQIN_EXPECTED_PARTLABEL (and, if needed,
-      LIUQIN_EXPECTED_ROOT_LABEL) when using custom names. This helper never
-      partitions or formats a device on its own.
-      EOF
-      }
-
-      if [ ! -d /mnt ] || ! findmnt --mountpoint /mnt >/dev/null 2>&1; then
-        echo "liuqin-install-nixos: mount the target root filesystem at /mnt first" >&2
-        exit 2
-      fi
-
-      # Validate the storage identity before nixos-install writes anything.
-      # With a flake, read the exact root device and filesystem label from the
-      # selected liuqin configuration; this catches selecting the linux
-      # partition while the configuration expects userdata (and vice versa).
-      install_args=( "$@" )
-      flake_spec=
-      i=0
-      while [ "$i" -lt "''${#install_args[@]}" ]; do
-        arg="''${install_args[$i]}"
-        case "$arg" in
-          --flake)
-            i=$((i + 1))
-            if [ "$i" -ge "''${#install_args[@]}" ]; then
-              echo "liuqin-install-nixos: --flake needs a flake#configuration argument" >&2
-              exit 2
-            fi
-            flake_spec="''${install_args[$i]}"
-            ;;
-          --flake=*)
-            flake_spec="''${arg#--flake=}"
-            ;;
-        esac
-        i=$((i + 1))
-      done
-
-      expected_partlabel="''${LIUQIN_EXPECTED_PARTLABEL:-}"
-      expected_root_label="''${LIUQIN_EXPECTED_ROOT_LABEL:-LIUQIN_ROOT}"
-      if [ -n "$flake_spec" ]; then
-        case "$flake_spec" in
-          *#*)
-            flake_ref="''${flake_spec%%#*}"
-            flake_config="''${flake_spec#*#}"
-            ;;
-          *)
-            echo "liuqin-install-nixos: --flake must name a configuration as FLAKE#NAME" >&2
-            exit 2
-            ;;
-        esac
-
-        flake_attr="nixosConfigurations.$flake_config.config.hardware.liuqin"
-        expected_root_device=$(nix eval --raw \
-          "$flake_ref#$flake_attr.storage.rootDevice" 2>/dev/null) || {
-          echo "liuqin-install-nixos: cannot evaluate $flake_attr.storage.rootDevice" >&2
-          echo "Use a liuqin configuration and check the flake before installing." >&2
-          exit 2
-        }
-        expected_root_label=$(nix eval --raw \
-          "$flake_ref#$flake_attr.storage.rootLabel" 2>/dev/null) || {
-          echo "liuqin-install-nixos: cannot evaluate $flake_attr.storage.rootLabel" >&2
-          exit 2
-        }
-        case "$expected_root_device" in
-          /dev/disk/by-partlabel/*)
-            expected_partlabel="''${expected_root_device##*/}"
-            ;;
-          *)
-            echo "liuqin-install-nixos: unsupported liuqin rootDevice $expected_root_device" >&2
-            echo "It must use /dev/disk/by-partlabel/<name> for the initrd guard." >&2
-            exit 2
-            ;;
-        esac
-      fi
-
-      target_source=$(findmnt -n -o SOURCE --target /mnt 2>/dev/null || true)
-      target_fstype=$(findmnt -n -o FSTYPE --target /mnt 2>/dev/null || true)
-      [ "$target_fstype" = ext4 ] || {
-        echo "liuqin-install-nixos: /mnt is $target_fstype, expected ext4" >&2
-        exit 2
-      }
-      target_device=$(readlink -f "$target_source" 2>/dev/null || true)
-      [ -b "$target_device" ] || {
-        echo "liuqin-install-nixos: /mnt is not backed by a block device ($target_source)" >&2
-        exit 2
-      }
-      [ "$(lsblk -ndo TYPE "$target_device" 2>/dev/null || true)" = part ] || {
-        echo "liuqin-install-nixos: target $target_device is not a partition" >&2
-        exit 2
-      }
-
-      label_device=$(findfs "LABEL=$expected_root_label" 2>/dev/null || true)
-      label_device=$(readlink -f "$label_device" 2>/dev/null || true)
-      [ -n "$label_device" ] && [ "$label_device" = "$target_device" ] || {
-        echo "liuqin-install-nixos: /mnt must be labelled $expected_root_label" >&2
-        echo "The label must resolve to $target_device, not ''${label_device:-nothing}." >&2
-        exit 2
-      }
-
-      target_partlabel=$(lsblk -ndo PARTLABEL "$target_device" 2>/dev/null || true)
-      if [ -n "$expected_partlabel" ]; then
-        [ "$target_partlabel" = "$expected_partlabel" ] || {
-          echo "liuqin-install-nixos: target partlabel is $target_partlabel, expected $expected_partlabel" >&2
-          exit 2
-        }
-      else
-        case "$target_partlabel" in
-          linux|userdata) ;;
-          *)
-            echo "liuqin-install-nixos: target partlabel must be linux or userdata" >&2
-            echo "Set LIUQIN_EXPECTED_PARTLABEL for a custom configuration." >&2
-            exit 2
-            ;;
-        esac
-      fi
-
-      if [ "$#" -eq 0 ] && [ ! -f /mnt/etc/nixos/configuration.nix ]; then
-        usage
-        exit 2
-      fi
-
-      nixos-install --root /mnt --no-channel-copy "$@"
-
-      # The initrd storage guard runs before the target root is mounted and
-      # therefore cannot rely on tmpfiles/activation from the first boot.  A
-      # nixos-install invocation does not boot the target, so install the
-      # guard marker explicitly while /mnt is still mounted.
-      printf '${liuqinRootMarker.escaped}' > /mnt/etc/liuqin-nixos-root
-      chmod 0644 /mnt/etc/liuqin-nixos-root
-      chown root:root /mnt/etc/liuqin-nixos-root
-    '';
-  };
 in
 {
   imports = [
@@ -602,14 +475,14 @@ in
   # large fraction of the compressed live-store closure.
   environment.defaultPackages = lib.mkForce [ ];
 
-  # Keep the system-provided installer helpers disabled: the custom wrapper
-  # above is the only installer command needed in the live closure, and both
-  # nixos-install and nixos-generate-config otherwise add unwanted tooling.
+  # `nixos-install` stays enabled: it is the install command README.md
+  # documents, and with the wrapper gone nothing else in the image provides it.
+  # The rest of the installer helpers are not needed in a RAM-only live closure
+  # and only add tooling to it.
   system.tools = {
     nixos-build-vms.enable = false;
     nixos-enter.enable = false;
     nixos-generate-config.enable = false;
-    nixos-install.enable = false;
     nixos-option.enable = false;
     nixos-rebuild.enable = false;
     nixos-version.enable = false;
@@ -647,7 +520,6 @@ in
       gptfdisk
       iproute2
       iw
-      installNixos
       openssh
       parted
     ] ++ [ networkmanager ];
@@ -659,7 +531,9 @@ in
     Network: use nmtui or nmcli. Target root must be ext4, labelled
     LIUQIN_ROOT, and mounted at /mnt. Its GPT partlabel must match the
     selected target configuration (linux or userdata).
-    Install: liuqin-install-nixos --flake FLAKE
+    Install: partition, format and mount the target, then run
+    nixos-install --root /mnt --no-channel-copy (see README.md for how the
+    closure reaches the tablet without building it here).
     The live image never partitions or formats storage automatically.
   '';
 
