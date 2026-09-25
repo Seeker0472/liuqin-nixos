@@ -105,10 +105,12 @@
             inherit (cfg.system.build) netbootRamdisk squashfsStore toplevel;
           };
 
-        # Build boot artifacts for an installed configuration. Installation
-        # itself is intentionally not represented here: the only supported
-        # entry point is the RAM installer image above, followed by
-        # nixos-install from its live shell.
+        # Build the ABL boot image for an installed configuration. The U-Boot
+        # path needs nothing from here: it boots the generation list NixOS'
+        # extlinux loader writes into /boot on the target. Installation itself
+        # is intentionally not represented either: the only supported entry
+        # point is the RAM installer image above, followed by nixos-install
+        # from its live shell.
         mkLiuqinBootImages = configuration:
           let
             cfg = configuration.config;
@@ -123,9 +125,6 @@
               );
               ramdisk = cfg.system.build.initialRamdisk + "/initrd";
             };
-          }
-          // lib.optionalAttrs (cfg.hardware.liuqin.boot.loader == "uboot") {
-            bootdir = cfg.system.build.liuqinBootDir;
           };
       };
 
@@ -139,7 +138,6 @@
           demoImages = self.lib.mkLiuqinBootImages self.nixosConfigurations.demo;
           installerImages = self.lib.mkLiuqinInstallerImages
             installerConfiguration;
-          mkbootimgTool = pkgsHost.callPackage ./pkgs/mkbootimg.nix { };
         in
         {
           # Keep these outputs tied to the kernels selected by the actual
@@ -161,7 +159,6 @@
           # Boot image for the EXAMPLE configuration (config/example.nix).
           # Your own configuration: use lib.mkLiuqinBootImages instead.
           bootimg-nixos = exampleImages.bootimg;
-          demo-bootdir = demoImages.bootdir;
           demo-bootimg = demoImages.bootimg;
           # Full NixOS live installer: kernel plus a netboot squashfs/root
           # overlay packed into the ABL boot.img ramdisk. This is the only
@@ -169,29 +166,13 @@
           installer-bootimg = installerImages.bootimg;
           installer-ramdisk = installerImages.netbootRamdisk;
           installer-squashfs = installerImages.squashfsStore;
-          # Host wrapper for the checked-in U-Boot pipeline. The dualboot tree
-          # is a sibling repository and therefore cannot be imported into a
-          # pure flake evaluation; this command keeps the build declarative
-          # while preserving that repository's package-boota.sh assertions.
-          uboot-build = pkgsHost.writeShellApplication {
-            name = "liuqin-uboot-build";
-            runtimeInputs = [
-              pkgsHost.bash pkgsHost.bc pkgsHost.bison pkgsHost.coreutils
-              pkgsHost.dtc pkgsHost.findutils pkgsHost.flex pkgsHost.gawk
-              pkgsHost.gcc pkgsHost.gnugrep pkgsHost.gnumake pkgsHost.gzip
-              pkgsHost.perl pkgsHost.python3 pkgsHost.xz pkgsHost.zstd
-              mkbootimgTool
-              pkgsArm.stdenv.cc
-            ];
-            text = ''
-              workspace="''${LIUQIN_WORKSPACE_ROOT:-$PWD/..}"
-              test -x "$workspace/liuqin-dualboot/u-boot/build.sh" || {
-                echo "liuqin-uboot-build: set LIUQIN_WORKSPACE_ROOT to the workspace containing liuqin-dualboot" >&2
-                exit 2
-              }
-              exec bash "$workspace/liuqin-dualboot/u-boot/build.sh" "$@"
-            '';
-          };
+          # The bootloader this device boots, and the ABL boot.img built from
+          # it: this is the whole U-Boot pipeline inside this flake, with no
+          # sibling checkout. See u-boot/default.nix for where the tree comes
+          # from and ../pkgs/bootimg.nix for the boot.img contract (shared with
+          # the kernel image).
+          uboot = pkgsArm.liuqinUboot.uboot;
+          uboot-bootimg = pkgsArm.liuqinUboot.bootimg;
         };
 
       nixosModules.liuqin = import ./modules/liuqin;

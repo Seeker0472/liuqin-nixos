@@ -26,8 +26,10 @@
     enable = true;
     desktop.gnome.enable = true;
 
-    # The validated U-Boot path loads /boot/{Image,initrd.img,liuqin.dtb} from
-    # the `linux` partition, with the kernel command line baked into the DTB.
+    # The U-Boot path: NixOS installs its extlinux generation list into /boot
+    # on the `linux` partition, and the device menu offers "Boot NixOS" (the
+    # generation installed last) and "NixOS Generations" (the whole list, with
+    # the panel's volume and power keys).
     boot.loader = "uboot";
     storage.layout = "linux-partition";
 

@@ -136,6 +136,12 @@ active.
 - The marker bytes live in `lib/liuqin-root-marker.nix`, shared by the guard and
   by `config/installer.nix`, which writes the file after `nixos-install`.
 - A oneshot grows the root filesystem with `resize2fs`.
+- `/boot` is a directory on that root partition, not a partition of its own:
+  NixOS' extlinux loader writes the generation list to `/boot/extlinux/
+  extlinux.conf` and copies each generation's kernel, initrd and device tree
+  into `/boot/nixos`. U-Boot's `sysboot` reads that one file; see
+  docs/BOOT-ARCHITECTURE.md for the two device-menu entries and the load
+  addresses.
 
 ## ABL DTB and symbol contract
 

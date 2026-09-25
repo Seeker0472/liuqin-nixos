@@ -36,11 +36,12 @@ in
                    (pkgs/bootimg.nix). Initial installation is always performed
                    from the RAM installer image; no host-side fastboot writer is
                    part of this repository.
-          "uboot"  U-Boot's `boot_linux` reads /boot/Image, /boot/initrd.img and
-                   /boot/liuqin.dtb from the `linux` partition and calls booti.
-                   The command line is baked into the DTB (pkgs/bootdir.nix)
-                   because U-Boot deliberately passes none: it only overwrites
-                   /chosen/bootargs when a $bootargs variable exists.
+          "uboot"  U-Boot boots the extlinux configuration NixOS installs at
+                   /boot/extlinux/extlinux.conf on the `linux` partition
+                   (NixOS' generic-extlinux-compatible loader): the label
+                   list, kernel, initrd, device tree and kernel command line
+                   all come from that one file, so any generation NixOS keeps
+                   can be booted from the device menu.
       '';
     };
 
@@ -119,19 +120,38 @@ in
           "panic=0"
         ];
 
-      # /boot payload for the U-Boot loader path. The flake exposes it through
-      # mkLiuqinBootImages when boot.loader = "uboot".
-      system.build.liuqinBootDir = lib.mkIf (cfg.boot.loader == "uboot") (
-        pkgs.liuqinBootdir {
-          kernel = cfg.package;
-          dtb = pkgs.liuqinKernelDtb;
-          initrd = config.system.build.initialRamdisk + "/initrd";
-          bootargs = lib.concatStringsSep " " (
-            config.boot.kernelParams
-            ++ [ "init=${config.system.build.toplevel}/init" ]
-          );
-        }
-      );
+      # U-Boot boots NixOS through NixOS' own extlinux loader: it writes the
+      # generation list to /boot/extlinux/extlinux.conf on the `linux`
+      # partition, next to the kernel, initrd and device tree each label points
+      # at. The device menu's two NixOS entries (liuqin-dualboot's liuqin.env)
+      # then either take the default generation or list them all.
+      boot.loader.generic-extlinux-compatible = lib.mkIf (cfg.boot.loader == "uboot") {
+        enable = true;
+        # One menu entry per generation; the panel lists them by name, so a few
+        # are worth keeping for rollback. Measure /boot before raising this.
+        configurationLimit = lib.mkDefault 8;
+      };
+
+      # The generation menu falls back to DEFAULT - the generation installed
+      # last - once its countdown runs out; the timeout is what the loader
+      # module writes into extlinux.conf.
+      #
+      # 100, not 10: extlinux's TIMEOUT counts tenths of a second (U-Boot's
+      # boot/pxe_utils.c divides it by 10 before menu_create(), which takes
+      # seconds - common/menu.c), and the loader module passes
+      # boot.loader.timeout through verbatim. 10 would therefore be a
+      # one-second countdown, not enough to pick a generation with the volume
+      # and power buttons.
+      boot.loader.timeout = lib.mkIf (cfg.boot.loader == "uboot") (lib.mkDefault 100);
+
+      # The loader copies each generation's <toplevel>/dtbs into /boot, and that
+      # tree holds every device tree the kernel builds. Only this board's
+      # belongs there, and an explicit name is what turns the entry into a
+      # plain FDT line instead of a directory the loader has to guess in.
+      hardware.deviceTree = lib.mkIf (cfg.boot.loader == "uboot") {
+        name = "qcom/sm8475-xiaomi-liuqin.dtb";
+        filter = "*liuqin*.dtb";
+      };
 
       # systemd-based stage 1 is the only supported initrd here.
       boot.initrd.systemd.enable = lib.mkDefault true;
@@ -145,8 +165,9 @@ in
       boot.initrd.availableKernelModules = lib.mkForce [ ];
       boot.initrd.kernelModules = lib.mkForce [ ];
 
-      # No bootloader menu on this device: the boot.img carries the kernel,
-      # and boot.loader.generic-extlinux-compatible et al. do not apply.
+      # ABL's path has no menu of ours: its boot.img carries the kernel and a
+      # fixed command line. The U-Boot path above has one, through NixOS'
+      # extlinux loader.
       boot.loader.grub.enable = lib.mkDefault false;
 
       # The PMIC RTC is not writable by HLOS; chrony needs the no-RTC escape

@@ -17,10 +17,9 @@
 # from a flake of your own) instead of tracking nixos-unstable here; two pins
 # would only drift apart.
 #
-#   nix build .#bootdir         just the /boot payload (U-Boot path)
 #   nix build .#bootimg         ABL path: boot.img carrying the NixOS initrd
 #   nix build .#installer-bootimg RAM-only live installer (the install path)
-#   nix run .#uboot-build       checked U-Boot RAM-boot artifact
+#   nix build .#uboot-bootimg   the U-Boot boot.img (built in this repo)
 #
 # Evaluation needs nothing special. The example enables the BSP's
 # x86_64→aarch64 cross package set, so its system and initrd can also be built
@@ -43,8 +42,9 @@
         crossBuild = true;
       };
 
-      # Deployable artifacts for that configuration. Both are produced by the
-      # BSP so the ABL and U-Boot paths stay byte-compatible across consumers.
+      # Deployable artifacts for that configuration, produced by the BSP so
+      # the ABL path stays byte-compatible across consumers. The U-Boot path
+      # needs no artifact: NixOS installs its own extlinux generation list.
       images = liuqin.lib.mkLiuqinBootImages configuration;
       installer = liuqin.packages.${system}.installer-bootimg;
     in
@@ -52,15 +52,13 @@
       nixosConfigurations.demo = configuration;
 
       packages.${system} = {
-        bootdir = images.bootdir;
-
         # ABL path: a boot.img (kernel + initrd + command line in the Android
         # header) for a boot slot.
         bootimg = images.bootimg;
 
         # The RAM installer is the only supported first-install toolchain.
         installer-bootimg = installer;
-        uboot-build = liuqin.packages.${system}.uboot-build;
+        uboot-bootimg = liuqin.packages.${system}.uboot-bootimg;
       };
 
       # Building this is the cheapest end-to-end proof that the configuration,

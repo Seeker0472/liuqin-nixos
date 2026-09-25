@@ -6,6 +6,9 @@ proprietary firmware and stock DT artifacts from the operator's device.
 
 ## Installation model
 
+For the proposed persistent boot and NixOS generation-menu design, see
+[docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md).
+
 Initial installation has one supported path:
 
 ```sh
@@ -86,8 +89,11 @@ wrapper accepts the two built-in partlabels (`linux` and `userdata`); set
 `LIUQIN_EXPECTED_ROOT_LABEL` to make the preflight exact.
 
 The current dual-boot layout keeps Android in `boot_a`, creates a measured
-`linux` partition at the userdata tail, and uses U-Boot from `boot_b` to load
-`/boot/Image`, `/boot/initrd.img` and `/boot/liuqin.dtb`. Partition creation is
+`linux` partition at the userdata tail, and boots NixOS from `boot_b`'s U-Boot
+through NixOS' extlinux generation list at
+`/boot/extlinux/extlinux.conf` on that partition: one label per system
+generation, each with its own kernel, initrd, device tree and command line, so
+the device menu can boot any generation NixOS keeps. Partition creation is
 an explicit, operator-reviewed action from the live environment; no fixed
 sector values are embedded in this repository.
 
@@ -99,6 +105,8 @@ nix build .#bootimg-kernel-only
 nix build .#bootimg-nixos
 nix build .#installer-kernel
 nix build .#installer-bootimg
+nix build .#uboot            # the bootloader (u-boot-nodtb.bin + DTB)
+nix build .#uboot-bootimg    # its ABL boot.img (RAM boot it first)
 nix flake check
 ```
 
@@ -109,8 +117,12 @@ and `installer-dtb` expose its kernel and DTB separately for inspection.
 `bootimg-kernel-only` is a low-level bring-up artifact with an empty ramdisk
 and no `init=` command line; it is not a normal bootable NixOS system image.
 `bootimg-nixos` is the normal ABL RAM-boot image for an installed system;
-`demo-bootimg` and `demo-bootdir` are the corresponding demo/U-Boot artifacts.
-`uboot-build` wraps the checked-in U-Boot packaging pipeline.
+`demo-bootimg` is the corresponding demo artifact. `uboot` and `uboot-bootimg`
+are the bootloader itself and its ABL boot.img, built entirely here (see
+`u-boot/default.nix` for where the sources come from). The U-Boot path needs no
+`/boot` artifact: NixOS installs its own extlinux generation list into the
+target's `/boot` when the system is activated (`nixos-rebuild` runs the
+loader's installer).
 
 The ABL image keeps the downstream fixed payload offsets
 (`ramdisk=0x01000000`, `dtb=0x01f00000`) because those offsets are part of
@@ -148,10 +160,7 @@ payloads in `data/`.
       nixosConfigurations.mypad = machine;
       packages.${system} = {
         bootimg = images.bootimg;
-      } // builtins.optionalAttrs
-        (machine.config.hardware.liuqin.boot.loader == "uboot") {
-          bootdir = images.bootdir;
-        };
+      };
       packages.${system}.installer-bootimg =
         liuqin.packages.${system}.installer-bootimg;
     };
@@ -226,7 +235,8 @@ modules/liuqin/           installed-system hardware and initrd modules
 kernel/                   Linux configuration and installer profile
 patches/kernel/           Linux 7.2.5 device patches (0001–0012)
 pkgs/bootimg.nix          ABL boot image and DTB construction
-pkgs/bootdir.nix          U-Boot /boot payload
+u-boot/                   the bootloader: the port's own base tree + patches + files
+                          (verify-port.sh proves the three equal the dev tree)
 dts/                      ABL and installer DT overlays
 data/                     private firmware and stock DT artifacts
 ```
