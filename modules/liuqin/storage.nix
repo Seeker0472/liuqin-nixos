@@ -18,9 +18,14 @@
 #
 # Partition numbers, start and size are capacity-specific (the stock 256 GB
 # and 512 GB GPTs differ; this repository was originally written against a
-# 256 GB unit) and must be measured on the device
-# (liuqin-dualboot/docs/TESTING.md phase 5), so no geometry constant appears
-# here.
+# 256 GB unit, while the unit it is developed against is the 512 GB one: its
+# main LUN is 473.83 GiB with userdata at 463.31 GiB) and must be measured on
+# the device, so no geometry constant appears here.
+#
+# There is no creation recipe yet, and it is the one step between this tree and
+# a first boot: the 2026-09-20 stock dump's MANIFEST has no `linux` partition,
+# and Android's userdata is f2fs, which cannot be shrunk in place - see the
+# installation section of README.md for what that implies.
 { config, lib, pkgs, ... }:
 
 let

@@ -64,7 +64,7 @@ boot.loader.generic-extlinux-compatible = {
   enable = true;
   configurationLimit = lib.mkDefault 8;   # 保留代数；面板按 MENU LABEL 列名
 };
-boot.loader.timeout = lib.mkDefault 10;   # 子菜单倒计时秒数；超时启动 DEFAULT
+boot.loader.timeout = lib.mkDefault 100;  # TIMEOUT 的单位是 1/10 秒 ⇒ 这里是 10 s
 hardware.deviceTree = {
   name = "qcom/sm8475-xiaomi-liuqin.dtb"; # 写死 FDT，别让 loader 猜
   filter = "*liuqin*.dtb";                # 见下
@@ -88,11 +88,14 @@ hardware.deviceTree = {
   `/boot/nixos`，而 arm64 defconfig 会为绝大多数 `ARCH_*` 建 dtb。按本板名
   过滤后只剩一个文件；`filterDTBs` 用 `cp --parents`，`qcom/…dtb` 的相对
   路径不变，`FDT` 行照旧成立。
-- `boot.loader.timeout` 决定 `TIMEOUT`：模块把**秒**交给生成器，生成器写
-  `秒×10`，U-Boot 按十分之一秒解释（`pxe_menu_to_menu()` 的
-  `DIV_ROUND_UP(cfg->timeout, 10)`）。`null` 会写 `TIMEOUT -1`→`0`，即"无限
-  等待"；nixpkgs 里 `boot.loader.timeout` 自己的默认值是 **5**，这里用
-  `mkDefault 10` 覆盖，消费端仍可改回 5 或 `null`。
+- `boot.loader.timeout` 决定 `TIMEOUT`，而 **`TIMEOUT` 的单位是 1/10 秒**：
+  模块把 `boot.loader.timeout` 原样当 `-t` 交给生成器，生成器写
+  `TIMEOUT $timeout` 也是原样（`extlinux-conf-builder.sh`），**按十分之一秒
+  解释的是 U-Boot**（`pxe_menu_to_menu()` 的 `DIV_ROUND_UP(cfg->timeout, 10)`，
+  而 `menu_create()` 收的是秒）。所以 `10` 只有 1 s，来不及用音量键挑代；
+  这里必须是 **100**（`lib.mkDefault 100`）。`null` 会写 `TIMEOUT -1`→`0`，
+  即"无限等待"；nixpkgs 里 `boot.loader.timeout` 自己的默认值是 **5**（=0.5 s），
+  消费端仍可改回 5 或 `null`。
   - 倒计时只存在于**交互**入口：`Boot NixOS`（`pxe_no_menu`）完全不过菜单，
     `TIMEOUT` 对它没有意义。
 
