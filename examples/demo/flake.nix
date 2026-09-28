@@ -21,10 +21,11 @@
 #   nix build .#installer-bootimg RAM-only live installer (the install path)
 #   nix build .#uboot-bootimg   the U-Boot boot.img (built in this repo)
 #
-# Evaluation needs nothing special. The example enables the BSP's
-# x86_64→aarch64 cross package set, so its system and initrd can also be built
-# on a normal x86_64 host. Native builds remain possible by omitting
-# `crossBuild` and providing an aarch64 builder or binfmt.
+# Evaluation needs nothing special. The example uses the BSP's native-aarch64 +
+# injection path: the closure is served by cache.nixos.org and only the
+# per-machine derivations need an aarch64 executor - binfmt on an x86_64 host,
+# or the device itself. `crossBuild = true` remains for hosts without binfmt,
+# at the cost of compiling the whole closure from source.
 {
   description = "liuqin demo machine configuration (consumer of liuqin-nixos)";
 
@@ -39,7 +40,7 @@
       # our own modules.
       configuration = liuqin.lib.mkLiuqinSystem {
         modules = [ ./configuration.nix ];
-        crossBuild = true;
+        injectFrom = liuqin.lib.pkgsArm;
       };
 
       # Deployable artifacts for that configuration, produced by the BSP so

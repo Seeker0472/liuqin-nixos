@@ -4,9 +4,6 @@
 # module references pkgs.liuqin*.
 final: prev:
 
-let
-  lib = prev.lib;
-in
 {
   # --- Kernel (linuxManualConfig, aarch64 defconfig + liuqin answers) ---
   liuqinKernel = final.callPackage ./kernel { };
@@ -80,3 +77,4 @@ in
     firmware = final.liuqinFirmware;
   };
 }
+

@@ -2,7 +2,7 @@
 #
 # AOSP mkbootimg.py at a pinned commit (same source and hashes as the
 # downstream project's tools/fetch-aosp-mkbootimg.sh, android-16.0.0_r4).
-{ lib, stdenvNoCC, fetchurl, python3 }:
+{ lib, stdenvNoCC, fetchgit, python3 }:
 
 let
   commit = "954bc3ead5e679005fddf3484d247f2557b3c2c9";
@@ -11,18 +11,16 @@ stdenvNoCC.mkDerivation {
   pname = "aosp-mkbootimg";
   version = "android-16.0.0_r4-${lib.substring 0 12 commit}";
 
-  src = fetchurl {
-    url = "https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/${commit}.tar.gz";
-    hash = "sha256-++/PzoAd0Bc8XqN+FtbmOZk3tGGQI8nGCSWZEYLPKVI=";
+  # gitiles regenerates the +archive tarball server-side, so its bytes - and
+  # therefore a plain fetchurl hash - are not stable: three different digests
+  # have been observed for this same commit. Pin the git checkout instead (the
+  # revision fixes the content) and keep the per-file digests asserted in
+  # installPhase as the content contract.
+  src = fetchgit {
+    url = "https://android.googlesource.com/platform/system/tools/mkbootimg";
+    rev = commit;
+    hash = "sha256-Mt42IF+xZcb9KZxuCGOWODE4kDI1wYsJLXKiimiBieQ=";
   };
-
-  # The googlesource +archive endpoint serves a bare tar.gz with no root dir.
-  unpackPhase = ''
-    mkdir src
-    tar -xzf $src -C src
-    chmod -R u+w src
-    sourceRoot=$PWD/src
-  '';
 
   nativeBuildInputs = [ python3 ];
 

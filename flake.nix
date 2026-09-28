@@ -34,6 +34,11 @@
       lib = {
         inherit allowLiuqinUnfree;
 
+        # The flake's own x86_64->aarch64 cross package set. Pass it as
+        # `injectFrom` (as the configurations below do) to reuse the device
+        # artifacts it builds instead of cross-compiling the whole closure.
+        inherit pkgsArm;
+
         # Build a liuqin NixOS configuration from consumer modules. Injects
         # the liuqin module, the package overlay and the unfree predicate;
         # the consumer's own modules carry everything else (hostname, users,
@@ -41,13 +46,26 @@
         #
         #   nixosConfigurations.mypad = liuqin.lib.mkLiuqinSystem {
         #     modules = [ ./my-machine.nix ];
-        #     crossBuild = true;
+        #     injectFrom = liuqin.lib.pkgsArm;
         #   };
-        # `crossBuild` is opt-in for consumers because this flake's pkgsArm
-        # package set is deliberately x86_64-hosted. The repository's own
-        # configurations enable it below, so their full system/initrd can be
-        # built on the standard x86_64 development host without binfmt.
-        mkLiuqinSystem = { modules, system ? "aarch64-linux", crossBuild ? false }:
+        # The repository's own configurations use `injectFrom`: a native
+        # aarch64 closure served by cache.nixos.org plus the device packages
+        # built once in this flake's x86_64->aarch64 cross set, so only the
+        # per-machine derivations (/etc, units, initrd) execute aarch64 code
+        # (binfmt on the build host, or the device itself). `crossBuild = true`
+        # remains for hosts without binfmt; it cross-compiles the entire
+        # closure from source, since cross derivations are in no binary cache.
+        mkLiuqinSystem =
+          { modules
+          , system ? "aarch64-linux"
+          , crossBuild ? false
+          # Re-point the device packages at an already built cross set instead
+          # of building them for the target platform. This is what makes the
+          # native aarch64 path affordable: the unmodified parts of the closure
+          # are then served by cache.nixos.org, and the device artifacts are
+          # built once, cross, and copied. See overlay-inject.nix.
+          , injectFrom ? null
+          }:
           lib.nixosSystem {
             inherit system;
             modules = [
@@ -57,7 +75,8 @@
                 # builders on an x86_64 host with no binfmt registration.
                 nixpkgs.pkgs = pkgsArm;
               } else {
-                nixpkgs.overlays = [ self.overlays.default ];
+                nixpkgs.overlays = [ self.overlays.default ]
+                  ++ lib.optional (injectFrom != null) (import ./overlay-inject.nix { pkgsArm = injectFrom; });
                 nixpkgs.config.allowUnfreePredicate = allowLiuqinUnfree;
               })
               self.nixosModules.liuqin
@@ -179,16 +198,30 @@
 
       # Example configuration (config/example.nix). Real
       # deployments define their own via lib.mkLiuqinSystem; this one backs
-      # the flake's packages and eval check.
+      # the flake's packages and eval check. Same build strategy as demo
+      # below: a native aarch64 closure with the device packages injected
+      # from the cross set.
       nixosConfigurations.liuqin = self.lib.mkLiuqinSystem {
-        crossBuild = true;
+        crossBuild = false;
+        injectFrom = pkgsArm;
         modules = [ ./config/example.nix ];
       };
 
       # Complete demo system (GNOME, touch, network, audio, Bluetooth, sensors)
       # on the dual-boot layout; see config/demo.nix.
+      #
+      # Built natively for aarch64 rather than cross: the cross package set has
+      # no binary-cache entries at all (a cross-built derivation is a different
+      # derivation), so a cross build compiles the whole desktop from source.
+      # Native aarch64 is served by cache.nixos.org, and the device packages -
+      # kernel, firmware, daemons - are injected from the cross set, which is
+      # built once on the x86_64 host and copied to the device. Nothing runs
+      # under emulation: the remaining per-machine derivations (/etc,
+      # system-path, units, initrd) are aarch64 builds that run natively on the
+      # device itself.
       nixosConfigurations.demo = self.lib.mkLiuqinSystem {
-        crossBuild = true;
+        crossBuild = false;
+        injectFrom = pkgsArm;
         modules = [ ./config/demo.nix ];
       };
 

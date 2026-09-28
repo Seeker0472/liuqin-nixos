@@ -173,11 +173,14 @@ through `fastboot boot` without trouble; writing it to a boot partition is
 still not exercised, so that remains the operation to approach deliberately. The build also enforces the 192 MiB boot
 partition limit and the observed 805306368-byte fastboot download limit.
 
-The repository's built-in installed configurations use the same x86_64→aarch64
-cross package set as the installer, so their system closure and initrd can be
-built on x86_64 without enabled aarch64 binfmt. Consumers of
-`lib.mkLiuqinSystem` can opt into the same behavior with `crossBuild = true`;
-native aarch64 builds remain available with the default `false`. The complete
+The repository's installed configurations build natively for aarch64: their
+userland closure is served by cache.nixos.org, and the device packages
+(kernel, firmware, daemons) are injected from the flake's x86_64→aarch64 cross
+set with `injectFrom = liuqin.lib.pkgsArm`. Only the per-machine derivations
+(`/etc`, units, initrd, the images) then have to execute aarch64 code — on a
+binfmt-capable x86_64 host, or on the device itself. `crossBuild = true`
+remains available for hosts without binfmt, but it cross-compiles the entire
+closure from source (cross derivations are in no binary cache). The complete
 desktop closure still requires the operator-supplied private `requireFile`
 payloads in `data/`.
 
@@ -192,7 +195,7 @@ payloads in `data/`.
       system = "x86_64-linux";
       machine = liuqin.lib.mkLiuqinSystem {
         modules = [ ./configuration.nix ];
-        crossBuild = true;
+        injectFrom = liuqin.lib.pkgsArm;
       };
       images = liuqin.lib.mkLiuqinBootImages machine;
     in {
