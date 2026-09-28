@@ -33,6 +33,13 @@
     boot.loader = "uboot";
     storage.layout = "linux-partition";
 
+    # TEMPORARY, for the display bring-up: the panel is the only local console
+    # and it is currently black, so the installed system carries the same USB
+    # debug channel the RAM installer has (NCM/ECM + DHCP + root telnet on
+    # 192.168.7.2:2323). Drop this line once the DSI output is settled; the
+    # option is off by default and documented in modules/liuqin/usb-shell.nix.
+    usbShell.enable = true;
+
     # SSC sensor registry/config payload, from the stock ROM's
     # vendor/etc/sensors/config (the same bytes are in the downstream
     # release's rootfs). A different unit must re-derive it; see the BSP's

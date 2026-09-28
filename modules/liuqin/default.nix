@@ -14,6 +14,7 @@ in
     ./hardware.nix
     ./gnome.nix
     ./initrd-guard.nix
+    ./usb-shell.nix
   ];
 
   options.hardware.liuqin = {

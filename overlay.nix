@@ -44,6 +44,13 @@ in
 
   # --- Device packages ---
   liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd.nix { };
+
+  # --- USB2 control channel ---
+  # The configfs gadget (mkLiuqinUsbGadget takes the USB strings and the two
+  # consumer differences) and the telnetd login wrapper, shared by the RAM
+  # installer and hardware.liuqin.usbShell. See pkgs/usb-gadget.nix.
+  mkLiuqinUsbGadget = final.callPackage ./pkgs/usb-gadget.nix { };
+  liuqinUsbLogin = final.callPackage ./pkgs/usb-login.nix { };
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc.nix { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };
 
