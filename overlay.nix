@@ -61,15 +61,10 @@ in
     ];
   });
 
-  # alsa-ucm-conf with the liuqin card files added.
-  alsa-ucm-conf = prev.alsa-ucm-conf.overrideAttrs (old: {
-    postInstall = (old.postInstall or "") + ''
-      install -Dm0644 ${./data/ucm2/Qualcomm/sm8450/Xiaomi-Pad-6-Pro/HiFi.conf} \
-        $out/share/alsa/ucm2/Qualcomm/sm8450/Xiaomi-Pad-6-Pro/HiFi.conf
-      install -Dm0644 ${./data/ucm2/conf.d/sm8450/Xiaomi-Pad-6-Pro.conf} \
-        $out/share/alsa/ucm2/conf.d/sm8450/Xiaomi-Pad-6-Pro.conf
-    '';
-  });
+  # The device's UCM2 files as a leaf package.  Deliberately NOT an override of
+  # alsa-ucm-conf: that package is a build input of alsa-lib, so patching it
+  # would rebuild every audio consumer in the closure.  See pkgs/alsa-ucm.nix.
+  liuqinAlsaUcm = final.callPackage ./pkgs/alsa-ucm.nix { };
 
   # Firmware tree assembled from requireFile placeholders (operator-supplied
   # stock-ROM payloads); see pkgs/firmware.nix.

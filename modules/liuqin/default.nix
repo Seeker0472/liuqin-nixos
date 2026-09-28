@@ -100,9 +100,14 @@ in
           # which a desktop compositor cannot draw over; it is debug-gated
           # below instead.
           "earlycon=simplefb"
-          # The late DRM log console must be named explicitly; console=tty0
-          # keeps /dev/console on the VT afterwards.
-          "console=drm_log"
+          # The panel console.  With DRM_CLIENT_DEFAULT_FBDEV (see
+          # kernel/liuqin-firstboot.config) fbcon binds on the DSI panel, so
+          # console=tty0 gives the kernel log *and* a getty on the panel, and a
+          # compositor takes DRM master from it normally.  The downstream
+          # "drm_log" client is deliberately NOT named here any more: it
+          # implements no terminal, so it cleared the panel and printed nothing
+          # at the default loglevel, and the compositor's buffers never reached
+          # it either (measured on the unit; the RAM installer never used it).
           "console=tty0"
           # CS35L41 calibration is per-device state, provisioned from the
           # persist partition at boot; /lib/firmware is the read-only store
@@ -119,6 +124,12 @@ in
           "softlockup_panic=1"
           "panic=0"
         ];
+
+      # NixOS' default loglevel=4 hides nearly the whole kernel log, and the
+      # panel is this board's only early failure channel - the RAM installer
+      # keeps the kernel's own default for exactly that reason.  Consumers can
+      # still lower it.
+      boot.consoleLogLevel = lib.mkDefault 7;
 
       # U-Boot boots NixOS through NixOS' own extlinux loader: it writes the
       # generation list to /boot/extlinux/extlinux.conf on the `linux`

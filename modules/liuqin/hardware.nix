@@ -14,6 +14,20 @@ let
   sscConfig = pkgs.liuqinSensorsConfig.override {
     inherit (cfg.sensors) sscConfigHash;
   };
+
+  # One blank/unblank of the DRM framebuffer makes fbcon redraw its whole
+  # buffer, scrollback included, into the memory the panel actually scans.
+  # Ported from config/installer.nix, where the panel's log appears for
+  # exactly this reason.
+  screenRefresh = pkgs.writeShellScriptBin "liuqin-screen-refresh" ''
+    set -eu
+    for blank in /sys/class/graphics/fb*/blank; do
+      [ -e "$blank" ] || continue
+      echo 1 > "$blank"
+      ${pkgs.coreutils}/bin/sleep 1
+      echo 0 > "$blank"
+    done
+  '';
 in
 {
   config = lib.mkIf cfg.enable {
@@ -49,9 +63,14 @@ in
     # systemd-backlight restores whatever the last session left; on a panel
     # whose boot evidence is the backlight itself, force a known-good level
     # once, before the display manager.
+    # The panel is dark until this runs and it is the only log channel, so
+    # graphical.target is far too late: measured on the first boot this
+    # finished at +98 s while the display driver (and the DRM framebuffer) are
+    # up within the first second.  systemd-backlight restores whatever the last
+    # session left, so this still has to run after it to win.
     systemd.services.liuqin-backlight-default = {
       description = "Restore the liuqin normal-desktop backlight default";
-      wantedBy = [ "graphical.target" ];
+      wantedBy = [ "basic.target" ];
       wants = [ "systemd-backlight@backlight:ktz8866-backlight.service" ];
       after = [ "systemd-backlight@backlight:ktz8866-backlight.service" ];
       before = [ "display-manager.service" ];
@@ -76,9 +95,40 @@ in
       };
     };
 
+    # --- Panel console repaint --------------------------------------------
+    # The bootloader framebuffer and the memory the panel scans after the DRM
+    # driver takes over are not the same: everything the early console drew -
+    # the complete boot log, scrollback included - lands in a buffer that is
+    # no longer on screen, which is what makes a perfectly healthy boot look
+    # like a dead panel.  The blank/unblank below makes fbcon redraw its whole
+    # console buffer into the live framebuffer.  The installer has carried this
+    # service since its own bring-up (config/installer.nix, same script) and
+    # that is why its log appears on the panel after a while.  Per-draw
+    # flushing is the kernel's job (patch 0012) and needs nothing here.
+    systemd.services.liuqin-screen-refresh = {
+      description = "Redraw the console into the panel framebuffer";
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${screenRefresh}/bin/liuqin-screen-refresh";
+      };
+    };
+
     # --- Audio: UCM2 for the audioreach card ------------------------------
-    # The alsa-ucm-conf package in nixpkgs is extended with the device files
-    # via the overlay (see overlay.nix). PipeWire (GNOME default) stays on.
+    # alsa-lib resolves its UCM2 tree through $out/share/alsa/ucm2, a symlink to
+    # the alsa-ucm-conf store path, and honours ALSA_CONFIG_UCM2 as an
+    # override.  The device files therefore live in liuqinAlsaUcm - a leaf copy
+    # of the upstream tree plus the two liuqin files (pkgs/alsa-ucm.nix) -
+    # rather than in a patched alsa-ucm-conf, which would change alsa-lib and
+    # rebuild every audio consumer in the closure.  The user units get the
+    # variable explicitly because a lingering systemd --user session does not
+    # necessarily inherit the pam_env session environment.
+    environment.variables.ALSA_CONFIG_UCM2 = "${pkgs.liuqinAlsaUcm}/share/alsa/ucm2";
+    systemd.user.services.pipewire.environment.ALSA_CONFIG_UCM2 =
+      "${pkgs.liuqinAlsaUcm}/share/alsa/ucm2";
+    systemd.user.services.wireplumber.environment.ALSA_CONFIG_UCM2 =
+      "${pkgs.liuqinAlsaUcm}/share/alsa/ucm2";
 
     # --- WLAN private MAC (ath11k QCA6490) --------------------------------
     # The factory MAC lives on the persist partition and is provisioned
