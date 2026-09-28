@@ -5,7 +5,7 @@
 # proprietary binaries extracted from the stock ROM and are NOT
 # redistributable by this repository, so this is a fixed-output derivation
 # the operator materializes from their own device dump. See docs/PORTING-NOTES.md.
-{ lib, runCommand, requireFile, sscConfigHash ? null }:
+{ lib, runCommand, requireFile, zstd, sscConfigHash ? null }:
 
 assert sscConfigHash != null -> sscConfigHash != lib.fakeHash;
 
@@ -35,7 +35,7 @@ let
     '';
   };
 in
-runCommand "liuqin-ssc-config" { } ''
+runCommand "liuqin-ssc-config" { nativeBuildInputs = [ zstd ]; } ''
   mkdir -p $out/share/qcom/sm8450/Xiaomi/liuqin/sensors
   tar --zstd -xf ${sscConfig} -C $out/share/qcom/sm8450/Xiaomi/liuqin/sensors
   test -d $out/share/qcom/sm8450/Xiaomi/liuqin/sensors/config
