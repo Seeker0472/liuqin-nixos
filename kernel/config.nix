@@ -4,14 +4,19 @@
 #
 # Base: the kernel's own arm64 defconfig (the generate-config.pl flow in
 # nixpkgs builds the .config by answering `make defconfig` first, then
-# applies these answers on top), plus nixpkgs common-config (the desktop
-# compatibility set: namespaces, cgroups, DM, CIFS/NTFS3, USB storage,
-# sound sequencer, etc.) with PREFER_BUILTIN=1 so =m answers become =y.
+# applies these answers on top).  nixpkgs common-config is NOT part of the
+# base - see the enableCommonConfig comment in default.nix for what that
+# deliberately leaves out.  PREFER_BUILTIN is on for aarch64 by nixpkgs'
+# default, but it only affects questions no answer covers; an explicit
+# `=module` here stays a module, so the symbols that must be built in for the
+# current bring-up are lifted by kernel/liuqin-firstboot.config instead.
 #
 # Sources: merged and deduplicated from xiaomipad-6pro-mainline
 # device/configs/{liuqin-desktop,liuqin-keyboard,liuqin-sensors,liuqin-firstboot}.config,
-# minus the snapd-only entries and minus options that nixpkgs common-config
-# already asserts. Options introduced by the patches in ../patches/kernel
+# minus the snapd-only entries; the dedup against nixpkgs common-config was
+# done while it was still enabled, so an option only it used to answer is
+# absent unless it is answered here or in kernel/liuqin-firstboot.config.
+# Options introduced by the patches in ../patches/kernel
 # (HID_NANOSIC, TOUCHSCREEN_NT36523_SPI, DRM_PANEL_NOVATEK_NT36532,
 # SERIAL_EARLYCON_SIMPLEFB) are answered here explicitly.
 { lib, kernelLib ? lib.kernel }:
@@ -96,8 +101,10 @@ with kernelLib;
   DRM_PANEL = lib.mkForce yes;
   DRM_PANEL_NOVATEK_NT36532 = lib.mkForce module; # from patch 0004
   DRM_FBDEV_EMULATION = lib.mkForce yes;
-  DRM_CLIENT_LOG = lib.mkForce yes; # console=drm_log late boot console
-  DRM_CLIENT_DEFAULT_LOG = lib.mkForce yes;
+  DRM_CLIENT_LOG = lib.mkForce yes; # drm_client_lib.active=log still selectable
+  DRM_CLIENT_DEFAULT_FBDEV = lib.mkForce yes; # fbcon on the DSI panel; the log
+  # client implements no terminal and leaves the panel black at loglevel=4
+  DRM_CLIENT_DEFAULT_LOG = lib.mkForce no;
   BACKLIGHT_CLASS_DEVICE = lib.mkForce module;
   BACKLIGHT_KTZ8866 = lib.mkForce module;
   FB_SIMPLE = lib.mkForce module;
