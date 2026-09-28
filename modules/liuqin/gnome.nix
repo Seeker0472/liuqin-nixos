@@ -113,28 +113,48 @@ in
     # dconf defaults: scaling, on-screen keyboard, idle blanking, and the
     # delegation of the power button to liuqin-power-keyd (both the user
     # profile and the gdm greeter profile).
+    #
+    # These go through programs.dconf.profiles: nixpkgs' dconf module turns
+    # /etc/dconf into a symlink to the generated dconf-system-config store
+    # path, so environment.etc."dconf/db/..." entries both fail to build
+    # (mkdir inside the read-only symlink target) and would never be found -
+    # there is no db/local.d in the generated tree.  Keyfiles are used instead
+    # of `settings` so the values keep their explicit GVariant types
+    # (scaling-factor must stay uint32).
     programs.dconf.enable = true;
-    environment.etc."dconf/db/local.d/00-liuqin".text = ''
-      [org/gnome/desktop/interface]
-      scaling-factor=uint32 2
+    programs.dconf.profiles.user.databases = [
+      {
+        keyfiles = [
+          (pkgs.writeTextDir "00-liuqin" ''
+            [org/gnome/desktop/interface]
+            scaling-factor=uint32 2
 
-      [org/gnome/desktop/a11y/applications]
-      screen-keyboard-enabled=true
+            [org/gnome/desktop/a11y/applications]
+            screen-keyboard-enabled=true
 
-      [org/gnome/desktop/session]
-      idle-delay=uint32 300
+            [org/gnome/desktop/session]
+            idle-delay=uint32 300
 
-      [org/gnome/settings-daemon/plugins/power]
-      power-button-action='nothing'
-      sleep-inactive-ac-type='nothing'
-      sleep-inactive-battery-type='nothing'
+            [org/gnome/settings-daemon/plugins/power]
+            power-button-action='nothing'
+            sleep-inactive-ac-type='nothing'
+            sleep-inactive-battery-type='nothing'
 
-      [org/gnome/desktop/screensaver]
-      lock-enabled=true
-    '';
-    environment.etc."dconf/db/gdm.d/00-liuqin-power".text = ''
-      [org/gnome/settings-daemon/plugins/power]
-      power-button-action='nothing'
-    '';
+            [org/gnome/desktop/screensaver]
+            lock-enabled=true
+          '')
+        ];
+      }
+    ];
+    programs.dconf.profiles.gdm.databases = [
+      {
+        keyfiles = [
+          (pkgs.writeTextDir "00-liuqin-power" ''
+            [org/gnome/settings-daemon/plugins/power]
+            power-button-action='nothing'
+          '')
+        ];
+      }
+    ];
   };
 }
