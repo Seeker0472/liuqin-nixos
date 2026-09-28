@@ -5,7 +5,7 @@ Nix expression of the downstream device work, on Linux 7.2.5 (downstream is on
 
 ## Kernel
 
-Twelve patches, applied in filename order:
+Thirteen patches, applied in filename order:
 
 | # | content |
 |---|---|
@@ -21,34 +21,68 @@ Twelve patches, applied in filename order:
 | 0010 | SM8475 TLMM pinctrl |
 | 0011 | gpio function flag in that pinctrl driver |
 | 0012 | dirtyfb flush for CPU-written framebuffers |
+| 0013 | the board's own QMP PCIe PHY cape tables (21 values); without them the PHY times out and the WCN6855 never enumerates |
 
 Three config inputs:
 
-- `kernel/config.nix` — structured answers, installed system;
+- `kernel/config.nix` — structured answers, installed system. `enableCommonConfig`
+  is deliberately **off** (`kernel/default.nix`): the base is the arm64 defconfig
+  plus these answers. Of nixpkgs common-config's ~470 `=y/=m` answers only ~180
+  hold here (BINFMT_MISC, USERFAULTFD, KPROBES/FUNCTION_TRACER, ANDROID_BINDER_IPC,
+  FS_VERITY/FS_ENCRYPTION … are out), and `config.nix` was deduplicated against
+  common-config while it was still enabled, so re-enabling means re-deriving that
+  diff;
 - `kernel/liuqin-firstboot.config` — raw fragment appended in `postConfigure`
   for symbols a structured answer cannot settle (Kconfig question order, or
-  `olddefconfig` downgrading `=y` to `=m`), then `make olddefconfig` and an
-  assertion that each symbol is `=y`;
+  `olddefconfig` downgrading `=y` to `=m`), then `make olddefconfig`;
 - `kernel/installer.config` — same mechanism, installer kernel only (its RAM
   image has no module tree, so the USB/HID gadget paths are built in).
+
+Both fragments are appended **before** a single check pass, and the expectations
+are derived from the fragments themselves (each `CONFIG_X=y` must survive as
+`=y`, each `CONFIG_X=m` as `=y|=m`; `ZRAM` is an explicit exact-`m` exception —
+zram-generator modprobes it with `num_devices=1`). The hand-written symbol lists
+this replaced had missed four lines that could never hold: `NFT_COUNTER` does
+not exist, `NFT_FIB` has no prompt (the family helpers select it), `NFT_FIB_INET`
+depended on helpers nobody enabled, and `NFT_REDIRECT` is really `NFT_REDIR`
+(INSTALL-LOG steps 28/32).
+
+Nothing in this derivation is an ImportFromDerivation: `buildLinux` hands
+`build.nix` an explicit `config`, so the generated `.config` is an ordinary
+build input (the `allowImportFromDerivation` knob only matters for
+`linuxManualConfig` / `linuxPackages_custom`).
 
 The experimental DRAM-resident console patch was removed: unreliable on this
 device.
 
 ## Command line
 
-Installed system:
+Installed system (extlinux `APPEND`; `init=` and `root=fstab` are added by the
+loader integration):
 
 ```text
-earlycon=simplefb console=drm_log console=tty0
-initcall_blacklist=simplefb_driver_init rootwait
+qcom_q6v5_pas.slpi_auto_boot=0 rootwait initcall_blacklist=simplefb_driver_init
+earlycon=simplefb console=tty0 firmware_class.path=/var/lib/firmware
+root=fstab loglevel=7 lsm=landlock,yama,bpf
 ```
 
-`earlycon=simplefb` plus `keep_bootcon` plus `console=tty0` keep a console
-alive from the first line; the console loglevel stays at the kernel default
-(NixOS' `loglevel=4` hid the log). The SMMU/display-clock blacklist and the
-option that enabled it (`hardware.liuqin.boot.legacySmmuDispccBlacklist`) are
-gone: a configuration with those initcalls disabled crashes this unit.
+`earlycon=simplefb` plus `console=tty0` keep a console alive from the first line
+and hand it to the panel; the loglevel stays at 7 (NixOS' `loglevel=4` hid the
+log). `keep_bootcon` is deliberately **not** in the default: it keeps simplefb0
+writing into the bootloader framebuffer all session, which a compositor cannot
+draw over — it lives behind `hardware.liuqin.boot.debug` (the RAM installer does
+carry it). The SMMU/display-clock blacklist and the option that enabled it
+(`hardware.liuqin.boot.legacySmmuDispccBlacklist`) are gone: a configuration
+with those initcalls disabled crashes this unit.
+
+`firmware_class.path=` takes **exactly one directory** — `fw_path_para` is a
+single `char[256]` (`module_param_string`, `drivers/base/firmware_loader/main.c`)
+and there is no `:` splitting. A `a:b` value invalidates the whole parameter and
+every `request_firmware()` after that fails with `-2`; that is how the RAM
+installer's WLAN was dead until 2026-09-28 (INSTALL-LOG step 32). Both call
+sites now point it at `/var/lib/firmware` only, which the initrd seeds with the
+full (installed) or WLAN-only (installer) tree; the loader also tries the
+`.zst`-compressed variants (`FW_LOADER_COMPRESS_ZSTD=y`).
 
 `0008`'s early framebuffer clears each reused line rather than the whole
 screen, so the newest screenful survives a wrap.
@@ -107,9 +141,11 @@ region in the final DT and two copies overlap.
   ext4, IOMMU and USB built in, and the generic list's absent modules
   (`ata_piix`) fail before the guard runs.
 - The initrd firmware tree is at `/var/lib/firmware`, matching
-  `firmware_class.path` and avoiding the read-only `/lib` symlink.
+  `firmware_class.path` and avoiding the read-only `/lib` symlink. That
+  parameter takes **exactly one** directory (no `:` splitting — see
+  "Command line"), so it must not be extended with a second path.
 
-Four defects fixed to get here, each verified on the unit:
+Five defects fixed to get here, each verified on the unit:
 
 | defect | fix |
 |---|---|
@@ -117,11 +153,13 @@ Four defects fixed to get here, each verified on the unit:
 | stage 1's `init=` lookup resolved inside `/sysroot`, and ABL appends its own `init=/init` last | `ExecStartPre` plants the marker, listed in `boot.initrd.systemd.storePaths` |
 | the filtered live toplevel dropped `boot.json`, which stage 1 needs for the etc image and `env`/`modprobe` | keep `boot.json`, with `kernel`/`initrd` repointed |
 | `CONFIG_EROFS_FS` unset, so the `/etc` EROFS image failed and the initrd stopped in emergency mode | enabled in `kernel/liuqin-firstboot.config`, asserted in both check loops |
+| `firmware_class.path` was a `a:b` pair, which the kernel reads as one invalid path, so every runtime `request_firmware()` failed `-2` and the installer's WLAN never came up (`amss.bin` `-2` → MHI `-110`) | point it at `/var/lib/firmware` only (INSTALL-LOG step 32) |
 
 Measured: gadget up at ~10 s, telnet answering during the initrd, sshd and the
 telnet shell at ~30 s after switch_root, `systemctl is-system-running` =
 `running` with no failed units, `/etc` on the EROFS overlay, three USB units
-active.
+active, and WLAN up (`wcn6855 hw2.1` → `wlp1s0`) from the initrd firmware
+subset.
 
 ## Storage
 
@@ -154,10 +192,19 @@ node, so ABL cannot mutate a live mainline node when it force-applies stock
 overlays. The sink phandle is not fixed: the build decompiles the merged DTB,
 takes the largest existing `phandle`/`linux,phandle` and emits `max + 1`.
 
+The union is applied as one `/plugin/` overlay that carries the sink node plus a
+`__symbols__` entry per label, and `fdtoverlay` merges it in (properties are
+replaced one by one) — pure dtc/fdtoverlay, no text surgery on dtc's output. The
+build then decompiles the result and asserts every union symbol is present and
+pointing at the sink (INSTALL-LOG step 32; the previous awk-based splice was
+replaced, and the check was strengthened from "present" to "redirected").
+
 The checked-in stock archive holds 38 DTBO entries and 11 base DTBs, and the
 build asserts a 1744-symbol union. The downstream analysis tree uses 44/14 and
 1781 symbols from another OS build; those counts are not correctness conditions
-for this archive.
+for this archive. The kernel's own DTB additionally carries ~395 `__symbols__`
+labels of its own (they are not part of the stock sets and therefore not
+referenced by any stock overlay); they are left pointing at their real nodes.
 
 ## Firmware inputs
 
@@ -173,8 +220,12 @@ nixpkgs' `wireless-regdb`.
 
 The initrd subset carries the ath11k tree, its board data and the signed
 regulatory database, and nothing else; the installed system carries the whole
-tree. Nothing proprietary is committed: the release is fetched by hash and the
-operator inputs are `requireFile`. Two archives stay in the tree because the
+tree. That subset is what makes the installer's WLAN work: both call sites set
+`firmware_class.path` to exactly `/var/lib/firmware` (one directory — see
+"Command line") and the loader picks the `.zst`-compressed blobs up there,
+exactly like the installed system does (verified on the unit, INSTALL-LOG
+step 32). Nothing proprietary is committed: the release is fetched by hash and
+the operator inputs are `requireFile`. Two archives stay in the tree because the
 release does not carry them (`data/stock-base-dtbs.nix`,
 `data/stock-dtbo-entries.nix`; it ships no `vendor_boot.img`).
 
@@ -194,10 +245,12 @@ Each item needs its own kernel profile or device test, not an installer change.
 
 ## Known refactors (TODO)
 
-- `config/installer.nix`: move `usbGadgetSetup` / `usbShellLogin` /
-  `screenRefresh` (the embedded shell that remains) into `pkgs/` as
-  `writeShellApplication` with `runtimeInputs`, following
-  `pkgs/liuqin-power-keyd/`. The install path itself is no longer in this file:
-  upstream `nixos-install` runs against the operator's mounted target.
+- `config/installer.nix`: `usbGadgetSetup` / `usbShellLogin` are **done** — they
+  now live in `pkgs/usb-gadget.nix` and `pkgs/usb-login.nix` (shared with the
+  installed system's `hardware.liuqin.usbShell`; INSTALL-LOG step 32). What
+  remains in this file is `screenRefresh`, which still needs the `pkgs/` +
+  `writeShellApplication` treatment (a verbatim copy of it also sits in
+  `modules/liuqin/hardware.nix`). The install path itself is no longer in this
+  file: upstream `nixos-install` runs against the operator's mounted target.
 - `modules/liuqin/initrd-guard.nix`: same treatment for the ~150-line guard
   script.
