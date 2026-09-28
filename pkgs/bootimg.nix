@@ -3,18 +3,19 @@
 # boot.img for liuqin: kernel Image.gz + ABL-facing DTB + (optional) initrd,
 # assembled with the pinned AOSP mkbootimg.
 #
-# DTB pipeline (all with stock dtc/fdtoverlay, no Python in the build):
+# DTB pipeline (all stock dtc/fdtoverlay; the only Python in this file is the
+# payload padding in buildPhase):
 #   1. compile the ABL metadata overlay (dts/liuqin-abl-boot-overlay.dts,
 #      a /plugin/ DTS) with `dtc -@`
 #   2. apply it onto the kernel's sm8475-xiaomi-liuqin.dtb with fdtoverlay
 #      (fdtoverlay preserves the base's __symbols__; verified with dtc 1.7.2)
-#   3. synthesize an `entry.<N>`-style DTBO whose only fragment targets
-#      /__symbols__ and re-exports every label that any stock DTBO entry or
-#      stock base DTB exports, all pointing at an inert sink node. This
-#      replaces the downstream abl-symbols.py with pure dtc/fdtoverlay:
-#      applying a DTBO against a __symbols__ fragment merges entries into
-#      the base's __symbols__ instead of rewriting them.
-#   4. apply that DTBO with fdtoverlay.
+#   3. synthesize one plugin overlay whose fragment targets / and carries an
+#      inert sink node plus a __symbols__ entry for every label that any stock
+#      DTBO entry (__fixups__) or stock base DTB (__symbols__) exports, all
+#      pointing at that sink. This is what the downstream abl-symbols.py does
+#      with text surgery; fdtoverlay replaces the entries one by one when the
+#      overlay is applied, which yields the same result at the DT level.
+#   4. apply that overlay with fdtoverlay.
 #
 # The stock DTBO entries and stock base DTBs are fixed-output inputs
 # (devices-only data extracted from the stock ROM; they never change).
@@ -218,111 +219,42 @@ PYEOF
     sink_phandle_hex=$(printf '0x%x' "$sink_phandle")
     echo "dynamic sink phandle: $sink_phandle_hex (max was $max_phandle)"
 
-    # Symbols are deliberately all redirected to the inert sink. ABL applies
-    # stock overlays after handing us the DTB; allowing an exported symbol to
-    # point at a real mainline node would let those overlays mutate live state.
+    # Symbols are deliberately all redirected to the inert sink: ABL applies
+    # the stock overlays after handing us the DTB, and a symbol resolving to a
+    # real mainline node would let those overlays mutate live state.  One
+    # plugin overlay carries the sink node plus every exported label, and
+    # fdtoverlay applies it: properties inside __symbols__ are replaced one by
+    # one (existing entries included) and the sink node is added, so no text
+    # surgery on dtc's output is involved.
     {
       echo '/dts-v1/;'
+      echo '/plugin/;'
       echo '/ {'
-      echo '	liuqin-abl-overlay-sink {'
-      echo "		phandle = <$sink_phandle_hex>;"
-      echo '	};'
-      echo '	__symbols__ {'
+      echo '	fragment@0 {'
+      echo '		target-path = "/";'
+      echo '		__overlay__ {'
+      echo '			liuqin-abl-overlay-sink {'
+      echo "				phandle = <$sink_phandle_hex>;"
+      echo '			};'
+      echo '			__symbols__ {'
       while read -r sym; do
-        echo "		$sym = \"/liuqin-abl-overlay-sink\";"
+        echo "				$sym = \"/liuqin-abl-overlay-sink\";"
       done < symbols.sorted
+      echo '			};'
+      echo '		};'
       echo '	};'
       echo '};'
-    } > symbols-add.dts
+    } > symbols-overlay.dts
+    dtc -@ -q -I dts -O dtb -o symbols-overlay.dtbo symbols-overlay.dts
+    fdtoverlay -i boot-1.dtb -o boot.dtb symbols-overlay.dtbo
 
-    # Decompile the merged DTB, splice the sink+symbols in before the final
-    # root brace, and recompile with -@. If the base already carries a
-    # __symbols__ node (fdtoverlay from an -@ overlay can create one), remove
-    # it first.  Keeping real base-DTB targets would let ABL's forced stock
-    # overlays mutate mainline nodes; every exported symbol must resolve to
-    # the inert sink instead.
-    dtc -I dtb -O dts boot-1.dtb > boot-1.dts
-    awk '
-      /^\t__symbols__ \{/ { skip = 1; next }
-      skip && /^\t\};/ { skip = 0; next }
-      !skip { print }
-    ' boot-1.dts > boot-1-nosymbols.dts
-    mv boot-1-nosymbols.dts boot-1.dts
-    if grep -q '__symbols__ {' boot-1.dts; then
-      # Merge into the existing __symbols__ block, skipping names the base
-      # already exports to avoid duplicate-property errors.
-      grep -A100000 '^	__symbols__ {' boot-1.dts | grep -oP '^		\K[A-Za-z0-9_]+(?= = )' | sort -u > existing.sorted
-      comm -23 symbols.sorted existing.sorted > symbols.new
-      {
-        echo '/dts-v1/;'
-        echo '/ {'
-        echo '	liuqin-abl-overlay-sink {'
-        echo "		phandle = <$sink_phandle_hex>;"
-        echo '	};'
-        echo '	__symbols__ {'
-        while read -r sym; do
-          echo "		$sym = \"/liuqin-abl-overlay-sink\";"
-        done < symbols.new
-        echo '	};'
-        echo '};'
-      } > symbols-add.dts
-      awk -v add=symbols-add.dts '
-        BEGIN { while ((getline line < add) > 0) {
-                  if (line ~ /^	__symbols__/) inSym = 1
-                  else if (inSym && line ~ /^	};/) inSym = 0
-                  else if (inSym) extra = extra line "\n"
-                } }
-        /^	__symbols__ \{/ { inBlock = 1 }
-        inBlock && /^	\};/ {
-          printf "%s", extra
-          inBlock = 0
-        }
-        { print }
-      ' boot-1.dts > boot-2.dts
-      # Add the sink node too (before the final root brace).
-      awk -v phandle="$sink_phandle_hex" '
-        /^	liuqin-abl-overlay-sink \{/ { have = 1 }
-        /^\};$/ { last = NR; lines[NR] = $0; next }
-        { lines[NR] = $0 }
-        END {
-          for (i = 1; i <= NR; i++) {
-            if (i == last && !have) print "\tliuqin-abl-overlay-sink {\n\t\tphandle = <" phandle ">;\n\t};"
-            print lines[i]
-          }
-        }
-      ' boot-2.dts > boot-2b.dts
-      mv boot-2b.dts boot-2.dts
-    else
-      # Insert children into the existing root node. Splicing the complete
-      # '/ { ... };' wrapper from symbols-add.dts here would nest a second
-      # root and make dtc reject boot-2.dts.
-      awk -v symbols=symbols.sorted -v phandle="$sink_phandle_hex" '
-        BEGIN {
-          while ((getline sym < symbols) > 0)
-            symbol_lines = symbol_lines "\t\t" sym " = \"/liuqin-abl-overlay-sink\";\n"
-          close(symbols)
-        }
-        /^\};$/ {
-          print "\tliuqin-abl-overlay-sink {"
-          print "\t\tphandle = <" phandle ">;"
-          print "\t};"
-          print "\t__symbols__ {"
-          printf "%s", symbol_lines
-          print "\t};"
-        }
-        { print }
-      ' boot-1.dts > boot-2.dts
-    fi
-    dtc -@ -I dts -O dtb -o boot.dtb boot-2.dts
-
-    # Verify: every requested symbol exists in the final __symbols__ (either
-    # pre-existing in the base or injected pointing at the sink), and the
-    # ABL metadata survived.
+    # Verify: every requested symbol is present in the final __symbols__ and
+    # points at the inert sink, and the ABL metadata survived.
     dtc -I dtb -O dts boot.dtb > boot-final.dts
     missing=0
     while read -r sym; do
-      grep -qP "^		\Q$sym\E = " boot-final.dts || {
-        echo "missing symbol: $sym" >&2
+      grep -qP "^\t\t\Q$sym\E = \"/liuqin-abl-overlay-sink\";" boot-final.dts || {
+        echo "symbol not redirected to the sink: $sym" >&2
         missing=1
       }
     done < symbols.sorted
