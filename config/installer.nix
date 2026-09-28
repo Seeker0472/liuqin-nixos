@@ -12,11 +12,11 @@
 # and nixpkgs does not have: the USB control channel, the display and firmware
 # hand-off, and the trimming that keeps the live root out of the squashfs.
 #
-# TODO: usbGadgetSetup / usbShellLogin / screenRefresh are still embedded shell
-# with absolute store paths. Move them into pkgs/ following the
-# pkgs/liuqin-power-keyd/ pattern and switch them to writeShellApplication with
-# runtimeInputs. Deferred on purpose: this is the channel an install runs over,
-# so refactor it once an install has been exercised end to end.
+# TODO: screenRefresh is still embedded shell with absolute store paths (a
+# verbatim twin lives in modules/liuqin/hardware.nix). Move it into pkgs/
+# following the pkgs/liuqin-power-keyd/ pattern and switch it to
+# writeShellApplication with runtimeInputs; the USB channel's gadget and login
+# wrapper already moved there (pkgs/usb-gadget.nix, pkgs/usb-login.nix).
 { config, lib, modulesPath, pkgs, ... }:
 
 let
@@ -33,127 +33,19 @@ let
     ) old.buildInputs;
   });
 
-  # Match the downstream first-boot control channel.  The installer kernel
-  # already contains DWC3 gadget/configfs/NCM/ECM support; this helper only
-  # creates the configfs function and claims the USB2 UDC. It is deliberately
-  # idempotent because it runs once in the initrd and once after switch_root.
-  usbGadgetSetup = pkgs.writeShellScriptBin "liuqin-usb-gadget" ''
-    set -eu
+  # The USB2 control channel this installer exposes: the configfs NCM/ECM
+  # gadget and the busybox login wrapper are shared with the installed
+  # system's debug channel (modules/liuqin/usb-shell.nix; see
+  # pkgs/usb-gadget.nix). The installer assigns the address itself and raises
+  # the readiness marker its udhcpd/telnetd units wait on.
+  usbGadgetSetup = pkgs.mkLiuqinUsbGadget {
+    product = "liuqin NixOS installer";
+    configuration = "USB network installer";
+    logToConsole = true;
+    assignAddress = true;
+  };
 
-    configfs=/sys/kernel/config
-    gadget=$configfs/usb_gadget/liuqin
-    ready=/run/liuqin-usb-ready
-
-    log() {
-      echo "liuqin-usb: $*" >/dev/console 2>/dev/null || true
-    }
-
-    fail() {
-      log "$*"
-      rm -f "$ready" 2>/dev/null || true
-      exit 1
-    }
-
-    mkdir -p "$configfs" /run || fail "could not create configfs or /run"
-    if ! ${pkgs.util-linux}/bin/mountpoint -q "$configfs"; then
-      ${pkgs.util-linux}/bin/mount -t configfs configfs "$configfs" 2>/dev/null \
-        || fail "could not mount configfs"
-    fi
-    if [ ! -d "$configfs/usb_gadget" ]; then
-      fail "configfs USB gadget support is unavailable"
-    fi
-
-    mkdir -p "$gadget" || fail "could not create the USB gadget"
-    printf '0x1d6b\n' >"$gadget/idVendor" 2>/dev/null || true
-    printf '0x1040\n' >"$gadget/idProduct" 2>/dev/null || true
-    printf '0x0100\n' >"$gadget/bcdDevice" 2>/dev/null || true
-    printf '0x0200\n' >"$gadget/bcdUSB" 2>/dev/null || true
-
-    mkdir -p "$gadget/strings/0x409" || fail "could not create USB string descriptors"
-    printf '000000000001\n' >"$gadget/strings/0x409/serialnumber" 2>/dev/null || true
-    printf 'Xiaomi Pad 6 Pro mainline\n' >"$gadget/strings/0x409/manufacturer" 2>/dev/null || true
-    printf 'liuqin NixOS installer\n' >"$gadget/strings/0x409/product" 2>/dev/null || true
-
-    mkdir -p "$gadget/configs/c.1/strings/0x409" \
-      || fail "could not create USB configuration descriptors"
-    printf 'USB network installer\n' >"$gadget/configs/c.1/strings/0x409/configuration" 2>/dev/null || true
-    printf '500\n' >"$gadget/configs/c.1/MaxPower" 2>/dev/null || true
-
-    function_name=
-    for candidate in ncm.usb0 ecm.usb0; do
-      if [ -d "$gadget/functions/$candidate" ]; then
-        function_name=$candidate
-        break
-      fi
-    done
-    if [ -z "$function_name" ]; then
-      if mkdir "$gadget/functions/ncm.usb0" 2>/dev/null; then
-        function_name=ncm.usb0
-      elif mkdir "$gadget/functions/ecm.usb0" 2>/dev/null; then
-        function_name=ecm.usb0
-      else
-        fail "could not create an NCM or ECM gadget function"
-      fi
-    fi
-    printf '02:00:00:00:07:02\n' >"$gadget/functions/$function_name/dev_addr" 2>/dev/null || true
-    printf '02:00:00:00:07:01\n' >"$gadget/functions/$function_name/host_addr" 2>/dev/null || true
-    if [ ! -e "$gadget/configs/c.1/$function_name" ]; then
-      ln -s "$gadget/functions/$function_name" "$gadget/configs/c.1/$function_name" 2>/dev/null \
-        || fail "could not link the USB function into the configuration"
-    fi
-    [ -e "$gadget/configs/c.1/$function_name" ] \
-      || fail "USB function is not present in the configuration"
-
-    udc_name=
-    if [ -r "$gadget/UDC" ]; then
-      udc_name=$(${pkgs.coreutils}/bin/cat "$gadget/UDC" 2>/dev/null || true)
-      [ "$udc_name" = none ] && udc_name=
-    fi
-    if [ -z "$udc_name" ]; then
-      # The initrd has no UCSI userspace helper.  If the role switch has not
-      # selected device mode yet, request it before looking for the UDC.
-      for role_path in /sys/class/usb_role/*/role; do
-        [ -w "$role_path" ] || continue
-        printf 'device\n' >"$role_path" 2>/dev/null || true
-      done
-      for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        for udc_path in /sys/class/udc/*; do
-          [ -e "$udc_path" ] || continue
-          udc_name=$(${pkgs.coreutils}/bin/basename "$udc_path")
-          break
-        done
-        [ -n "$udc_name" ] && break
-        ${pkgs.coreutils}/bin/sleep 1
-      done
-      if [ -n "$udc_name" ]; then
-        if ! printf '%s\n' "$udc_name" >"$gadget/UDC"; then
-          fail "failed to bind USB gadget to UDC $udc_name"
-        fi
-      fi
-    fi
-    if [ -z "$udc_name" ]; then
-      fail "no USB device controller found"
-    fi
-
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
-      [ -e /sys/class/net/usb0 ] && break
-      ${pkgs.coreutils}/bin/sleep 1
-    done
-    if [ ! -e /sys/class/net/usb0 ]; then
-      fail "UDC is bound but usb0 did not appear"
-    fi
-
-    ${pkgs.iproute2}/bin/ip link set usb0 up 2>/dev/null \
-      || fail "could not bring usb0 up"
-    ${pkgs.iproute2}/bin/ip address replace 192.168.7.2/24 dev usb0 2>/dev/null \
-      || fail "could not assign 192.168.7.2/24 to usb0"
-    : >"$ready" || fail "could not create the USB ready marker"
-    log "USB $function_name ready at 192.168.7.2/24"
-  '';
-
-  usbShellLogin = pkgs.writeShellScriptBin "liuqin-usb-login" ''
-    exec ${pkgs.busybox}/bin/busybox sh -i "$@"
-  '';
+  usbShellLogin = pkgs.liuqinUsbLogin;
 
   screenRefresh = pkgs.writeShellScriptBin "liuqin-screen-refresh" ''
     set -eu
@@ -285,7 +177,15 @@ in
     # client that is fbcon on the DRM framebuffer, which patch 0012 also keeps
     # updated per draw.
     "console=tty0"
-    "firmware_class.path=/var/lib/firmware:${pkgs.liuqinInitrdFirmware}/lib/firmware"
+    # One path only: fw_path_para is a single char[256] (module_param_string,
+    # firmware_loader/main.c) and does NOT split on ':', so a second
+    # ':'-joined path invalidates the whole parameter and every firmware load
+    # fails with -2 (that is how the installer's WLAN never came up:
+    # ath11k/WCN6855/hw2.1/amss.bin).  The initrd mounts the liuqin firmware
+    # subset at /var/lib/firmware (see below) and the loader takes the
+    # compressed .zst blobs from there, exactly like the installed system does
+    # with the same single-path parameter.
+    "firmware_class.path=/var/lib/firmware"
   ];
   # NixOS defaults to loglevel=4, which would hide nearly all of that log and
   # (with the previous log DRM client) left the panel cleared and black. Keep
@@ -494,6 +394,13 @@ in
   documentation.nixos.enable = lib.mkForce false;
   documentation.man.enable = lib.mkForce false;
   documentation.info.enable = lib.mkForce false;
+
+  # `nix copy` - the documented way to move the closure into /mnt, and how the
+  # live shell reaches a host-side binary cache - is part of the new CLI. A
+  # bare invocation otherwise fails with "experimental Nix feature 'nix-command'
+  # is disabled". nixos-install's own --flake path passes its flags, but
+  # --system plus an explicit copy does not.
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   # The channel is deliberately omitted to keep the ABL RAM image bounded.
   # Install from a flake URL/path after networking is up, or place a normal
