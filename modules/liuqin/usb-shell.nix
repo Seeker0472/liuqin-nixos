@@ -97,7 +97,7 @@ in
         RestartSec = "1s";
         # Long builds are run through this shell; without this an OOM inside
         # one stops the unit and its restart SIGINTs the whole build tree
-        # (docs/INSTALL-LOG.md).
+        # (a build running through this shell dies with the unit otherwise).
         OOMPolicy = "continue";
       };
     };
