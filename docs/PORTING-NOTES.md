@@ -72,6 +72,55 @@ battery, TSENS CPU/GPU, video, memory, camera, CDSP and PMIC paths. The Android
 snapshot had 81 zones, including vendor `charger`, `wifi`, `xo`, `ddr`, `flash`
 and connector zones that are not present under those names here.
 
+## USB-C / USB3 / DP / fast charging: what the static analysis settled (2026-09-29)
+
+Analysis that needs no device (vendor 5.10 sources, the stock firmware and
+deployed binaries, upstream 7.2.5) pins this chain down. The full reports are
+in `../../liuqin-stock-dump/re/usb/` (`batterysecret.md`, `dp-altmode.md`,
+`phy-table.md`, `dt-config.md`, `mipps-spec.md`, `phy-table.patch`; not in
+git), and the implementation checklist is the "已确定的逻辑" section of
+`docs/TODO/USB-C-USB3-FASTCHARGE.md`. In short:
+
+- **PD/PPS is the ADSP's job.** The deployed kernel and modules carry no
+  AP-side PD stack: the AP can only write `input_current_limit`, and the
+  charging tier is derived from `usb_type` + `pd_verified` + `power_max`
+  (`qti_battery_charger.c:1497`). Standard PD/PPS therefore needs no port,
+  only not being interrupted.
+- **MiPPS (67 W) is driven by `/vendor/bin/batterysecret`, not by the kernel.**
+  HMAC-SHA-256 with keys in `.data` (`0x7490..`; hw_id 17, i.e. liuqin,
+  selects `0x7510`), talking to the UVDM sequence through
+  `/sys/class/qcom-battery/{verify_process,verify_digest,request_vdm_cmd,…}`.
+  0006 exposes the kernel side of that transport, but not yet the ABI a daemon
+  needs: seven changes remain (see the TODO document), and the userspace
+  daemon after them. `is_old_hw` does not exist in the deployed kernel;
+  `BATTERY_DIGEST_LEN=32`.
+- **liuqin has no USB3 redriver.** Board-id `0x10008` / miboard-id `0x10` apply
+  overlay-15 only; `onnn,redriver` belongs to waipio-QRD's overlay-25/26/27.
+- **The combo PHY is a V6 layout.** The stock `qcom,qmp-phy-init-seq` (174
+  entries) matches the upstream SM8550/V6 table (TX, PCS and PCS_USB
+  bit-identical; COM has the same 48 offsets but 24 different values), while
+  7.2.5 selects the sm8350 table for `qcom,sm8450-qmp-usb3-dp-phy`; upstream
+  parses no DT init-seq at all.
+- **DP Alt Mode reuses the upstream protocol.** `pmic_glink_altmode.c` and the
+  vendor `altmode-glink.c` agree field for field, so DP bring-up is DT
+  (`pmic-glink`'s `connector@0` with graph endpoints, `usb_1_qmpphy`,
+  `mdss_dp0`, FSA4480) plus configuration.
+- **Type-C role/orientation.** The `connector@0` graph also provides UCSI's
+  role switch; `orientation-gpios` is the mechanism, but GPIO91 is only a
+  candidate here (the vendor uses it as a portselect pinctrl and the evidence
+  is not sufficient), so the plan deliberately leaves it out of the DTS. The
+  vendor counterpart is `usb-role-switch` + EUD extcon.
+
+Implementation-level artifacts (not in git; they embed vendor-private material)
+live under `liuqin-stock-dump/re/usb/`:
+
+- `dt-config.md`: pasteable DT fragments plus config lines, the electrical
+  facts still open, and a first-boot checklist;
+- `phy-table.patch`: draft adding the `sm8450_usb3dpphy_cfg` combo-PHY table
+  (V6 base plus the board delta); applies cleanly to 7.2.5;
+- `mipps-spec.md`: MiPPS daemon ABI, state machine, digest byte order and key
+  selection, plus the seven minimal 0006 changes.
+
 ## Kernel
 
 Sixteen patches, applied in filename order (there is no 0014: it was a
@@ -480,10 +529,15 @@ both files.
 - CSI/ISP camera capture (the current Iris support only exposes codec nodes);
 - FPC1020-compatible power-button fingerprint reader;
 - BMI3x0/TCS3701/TSL2522 direct sensor drivers and their SSC/IIO integration;
-- USB3/OTG role switching (base DTS and installer overlay both select the
-  validated USB2 peripheral role);
-- Xiaomi MiPPS/PPS userspace authentication (`0006` exposes the kernel transport
-  and raw attributes only);
+- USB3/OTG role switching and DP Alt Mode: the vendor/upstream logic is now
+  determined (static analysis section above and
+  `docs/TODO/USB-C-USB3-FASTCHARGE.md`); the DT/config changes are not
+  implemented yet, so both DTS overlays still select the validated USB2
+  peripheral role;
+- Xiaomi MiPPS/PPS userspace authentication: the protocol, digest layouts and
+  keys are recovered from `/vendor/bin/batterysecret` (report under
+  `liuqin-stock-dump/re/usb/`); the daemon is not implemented, and `0006` still
+  only exposes the kernel transport and raw attributes;
 - the touchscreen firmware payload in the installer;
 - re-enabling the duplicate ramoops region.
 
