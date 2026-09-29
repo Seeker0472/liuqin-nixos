@@ -56,6 +56,22 @@ in
       simplefb0 writing into the bootloader framebuffer all session, which
       a desktop compositor cannot draw over'';
 
+    debugTransport = lib.mkOption {
+      type = lib.types.enum [ "ssh" "usb" "both" "none" ];
+      default = "ssh";
+      description = ''
+        Debug transport for the installed system. "ssh" is the normal
+        network path, "usb" enables the legacy USB NCM/ECM root shell,
+        "both" enables both paths, and "none" disables both services.
+        Enabling SSH also defaults `PasswordAuthentication` off, so the
+        path is key-only unless the machine configuration says otherwise.
+        The RAM installer keeps its USB rescue channel independently so it
+        remains available when the installed system cannot bring up Wi-Fi.
+        SSH keys and user access policy remain the responsibility of the
+        machine configuration.
+      '';
+    };
+
     sensors = {
       enable = (lib.mkEnableOption ''
         Qualcomm SSC sensor stack (SLPI lifecycle, hexagonrpcd, iio-sensor-proxy)'')
@@ -138,6 +154,22 @@ in
       # keeps the kernel's own default for exactly that reason.  Consumers can
       # still lower it.
       boot.consoleLogLevel = lib.mkDefault 7;
+
+      # Keep the installed system's normal debug path on the network. The
+      # legacy USB gadget remains an explicit opt-in (or can be selected
+      # together with SSH); the installer has its own unconditional USB
+      # rescue channel and is not governed by this option.
+      services.openssh.enable = lib.mkDefault (
+        cfg.debugTransport == "ssh" || cfg.debugTransport == "both"
+      );
+      # NixOS defaults this to true, and an sshd that accepts passwords is
+      # not something a hardware module should turn on by itself: the tablet
+      # sits on Wi-Fi and user passwords here start as placeholders. Still
+      # only a default, so a machine that wants password auth can say so.
+      services.openssh.settings.PasswordAuthentication = lib.mkDefault false;
+      hardware.liuqin.usbShell.enable = lib.mkDefault (
+        cfg.debugTransport == "usb" || cfg.debugTransport == "both"
+      );
 
       # U-Boot boots NixOS through NixOS' own extlinux loader: it writes the
       # generation list to /boot/extlinux/extlinux.conf on the `linux`

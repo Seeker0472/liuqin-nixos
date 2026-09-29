@@ -22,17 +22,62 @@ Making path A as clean as B is the "display-pipeline stop at probe" TODO in
 ## 1. Host side
 
 - **USB network.**  The tablet is `192.168.7.2/24`; the host is
-  `192.168.7.19/24` on the NCM interface (check with `ip -4 addr show`).  Both
-  the RAM installer and the installed system run `hardware.liuqin.usbShell`:
-  DHCP server plus a **busybox telnet root shell on port 2323** (this is the
-  standard way in; there is no ssh key).  If nothing answers, check the cable
-  first — `enp14s0u3` simply disappears when it is unplugged.
+  `192.168.7.19/24` on the NCM interface (check with `ip -4 addr show`).  An
+  installed system presents that channel when `hardware.liuqin.usbShell` is
+  enabled; the example configuration selects SSH over WLAN instead, so take it
+  with `hardware.liuqin.debugTransport = "usb"`, or keep both with `"both"`.
+  It is the same arrangement the RAM installer brings up from its own units
+  (`config/installer.nix`), not from this module: DHCP server plus a **busybox
+  telnet root shell on port 2323**.  If the USB channel is selected and nothing
+  answers, check the cable first — `enp14s0u3` simply disappears when it is
+  unplugged.
+- **Installed-system debug transport.**  `hardware.liuqin.debugTransport`
+  accepts `"ssh"` (default), `"usb"`, `"both"`, or `"none"`.  The selector
+  enables or disables the installed system's OpenSSH service and legacy USB
+  gadget using `mkDefault`, so an explicit `services.openssh.enable` or
+  `hardware.liuqin.usbShell.enable` can still override it.  While SSH is on it
+  also defaults `PasswordAuthentication` off, so the path is key-only unless
+  the machine configuration overrides that; enroll an authorized key before
+  relying on it.
 - **Binary cache for pushes.**  A plain `python3 -m http.server 8137 --bind
   192.168.7.19` serving `/var/tmp/liuqin-cache` (`hub` process name
   `liuqincache`).  Fill it on the host with `nix copy --to
   file:///var/tmp/liuqin-cache <store paths>`; the device then copies from
   `http://192.168.7.19:8137`.  It has to keep running while the device copies.
 - **fastboot**: `nix shell nixpkgs#android-tools --command fastboot …`.
+
+### Installed-system SSH and logs
+
+The installed example configuration uses `hardware.liuqin.debugTransport =
+"ssh"`.  The deployment key is `~/.ssh/id_liuqin`; the matching public key is
+declared in the example configuration.  The tablet's WLAN address comes from
+DHCP, so discover it from the router or the host's neighbor table rather than
+assuming the address used during bring-up.
+
+```sh
+ssh -o IdentitiesOnly=yes -i ~/.ssh/id_liuqin demo@<tablet-ip>
+
+# current boot and kernel messages
+journalctl -b --no-pager
+journalctl -k -b --no-pager
+
+# SSH service, including accepted and rejected login attempts
+journalctl -u sshd -b --no-pager
+
+# follow messages while reproducing a problem
+journalctl -f
+```
+
+The installed system keeps a persistent journal in `/var/log/journal`, so
+`journalctl --list-boots` and `journalctl -b -1` can inspect earlier boots.
+`systemctl status sshd` and `systemctl status liuqin-usb-gadget` show which
+debug transport is active.  The intended installed state is `sshd=active` and
+`liuqin-usb-gadget=inactive`; the RAM installer still enables its temporary
+USB root shell independently.
+
+This SSH path was verified on the tablet on 2026-09-29 after installing
+system generation `is649gr0212v117j8z1b5s13x28mxf8s`.  The journal recorded
+the SSH daemon startup and successful public-key logins with the `liuqin` key.
 
 ## 2. Building
 

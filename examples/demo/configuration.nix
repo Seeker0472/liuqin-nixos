@@ -24,6 +24,7 @@
 {
   hardware.liuqin = {
     enable = true;
+    debugTransport = "ssh";
     desktop.gnome.enable = true;
 
     # The U-Boot path: NixOS installs its extlinux generation list into /boot
@@ -32,13 +33,6 @@
     # the panel's volume and power keys).
     boot.loader = "uboot";
     storage.layout = "linux-partition";
-
-    # TEMPORARY, for the display bring-up: the panel is the only local console
-    # and it is currently black, so the installed system carries the same USB
-    # debug channel the RAM installer has (NCM/ECM + DHCP + root telnet on
-    # 192.168.7.2:2323). Drop this line once the DSI output is settled; the
-    # option is off by default and documented in modules/liuqin/usb-shell.nix.
-    usbShell.enable = true;
 
     # SSC sensor registry/config payload, from the stock ROM's
     # vendor/etc/sensors/config (the same bytes are in the downstream
@@ -62,6 +56,10 @@
     description = "liuqin demo user";
     extraGroups = [ "wheel" "networkmanager" "video" "input" "audio" ];
     initialPassword = "demo";
+    openssh.authorizedKeys.keys = [
+      # /home/seeker/.ssh/id_liuqin.pub
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmzXtiVemck1Ox+0QAL59sntUP4EULCZdHif4oDo7IX seeker@liuqin"
+    ];
   };
 
   # PipeWire is what GNOME's mixer drives here; the BSP ships this device's
@@ -76,11 +74,10 @@
   hardware.bluetooth.enable = true;
   services.blueman.enable = true;
 
-  # Wi-Fi SSH is the supported debug channel (this tablet has no UART). Enroll
-  # authorizedKeys below before relying on it: the demo password is refused by
-  # SSH anyway.
+  # Wi-Fi SSH is the supported debug channel (this tablet has no UART). The
+  # liuqin deployment key is enrolled above; the demo password is refused
+  # by SSH anyway.
   services.openssh = {
-    enable = true;
     settings.PasswordAuthentication = false;
   };
 

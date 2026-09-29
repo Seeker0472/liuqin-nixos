@@ -6,6 +6,7 @@
 {
   hardware.liuqin = {
     enable = true;
+    debugTransport = "ssh";
     desktop.gnome.enable = true;
     # Verbose boot diagnostics; keep off unless bring-up needs it.
     boot.debug = false;
@@ -27,14 +28,17 @@
     isNormalUser = true;
     extraGroups = [ "wheel" "networkmanager" "video" "input" ];
     # Console-only bootstrap password: change it right after first login
-    # (`passwd`). SSH does not accept it — PasswordAuthentication is
-    # disabled below, so enroll authorizedKeys before relying on SSH.
+    # (`passwd`). SSH uses the liuqin deployment key below; password
+    # authentication is disabled below.
     initialPassword = "nixos";
+    openssh.authorizedKeys.keys = [
+      # /home/seeker/.ssh/id_liuqin.pub
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmzXtiVemck1Ox+0QAL59sntUP4EULCZdHif4oDo7IX seeker@liuqin"
+    ];
   };
 
   services.openssh = {
-    enable = true;
-    # Tablet on Wi-Fi: no password auth; enroll authorizedKeys first.
+    # Tablet on Wi-Fi: no password auth; use the liuqin deployment key above.
     settings.PasswordAuthentication = false;
   };
 
