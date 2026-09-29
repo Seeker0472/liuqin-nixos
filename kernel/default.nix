@@ -32,6 +32,7 @@
 { lib
 , fetchurl
 , buildLinux
+, buildPackages
 , installer ? false
 , ...
 }@args:
@@ -171,6 +172,19 @@ in
         exit 1
       }
     done
+  '';
+  # GNU patch does not verify the counts in "@@ -a,b +c,d @@".  A hunk that
+  # declares fewer lines than it carries is applied as the declared prefix and
+  # the rest is silently dropped, and the build stays green; a creation hunk
+  # that drifts this way writes its file without the tail.  That is how
+  # sm8475-xiaomi-liuqin.dts lost its &usb_1/&usb_1_hsphy overrides and the
+  # built DTB came out with the eUSB2 PHY and DWC3 disabled - the installed
+  # system then had no USB debug channel at all, while every build passed.
+  # Check every patch this build consumes, so the next drift is a build
+  # failure that names the hunk instead of a device that cannot be reached.
+  postPatch = (old.postPatch or "") + ''
+    ${buildPackages.python3}/bin/python3 ${./check-patch-hunks.py} \
+      ${lib.concatMapStringsSep " " (p: "${p.patch}") kernelPatches}
   '';
   # firmware_class.path=/var/lib/firmware (boot.kernelParams) only works when
   # the kernel was built with the fw_path_para command-line parameter; assert
