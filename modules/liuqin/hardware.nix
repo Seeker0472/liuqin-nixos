@@ -183,6 +183,15 @@ in
       after = [ "liuqin-wlan-mac.service" ];
     };
 
+    # WLAN power save is the largest idle-power knob on the radio chain, and
+    # whether it is on is invisible in this closure: mac80211's debugfs is not
+    # built and nothing else can read the state, so iw is installed to check
+    # it (`iw dev wlp1s0 get power_save`) and to look at link state.
+    # NetworkManager would default this on anyway; stating it here keeps the
+    # policy with the device instead of with an upstream default.
+    networking.networkmanager.wifi.powersave = lib.mkDefault true;
+    environment.systemPackages = [ pkgs.iw ];
+
     # --- Bluetooth public address -----------------------------------------
     systemd.services.liuqin-bt-preconfigure = {
       description = "liuqin QCA6490 public Bluetooth address";

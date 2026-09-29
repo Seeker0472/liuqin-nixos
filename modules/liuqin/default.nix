@@ -114,6 +114,13 @@ in
           # persist partition at boot; /lib/firmware is the read-only store
           # tree, so the firmware loader gets one extra writable path.
           "firmware_class.path=/var/lib/firmware"
+          # TEO chooses the idle state from the timer deadline instead of
+          # menu's heuristics, which is the better default on a
+          # battery-powered device.  kernel/liuqin-firstboot.config builds it
+          # in and says "chosen at runtime", but nothing ever chose it: the
+          # kernel came up on menu (drivers/cpuidle/cpuidle.c exposes the
+          # choice as cpuidle.governor=).
+          "cpuidle.governor=teo"
         ]
         ++ lib.optionals cfg.boot.debug [
           "ignore_loglevel"

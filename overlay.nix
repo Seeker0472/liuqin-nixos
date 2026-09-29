@@ -11,9 +11,31 @@ final: prev:
   # host paths promoted to built-in because the installer has no module tree.
   liuqinInstallerKernel = final.callPackage ./kernel { installer = true; };
 
-  liuqinKernelDtb = prev.runCommand "liuqin-dtb-${final.liuqinKernel.version}" { } ''
+  liuqinKernelDtb = prev.runCommand "liuqin-dtb-${final.liuqinKernel.version}"
+    { nativeBuildInputs = [ final.buildPackages.dtc ]; } ''
     mkdir -p $out
     cp ${final.liuqinKernel}/dtbs/qcom/sm8475-xiaomi-liuqin.dtb $out/
+
+    # The scheduler only learns that the three Kryo clusters differ through
+    # these two properties (patches/kernel/0016); with them missing every CPU
+    # falls back to cpu_capacity 1024 and SD_ASYM_CPUCAPACITY is never set, and
+    # the failure is silent.  Assert the values, not just presence: setting
+    # 1024 on every CPU would pass a count-only check.
+    dtc -I dtb -O dts -o board.dts $out/sm8475-xiaomi-liuqin.dtb
+    check() {
+      n=$(grep -cF "$1" board.dts || true)
+      [ "$n" -eq "$2" ] || {
+        echo "error: board DTB has $n lines of '$1', expected $2" >&2
+        echo "       (the CPU capacity/energy-model patch 0016 is missing)" >&2
+        exit 1
+      }
+    }
+    check "capacity-dmips-mhz = <0x400>" 4
+    check "capacity-dmips-mhz = <0x8cd>" 3
+    check "capacity-dmips-mhz = <0x952>" 1
+    check "dynamic-power-coefficient = <0x64>" 4
+    check "dynamic-power-coefficient = <0x101>" 3
+    check "dynamic-power-coefficient = <0x1fd>" 1
   '';
   liuqinInstallerKernelDtb = prev.runCommand "liuqin-installer-dtb-${final.liuqinInstallerKernel.version}" { } ''
     mkdir -p $out
