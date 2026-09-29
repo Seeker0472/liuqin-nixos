@@ -15,6 +15,7 @@ in
     ./gnome.nix
     ./initrd-guard.nix
     ./usb-shell.nix
+    ./camera-debug.nix
   ];
 
   options.hardware.liuqin = {

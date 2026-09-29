@@ -70,6 +70,12 @@ final: prev:
   # installer and hardware.liuqin.usbShell. See pkgs/usb-gadget.nix.
   mkLiuqinUsbGadget = final.callPackage ./pkgs/usb-gadget.nix { };
   liuqinUsbLogin = final.callPackage ./pkgs/usb-login.nix { };
+
+  # --- Camera bring-up tooling ---
+  # The capture/checksum helper behind hardware.liuqin.cameraDebug.enable;
+  # see pkgs/camtest.nix.
+  liuqinCamtest = final.callPackage ./pkgs/camtest.nix { };
+
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc.nix { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };
 
