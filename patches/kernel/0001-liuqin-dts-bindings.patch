@@ -520,7 +520,7 @@ Adjustments for v7.2.5:
 +};
 --- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
-@@ -0,0 +1,1493 @@
+@@ -0,0 +1,1511 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
 +
@@ -773,7 +773,23 @@ Adjustments for v7.2.5:
 +			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
 +		};
 +
-+		splash_region@b8000000 {
++		/*
++		 * Deliberately NOT named "splash_region": at hand-off ABL looks
++		 * that exact path up (UpdateDeviceTree.c, UpdateSplashMemInfo)
++		 * and only when it is present does ABL keep the display power,
++		 * the display clocks and the TE/RST pin up across the jump. Any
++		 * other name makes it call DisableDisplay() -- i.e. the kernel
++		 * then starts from a stopped pipeline, which is exactly what
++		 * this board's first modeset needs. Measured 2026-09-28: with
++		 * the name, the first modeset stays dark and the panel only
++		 * comes back after a later disable/enable cycle (the
++		 * liuqin-msm first-modeset retry patch); renamed, the first
++		 * modeset lights the panel at ~1.9 s with no cycle at all.
++		 * Only the ABL hand-off consults this name: U-Boot boots
++		 * through sysboot and never asks ABL, so U-Boot's own DTB
++		 * keeps "splash_region" to keep its menu visible.
++		 */
++		linux_splash@b8000000 {
 +			reg = <0x0 0xb8000000 0x0 0x2b00000>;
 +			no-map;
 +		};
@@ -1397,8 +1413,10 @@ Adjustments for v7.2.5:
 + * bonded halving, byte clock -- reproduces the vendor's declared per-lane rate
 + * of 1 007 032 320 Hz bit for bit. See docs/DISPLAY_RECON.zh-CN.md.
 + *
-+ * Deliberately left alone: /chosen/bootargs, framebuffer@b8000000 and
-+ * splash_region. earlycon=simplefb is still the only channel that can show a
++ * Deliberately left alone: /chosen/bootargs and framebuffer@b8000000 (the
++ * splash-region reservation node is renamed on purpose; see the
++ * reserved-memory hunk above). earlycon=simplefb is still the only channel
++ * that can show a
 + * failure before device_initcall, and initcall_blacklist=simplefb_driver_init
 + * keeps fbcon off that same memory. Once DRM comes up it registers its own
 + * fb0, fbcon binds to it, and the earlycon simply goes blind -- which costs
