@@ -6,8 +6,9 @@ proprietary firmware and stock DT artifacts from the operator's device.
 
 ## Installation model
 
-For the proposed persistent boot and NixOS generation-menu design, see
-[docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md).
+For the exercised installation, update and recovery procedure, see
+[docs/INSTALL.md](docs/INSTALL.md). The boot chain and generation menu are
+described in [docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md).
 
 Initial installation has one supported path:
 
@@ -87,12 +88,12 @@ at `/mnt`, the installation is plain upstream NixOS.
 nixos-install --root /mnt --no-channel-copy
 ```
 
-`nixos-install` fetches (or builds) the closure into `/mnt/nix/store` and then
-activates the system inside the target, which is also what installs the loader:
-with `hardware.liuqin.boot.loader = "uboot"` that writes
+`nixos-install` fetches (or builds) the closure into `/mnt/nix/store`, sets the
+system profile and installs the loader; it does not activate the target. With
+`hardware.liuqin.boot.loader = "uboot"`, the loader step writes
 `/boot/extlinux/extlinux.conf` plus this generation's kernel, initrd and device
-tree into the `linux` partition, and the initrd guard's marker file is written
-by the target's own activation. Point it at a configuration (`--flake
+tree into the `linux` partition. The initrd guard's marker file is written by
+the target's first-boot activation. Point it at a configuration (`--flake
 /path/to/flake#configuration-name`; `-I`, `--option`, `-j` and `--substituters`
 pass through) or drop a `configuration.nix` at `/mnt/etc/nixos` first.
 
@@ -160,8 +161,8 @@ and no `init=` command line; it is not a normal bootable NixOS system image.
 are the bootloader itself and its ABL boot.img, built entirely here (see
 `u-boot/default.nix` for where the sources come from). The U-Boot path needs no
 `/boot` artifact: NixOS installs its own extlinux generation list into the
-target's `/boot` when the system is activated (`nixos-rebuild` runs the
-loader's installer).
+target's `/boot` during installation. Later updates run the loader script
+explicitly after switching the system profile; see `docs/INSTALL.md`.
 
 The ABL image keeps the downstream fixed payload offsets
 (`ramdisk=0x01000000`, `dtb=0x01f00000`) because those offsets are part of
@@ -275,7 +276,7 @@ flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
 modules/liuqin/           installed-system hardware and initrd modules
 kernel/                   Linux configuration and installer profile
-patches/kernel/           Linux 7.2.5 device patches (0001–0012)
+patches/kernel/           Linux 7.2.5 device patches (0001–0013, 0015–0017)
 pkgs/bootimg.nix          ABL boot image and DTB construction
 u-boot/                   the bootloader: the port's own base tree + patches + files
                           (verify-port.sh proves the three equal the dev tree)
