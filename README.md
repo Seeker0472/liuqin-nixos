@@ -276,7 +276,9 @@ flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
 modules/liuqin/           installed-system hardware and initrd modules
 kernel/                   Linux configuration and installer profile
-patches/kernel/           Linux 7.2.5 device patches (0001–0013, 0015–0017)
+patches/kernel/           Linux 7.2.5 device patches (0001–0013, 0015–0018)
+pkgs/                     device packages and glue commands (the module wires
+                          the commands into units; each is a writeShellApplication)
 pkgs/bootimg.nix          ABL boot image and DTB construction
 u-boot/                   the bootloader: the port's own base tree + patches + files
                           (verify-port.sh proves the three equal the dev tree)

@@ -30,12 +30,20 @@ Not registered or not driven:
 - **Audio:** `/proc/asound/cards` reports no soundcards. The four CS35L41
   amplifiers bind, but the LPASS/WCD machine driver is deferred because the
   RX/TX macro clocks and CPU DAI are unresolved.
-- **Sensors:** `/sys/bus/iio/devices` is empty. The SDSP service and `ssccli`
-  sample gate fail, and SLPI repeatedly crashes while opening the sensor
-  registry. The Android probe identified BMI3x0 accelerometer/gyroscope,
-  TCS3701 ambient/CCT sensors and a TSL2522 rear ambient sensor; none of these
-  has a current mainline IIO path. Android's derived gravity, rotation, step,
-  tilt and motion sensors therefore have no source data either.
+- **Sensors:** The Android probe identified BMI3x0 accelerometer/gyroscope,
+  TCS3701 ambient/CCT sensors and a TSL2522 rear ambient sensor. The SSC
+  userspace path is now implemented: the package serves the registry contract,
+  the persist import is atomic, and bounded `libssc` checks cover acceleration,
+  angular rate, and the default SSC ambient-light Lux instance. A successful
+  light check does not distinguish the front TCS3701 from the rear TSL2522.
+  The stock CCT/RGB calibration records
+  have no corresponding API in the pinned `libssc`, so CCT remains unimplemented
+  and unverified. `/sys/bus/iio/devices` can still be empty because
+  these devices are owned by SLPI rather than an AP-side IIO bus; only the
+  accelerometer is bridged to `iio-sensor-proxy`. Real measurements and the
+  resulting Android-derived gravity/rotation/step/tilt/motion behaviour remain
+  unverified until `liuqin-sensor-check` runs against the tablet's own SLPI
+  firmware.
 - **PMIC ADC:** the ADC5 device has no configured channels and fails probe;
   no corresponding IIO device is present.
 - **Camera capture:** only Iris codec nodes (`/dev/video0` and `/dev/video1`)
@@ -513,11 +521,14 @@ the operator inputs are `requireFile`. Two archives stay in the tree because the
 release does not carry them (`data/stock-base-dtbs.nix`,
 `data/stock-dtbo-entries.nix`; it ships no `vendor_boot.img`).
 
-The SSC archive currently contains the per-device `config/` registry but not
-the `sns_reg_config`/`sns_reg_version` files that `hexagonrpcd` looks up at
-runtime. The running device logs both paths as missing before the SLPI crash.
-The package and archive need to be updated together, with derivation checks for
-both files.
+The SSC archive used by the first NixOS revision contained the per-device
+`config/` registry but not the `sns_reg.conf`/`sns_reg_version` files that
+`hexagonrpcd` looks up at runtime. The running device logs both paths as
+missing before the SLPI crash. `pkgs/sensors-config.nix` now installs those
+paths, accepts the sibling files when present, and synthesizes the audited
+plain-text contract for older config-only archives. The private per-device
+registry is still provisioned from persist and is never copied into the Nix
+store.
 
 ## Not enabled by default
 
@@ -528,7 +539,9 @@ both files.
   capture graph;
 - CSI/ISP camera capture (the current Iris support only exposes codec nodes);
 - FPC1020-compatible power-button fingerprint reader;
-- BMI3x0/TCS3701/TSL2522 direct sensor drivers and their SSC/IIO integration;
+- AP-side BMI3x0/TCS3701/TSL2522 direct IIO drivers (the SLPI/SSC path is the
+  implemented contract); gyro/light application acceptance, CCT/RGB, and
+  desktop consumers remain unverified;
 - USB3/OTG role switching and DP Alt Mode: the vendor/upstream logic is now
   determined (static analysis section above and
   `docs/TODO/USB-C-USB3-FASTCHARGE.md`); the DT/config changes are not
@@ -545,12 +558,16 @@ Each item needs its own kernel profile or device test, not an installer change.
 
 ## Known refactors (TODO)
 
-- `config/installer.nix`: `usbGadgetSetup` / `usbShellLogin` are **done** — they
-  now live in `pkgs/usb-gadget.nix` and `pkgs/usb-login.nix` (shared with the
-  installed system's `hardware.liuqin.usbShell`). What
-  remains in this file is `screenRefresh`, which still needs the `pkgs/` +
-  `writeShellApplication` treatment (a verbatim copy of it also sits in
-  `modules/liuqin/hardware.nix`). The install path itself is no longer in this
-  file: upstream `nixos-install` runs against the operator's mounted target.
-- `modules/liuqin/initrd-guard.nix`: same treatment for the ~150-line guard
-  script.
+- `config/installer.nix`: `usbGadgetSetup` / `usbShellLogin` / `screenRefresh`
+  are **done** — they now live in `pkgs/usb-gadget.nix`, `pkgs/usb-login.nix`
+  and `pkgs/screen-refresh.nix` (the last shared with the installed system's
+  `liuqin-screen-refresh.service`). The install path itself is no longer in
+  this file: upstream `nixos-install` runs against the operator's mounted
+  target.
+- `modules/liuqin/hardware.nix`: **done** — the shell the units ran inline now
+  lives in `pkgs/` (backlight default, persist provisioning, WLAN/BT identity,
+  SLPI lifecycle, screen refresh, sensor-check, sensor-proxy re-announce) and
+  the module only wires units; the device-unique paths travel as arguments, so
+  each command stays runnable by hand.
+- `modules/liuqin/initrd-guard.nix`: still open — the guard script needs the
+  same `pkgs/` + `writeShellApplication` treatment.
