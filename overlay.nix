@@ -64,6 +64,19 @@ final: prev:
   # --- Device packages ---
   liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd.nix { };
 
+  # --- Device glue --------------------------------------------------------
+  # The commands the module wires into units (modules/liuqin/hardware.nix):
+  # the script bodies live here, the unit ordering stays in the module. Each
+  # command is parameterised (state paths, sysfs roots, actions) so the whole
+  # flow can be exercised against fixture trees, with no tablet involved.
+  liuqinScreenRefresh = final.callPackage ./pkgs/screen-refresh.nix { };
+  liuqinBacklightDefault = final.callPackage ./pkgs/backlight.nix { };
+  liuqinPersistProvision = final.callPackage ./pkgs/persist-provision.nix { };
+  liuqinWlanMac = final.callPackage ./pkgs/wlan-mac.nix { };
+  liuqinBtPublicAddr = final.callPackage ./pkgs/bt-public-addr.nix { };
+  liuqinSlpi = final.callPackage ./pkgs/slpi.nix { };
+  liuqinSensorProxyRefresh = final.callPackage ./pkgs/sensor-proxy-refresh.nix { };
+
   # --- USB2 control channel ---
   # The configfs gadget (mkLiuqinUsbGadget takes the USB strings and the two
   # consumer differences) and the telnetd login wrapper, shared by the RAM

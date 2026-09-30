@@ -11,12 +11,6 @@
 # (README.md, "Installation model"). What it carries is what this device needs
 # and nixpkgs does not have: the USB control channel, the display and firmware
 # hand-off, and the trimming that keeps the live root out of the squashfs.
-#
-# TODO: screenRefresh is still embedded shell with absolute store paths (a
-# verbatim twin lives in modules/liuqin/hardware.nix). Move it into pkgs/
-# following the pkgs/liuqin-power-keyd/ pattern and switch it to
-# writeShellApplication with runtimeInputs; the USB channel's gadget and login
-# wrapper already moved there (pkgs/usb-gadget.nix, pkgs/usb-login.nix).
 { config, lib, modulesPath, pkgs, ... }:
 
 let
@@ -46,16 +40,6 @@ let
   };
 
   usbShellLogin = pkgs.liuqinUsbLogin;
-
-  screenRefresh = pkgs.writeShellScriptBin "liuqin-screen-refresh" ''
-    set -eu
-    for blank in /sys/class/graphics/fb*/blank; do
-      [ -e "$blank" ] || continue
-      echo 1 > "$blank"
-      ${pkgs.coreutils}/bin/sleep 1
-      echo 0 > "$blank"
-    done
-  '';
 
   usbDhcpConfig = pkgs.writeText "liuqin-usb-udhcpd.conf" ''
     start 192.168.7.10
@@ -281,19 +265,20 @@ in
 
   boot.initrd.systemd.services.initrd-find-etc.serviceConfig.ExecStartPre = [ "${plantSysrootInit}" ];
 
-# The panel is the only channel that survives a USB failure, and it starts
-# out showing nothing the console drew before the DRM fbdev took over: that
-# went to a different buffer. One blank/unblank makes fbcon redraw the whole
-# console buffer (its scrollback included) into the framebuffer the panel
-# scans, so the complete boot log ends up visible. Per-draw flushing is
-# handled in the kernel by patch 0012 and needs nothing from userspace.
+  # The panel is the only channel that survives a USB failure, and it starts
+  # out showing nothing the console drew before the DRM fbdev took over: that
+  # went to a different buffer. One blank/unblank makes fbcon redraw the whole
+  # console buffer (its scrollback included) into the framebuffer the panel
+  # scans, so the complete boot log ends up visible. Per-draw flushing is
+  # handled in the kernel by patch 0012 and needs nothing from userspace. The
+  # command is shared with the installed system (pkgs/screen-refresh.nix).
   systemd.services.liuqin-screen-refresh = {
     description = "Redraw the console into the panel framebuffer";
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = "${screenRefresh}/bin/liuqin-screen-refresh";
+      ExecStart = "${pkgs.liuqinScreenRefresh}/bin/liuqin-screen-refresh";
     };
   };
 
