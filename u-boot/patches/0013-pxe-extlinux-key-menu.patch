@@ -20,7 +20,7 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
  
  #include <rng.h>
  
-@@ -268,11 +271,22 @@
+@@ -268,11 +271,47 @@
  	free(label);
  }
  
@@ -32,7 +32,29 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 +static struct pxe_label *pxe_default;	/* label the countdown picks */
 +static struct pxe_label *pxe_leave;	/* label that exits without booting */
 +static int pxe_countdown;		/* seconds left, 0 = no countdown */
++static bool pxe_menu_open;		/* interactive menu is on screen */
 +static struct cli_ch_state pxe_cch;
++
++/*
++ * Layout of the interactive menu. Row 1 carries the menu title the generic
++ * menu code prints, row 2 the key hints, and label N sits on its own row
++ * below. Each element is placed by row rather than appended, because the
++ * generic code calls menu_display() again for every redraw and appending
++ * would bury the menu in copies of itself instead of moving the highlight.
++ */
++#define PXE_MENU_HINT_ROW	2	/* key hints, under the title */
++#define PXE_MENU_ITEM_ROW	3	/* label 1; label N is N - 1 rows down */
++
++/**
++ * pxe_label_row() - Console row a label is drawn on
++ *
++ * @label: Label to place
++ * Returns: 1-based console row
++ */
++static int pxe_label_row(struct pxe_label *label)
++{
++	return PXE_MENU_ITEM_ROW + simple_strtol(label->num, NULL, 10) - 1;
++}
 +
  /**
   * label_print() - Print a label and its string members if they're defined
@@ -41,24 +63,34 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 - * menu entry.
 + * menu entry. The highlighted entry is reversed out, so that a menu driven by
 + * arrow keys (see pxe_choice()) shows where the next ENTER will go.
++ *
++ * label_boot() also calls this to echo the chosen label into the boot log,
++ * with no menu on the screen to place it in; only the menu path positions.
   *
   * @data: Label to print (is cast to struct pxe_label *)
   */
-@@ -280,8 +294,13 @@
+@@ -280,8 +319,19 @@
  {
  	struct pxe_label *label = data;
  	const char *c = label->menu ? label->menu : label->name;
-+	bool active = label == pxe_active;
++	bool active = pxe_menu_open && label == pxe_active;
++
++	if (pxe_menu_open) {
++		printf(ANSI_CURSOR_POSITION, pxe_label_row(label), 1);
++		puts(ANSI_CLEAR_LINE);
++	}
  
+-	printf("%s:\t%s\n", label->num, c);
 +	if (active)
 +		puts(ANSI_COLOR_REVERSE);
- 	printf("%s:\t%s\n", label->num, c);
++	printf("%s:\t%s", label->num, c);
 +	if (active)
 +		puts(ANSI_COLOR_RESET);
++	putc('\n');
  }
  
  /**
-@@ -1455,6 +1474,175 @@
+@@ -1455,6 +1505,213 @@
  	return cfg;
  }
  
@@ -94,22 +126,26 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 + */
 +static bool pxe_choice_wait(int secs)
 +{
++	bool keyed = false;
 +	int i, j;
 +
-+	for (i = secs; i > 0; i--) {
++	for (i = secs; i > 0 && !keyed; i--) {
 +		printf("\rHit any key to stop autoboot: %d ", i);
 +		for (j = 0; j < 100; j++) {
-+			if (tstc())
-+				return true;
++			if (tstc()) {
++				keyed = true;
++				break;
++			}
 +			schedule();
 +			mdelay(10);
 +		}
 +	}
 +
++	/* The countdown is not part of the menu: take its line back. */
 +	printf("\r");
-+	puts(ANSI_CLEAR_LINE_TO_END);
++	puts(ANSI_CLEAR_LINE);
 +
-+	return false;
++	return keyed;
 +}
 +
 +/**
@@ -133,10 +169,28 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 +}
 +
 +/**
++ * pxe_menu_done() - Hand the panel back to whatever runs after the menu
++ *
++ * The menu draws itself into fixed rows (see label_print()), so without this
++ * the boot log after a choice - and the device menu after "Back to device
++ * menu" - would start in the middle of the panel.
++ */
++static void pxe_menu_done(void)
++{
++	pxe_menu_open = false;
++	puts(ANSI_CURSOR_SHOW);
++	puts(ANSI_CLEAR_CONSOLE);
++	printf(ANSI_CURSOR_POSITION, 1, 1);
++}
++
++/**
 + * pxe_choice() - Pick a label with the arrow keys
 + *
 + * This is the menu's item_choice callback: it returns the key of the chosen
-+ * item, or NULL to have the menu redrawn and asked again.
++ * item, or NULL to have the menu redrawn and asked again. A redraw has to
++ * start where the old menu did, because the generic menu code prints what it
++ * is given below whatever is already on the screen; the fixed rows in
++ * label_print() are only correct from the top.
 + *
 + * Upstream leaves item_choice unset, so a choice can only be made by typing a
 + * number at the "Enter choice:" prompt. A board whose only input is a
@@ -160,8 +214,19 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 +		bool keyed = pxe_choice_wait(pxe_countdown);
 +
 +		pxe_countdown = 0;
-+		if (!keyed)
-+			return pxe_default ? pxe_default->num : NULL;
++		if (!keyed) {
++			/*
++			 * The countdown picks DEFAULT. Without one there is
++			 * nothing the user asked for, so stay and ask.
++			 */
++			if (!pxe_default) {
++				printf(ANSI_CURSOR_POSITION, 1, 1);
++				return NULL;
++			}
++
++			pxe_menu_done();
++			return pxe_default->num;
++		}
 +	}
 +
 +	for (;;) {
@@ -172,15 +237,19 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 +			label = pxe_choice_step(cfg, pxe_active, -1);
 +			if (label)
 +				pxe_active = label;
++			printf(ANSI_CURSOR_POSITION, 1, 1);
 +			return NULL;
 +		case BKEY_DOWN:
 +			label = pxe_choice_step(cfg, pxe_active, 1);
 +			if (label)
 +				pxe_active = label;
++			printf(ANSI_CURSOR_POSITION, 1, 1);
 +			return NULL;
 +		case BKEY_SELECT:
++			pxe_menu_done();
 +			return pxe_active ? pxe_active->num : NULL;
 +		case BKEY_QUIT:
++			pxe_menu_done();
 +			return pxe_leave ? pxe_leave->num : NULL;
 +		default:
 +			break;
@@ -227,14 +296,15 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 + */
 +static void pxe_menu_statusline(struct menu *m)
 +{
++	printf(ANSI_CURSOR_POSITION, PXE_MENU_HINT_ROW, 1);
++	puts(ANSI_CLEAR_LINE);
 +	puts("Press UP/DOWN to move, ENTER to select");
-+	puts(ANSI_CLEAR_LINE_TO_END);
 +}
 +
  /*
   * Converts a pxe_menu struct into a menu struct for use with U-Boot's generic
   * menu code.
-@@ -1462,19 +1650,36 @@
+@@ -1462,19 +1719,36 @@
  static struct menu *pxe_menu_to_menu(struct pxe_menu *cfg)
  {
  	struct pxe_label *label;
@@ -273,7 +343,7 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
  	if (!m)
  		return NULL;
  
-@@ -1489,18 +1694,24 @@
+@@ -1489,18 +1763,24 @@
  			return NULL;
  		}
  		if (cfg->default_label &&
@@ -302,11 +372,21 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
  	}
  
  	/*
-@@ -1519,6 +1730,22 @@
+@@ -1519,6 +1799,33 @@
  		}
  	}
  
 +	if (prompt) {
++		/*
++		 * The menu owns the panel while it is up: start from a clean
++		 * screen, so the fixed rows in label_print() are the whole
++		 * picture no matter what the loader printed while parsing.
++		 */
++		puts(ANSI_CURSOR_HIDE);
++		puts(ANSI_CLEAR_CONSOLE);
++		printf(ANSI_CURSOR_POSITION, 1, 1);
++		pxe_menu_open = true;
++
 +		pxe_active = default_label;
 +		if (!pxe_active && !list_empty(&cfg->labels))
 +			pxe_active = list_first_entry(&cfg->labels,
@@ -320,6 +400,7 @@ diff --git a/boot/pxe_utils.c b/boot/pxe_utils.c
 +		pxe_default = NULL;
 +		pxe_leave = NULL;
 +		pxe_countdown = 0;
++		pxe_menu_open = false;
 +	}
 +
  	return m;
