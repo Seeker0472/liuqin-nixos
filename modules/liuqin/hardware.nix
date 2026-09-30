@@ -190,7 +190,15 @@ in
     # NetworkManager would default this on anyway; stating it here keeps the
     # policy with the device instead of with an upstream default.
     networking.networkmanager.wifi.powersave = lib.mkDefault true;
-    environment.systemPackages = [ pkgs.iw ];
+    environment.systemPackages = [ pkgs.iw pkgs.liuqinSensorCheck ];
+
+    # iio-sensor-proxy is started with an explicit ExecStart below, so its
+    # package is not pulled in through the upstream systemd unit.  Register
+    # the package with the system bus as well; this installs the policy which
+    # permits the root daemon to own net.hadess.SensorProxy.  Without it the
+    # daemon exits cleanly from GLib's name_lost_handler with the misleading
+    # "already running" message.
+    services.dbus.packages = [ pkgs.liuqinIioSensorProxy ];
 
     # --- Bluetooth public address -----------------------------------------
     systemd.services.liuqin-bt-preconfigure = {
@@ -284,7 +292,7 @@ in
       # card is bound. Wanted by (and ordered before) sound.target so the
       # per-channel calr blobs in /var/lib/firmware/cirrus are in place
       # before PipeWire/WirePlumber can touch the card.
-      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-slpi.service" "sound.target" ];
+      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "sound.target" ];
       after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
       path = with pkgs; [ coreutils util-linux gnugrep findutils ];
       script = ''
@@ -299,10 +307,33 @@ in
         }
         private=${stateDir}
         mnt=$(mktemp -d)
-        trap 'umount "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true' EXIT
+        stage=
+        cleanup() {
+          [ -z "''${stage:-}" ] || rm -rf "$stage"
+          umount "$mnt" 2>/dev/null || true
+          rmdir "$mnt" 2>/dev/null || true
+        }
+        trap cleanup EXIT
         mount -o ro,nodev,nosuid,noexec "$part" "$mnt"
 
         install -d -m 0700 -o root -g root "$private"
+
+        # The DSP registry mount is writable runtime state. Keep the vendor
+        # configuration in the Nix store, but seed the mutable siblings that
+        # the firmware removes, creates and updates during regeneration.
+        sensor_state=/var/lib/liuqin-sensors
+        install -d -m 0750 -o fastrpc -g fastrpc "$sensor_state"
+        if [ ! -e "$sensor_state/sns_reg_version" ]; then
+          install -m 0640 -o fastrpc -g fastrpc \
+            ${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin/sensors/sns_reg_version \
+            "$sensor_state/sns_reg_version"
+        fi
+        for mutable in sensors_list.txt file1 file2; do
+          if [ ! -e "$sensor_state/$mutable" ]; then
+            install -m 0640 -o fastrpc -g fastrpc /dev/null \
+              "$sensor_state/$mutable"
+          fi
+        done
 
         # Fail closed when the persist payload set is incomplete.
         [ -f "$mnt/wlan/wlan_mac.bin" ]
@@ -344,18 +375,45 @@ in
         done
 
         # SSC sensor registry (fastrpc-readable); refuse implausibly small
-        # sets like the downstream >100-file floor.
-        install -d -m 0750 -o fastrpc -g fastrpc /var/lib/liuqin-sensors/registry
+        # sets like the downstream >100-file floor. Stage the complete
+        # directory, then exchange it with the active directory in one
+        # renameat2 operation so readers never see a half-imported registry.
+        stage=$(mktemp -d /var/lib/liuqin-sensors/.registry.XXXXXX)
+        chown fastrpc:fastrpc "$stage"
+        chmod 0750 "$stage"
         count=0
         for f in "$mnt/sensors/registry/registry/"*; do
-          [ -f "$f" ] || continue
-          install -m 0640 -o fastrpc -g fastrpc \
-            "$f" /var/lib/liuqin-sensors/registry/
+          [ -f "$f" ] && [ ! -L "$f" ] || continue
+          name=''${f##*/}
+          [ -n "$name" ] || exit 1
+          case $name in .*|*/*) exit 1 ;; esac
+          install -m 0640 -o fastrpc -g fastrpc "$f" "$stage/$name"
           count=$((count + 1))
         done
         [ "$count" -gt 100 ]
-        (cd /var/lib/liuqin-sensors/registry && sha256sum * > SHA256SUMS)
-        chown fastrpc:fastrpc /var/lib/liuqin-sensors/registry/SHA256SUMS
+        (cd "$stage" && find . -maxdepth 1 -type f ! -name SHA256SUMS \
+          -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
+        chown fastrpc:fastrpc "$stage/SHA256SUMS"
+        chmod 0640 "$stage/SHA256SUMS"
+        if [ -e /var/lib/liuqin-sensors/registry ] || \
+           [ -L /var/lib/liuqin-sensors/registry ]; then
+          [ -d /var/lib/liuqin-sensors/registry ] && \
+            [ ! -L /var/lib/liuqin-sensors/registry ] || exit 1
+          # GNU coreutils' --exchange maps to renameat2(RENAME_EXCHANGE).
+          # A filesystem without that primitive fails closed and leaves the
+          # old active directory untouched.
+          mv --exchange --no-target-directory \
+            "$stage" /var/lib/liuqin-sensors/registry
+          # The old directory now occupies $stage; cleanup removes it only
+          # after the new directory has become active.
+        else
+          mv "$stage" /var/lib/liuqin-sensors/registry
+          stage=
+        fi
+        if [ ! -e /var/lib/liuqin-sensors/registry/temp.json ]; then
+          install -m 0640 -o fastrpc -g fastrpc /dev/null \
+            /var/lib/liuqin-sensors/registry/temp.json
+        fi
       '';
       serviceConfig = {
         Type = "oneshot";
@@ -382,7 +440,7 @@ in
     # fastrpc-sdsp: sensor-proxy may see it, and the SSC sample gate starts.
     services.udev.extraRules = ''
       SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp", GROUP="fastrpc", MODE="0660", \
-        ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel", TAG+="systemd", \
+        ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel ssc-light ssc-compass", TAG+="systemd", \
         ENV{SYSTEMD_WANTS}+="liuqin-sensor-stack.target"
       # Portrait panel, landscape-mounted accelerometer (four-pose proven):
       SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp", ENV{ACCEL_MOUNT_MATRIX}="-1,0,0;0,-1,0;0,0,1"
@@ -399,7 +457,8 @@ in
     systemd.services.liuqin-slpi = {
       description = "liuqin sensor processor lifecycle";
       wantedBy = [ "multi-user.target" ];
-      after = [ "systemd-udevd.service" "systemd-tmpfiles-setup.service" ];
+      requires = [ "liuqin-persist-provision.service" ];
+      after = [ "systemd-udevd.service" "systemd-tmpfiles-setup.service" "liuqin-persist-provision.service" ];
       before = [ "liuqin-hexagonrpcd-sdsp.service" ];
       path = with pkgs; [ coreutils util-linux ];
       script = ''
@@ -462,8 +521,8 @@ in
         RestrictAddressFamilies = "AF_UNIX AF_LOCAL";
         ReadOnlyPaths = [
           "${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin"
-          "/var/lib/liuqin-sensors/registry"
         ];
+        ReadWritePaths = [ "/var/lib/liuqin-sensors" ];
         DevicePolicy = "closed";
         DeviceAllow = "/dev/fastrpc-sdsp rw";
       };
@@ -473,36 +532,57 @@ in
     };
 
     systemd.services.liuqin-ssc-sample-gate = {
-      description = "liuqin SSC real accelerometer sample gate";
+      description = "liuqin SSC real sensor sample gate";
       requires = [ "liuqin-hexagonrpcd-sdsp.service" ];
       after = [ "liuqin-hexagonrpcd-sdsp.service" ];
       before = [ "iio-sensor-proxy.service" ];
       wantedBy = [ "liuqin-sensor-stack.target" ];
-      path = with pkgs; [ coreutils gnugrep pkgs.liuqinLibssc ];
+      path = with pkgs; [ coreutils gnugrep findutils pkgs.liuqinLibssc ];
       script = ''
         set -eu
         [ -c /dev/fastrpc-sdsp ]
         state_dir=/run/liuqin-sensors
         mkdir -p "$state_dir"
-        attempt=1
-        while [ "$attempt" -le 4 ]; do
-          if timeout --signal=TERM --kill-after=2s 8s \
-            ssccli --sensor=accelerometer --timeout=3 > "$state_dir/ssc.log" 2>&1 \
-            && grep -q '^Accelerometer sensor measurement: X=' "$state_dir/ssc.log"; then
-            grep -c '^Accelerometer sensor measurement: X=' "$state_dir/ssc.log" \
-              > "$state_dir/accelerometer-ready"
-            exit 0
+        rm -f "$state_dir"/*-ready "$state_dir"/*-status
+        required_failed=0
+        for sensor in accelerometer gyroscope light; do
+          attempt=1
+          ready=0
+          while [ "$attempt" -le 4 ]; do
+            case $sensor in
+              accelerometer) needle='^Accelerometer sensor measurement: X=' ;;
+              gyroscope) needle='^Gyroscope sensor measurement: X=' ;;
+              light) needle='^Light sensor measurement: ' ;;
+            esac
+            log="$state_dir/ssccli-$sensor.log"
+            if timeout --signal=TERM --kill-after=2s 8s \
+              ssccli --sensor="$sensor" --timeout=3 > "$log.tmp" 2>&1 \
+              && grep -q "$needle" "$log.tmp"; then
+              mv "$log.tmp" "$log"
+              grep -c "$needle" "$log" > "$state_dir/$sensor-ready"
+              printf 'ready\n' > "$state_dir/$sensor-status"
+              ready=1
+              break
+            fi
+            mv "$log.tmp" "$log" 2>/dev/null || :
+            attempt=$((attempt + 1))
+            [ "$attempt" -le 4 ] || break
+            sleep 1
+          done
+          if [ "$ready" = 0 ]; then
+            printf 'failed\n' > "$state_dir/$sensor-status"
+            echo "no real $sensor measurement after four bounded attempts" >&2
+            [ "$sensor" = accelerometer ] && required_failed=1
           fi
-          attempt=$((attempt + 1))
-          sleep 1
         done
-        echo "no real accelerometer measurement after four bounded attempts" >&2
-        exit 1
+        [ "$required_failed" = 0 ]
       '';
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        TimeoutStartSec = "42s";
+        # Three sensors are checked sequentially; each sensor has four
+        # bounded attempts so a slow SLPI publication cannot hang boot.
+        TimeoutStartSec = "150s";
       };
     };
 
@@ -512,6 +592,8 @@ in
       requires = [ "liuqin-ssc-sample-gate.service" ];
       after = [ "liuqin-ssc-sample-gate.service" ];
       serviceConfig = {
+        Type = "dbus";
+        BusName = "net.hadess.SensorProxy";
         ExecStart = [ "" "${pkgs.liuqinIioSensorProxy}/libexec/iio-sensor-proxy" ];
         RestrictAddressFamilies = "AF_UNIX AF_LOCAL AF_NETLINK AF_QIPCRTR";
       };

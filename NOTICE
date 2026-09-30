@@ -19,9 +19,10 @@ This repository is MIT-licensed overall (see LICENSE), except:
 * pkgs/firmware.nix and pkgs/sensors-config.nix reference proprietary
   Qualcomm/Xiaomi binaries that are NOT redistributable. This repository is
   PRIVATE / personal self-use and must not be published publicly: the
-  committed data/*.tar.zst archives (liuqin-firmware-*, liuqin-ssc-config,
-  stock-dtbo-entries, stock-base-dtbs) are the operator's own device / stock
-  ROM dumps, carried in-tree for the operator's own builds only. If the
+  committed data/*.tar.zst archives (liuqin-firmware-*, stock-dtbo-entries,
+  stock-base-dtbs) are the operator's own device / stock ROM dumps. The SSC
+  sensor archive is an uncommitted `requireFile` input supplied by the
+  operator. If the
   repository is ever to be published, these files must first be removed
   from history (git filter-repo --path-glob 'data/*.tar.zst'
   --invert-paths) and data/stock-dtbo-entries.nix / stock-base-dtbs.nix

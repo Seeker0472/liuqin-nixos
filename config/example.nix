@@ -17,9 +17,9 @@
     #   cameraDebug.enable = true;
 
     sensors = {
-      # data/liuqin-ssc-config.tar.zst (stock ROM vendor/etc/sensors/config,
-      # pinned; register it with `nix-store --add-fixed sha256` on other
-      # machines).
+      # Operator-supplied stock ROM vendor/etc/sensors/config archive. No
+      # proprietary SSC archive is committed; derive this hash locally with
+      # `nix hash file --type sha256 --base64` after registering the archive.
       sscConfigHash = "sha256-9IzksIEZq8NveGBaD5cBSgzNLCh7KmvdjKnEaubCOdU=";
     };
   };

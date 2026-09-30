@@ -34,10 +34,10 @@
     boot.loader = "uboot";
     storage.layout = "linux-partition";
 
-    # SSC sensor registry/config payload, from the stock ROM's
-    # vendor/etc/sensors/config (the same bytes are in the downstream
-    # release's rootfs). A different unit must re-derive it; see the BSP's
-    # docs/PORTING-NOTES.md.
+    # SSC sensor registry/config payload from the stock ROM's
+    # vendor/etc/sensors/config. No proprietary archive is committed; a
+    # different unit must register its own archive and re-derive this hash;
+    # see docs/TODO/SENSORS-SSC.md.
     sensors.sscConfigHash = "sha256-9IzksIEZq8NveGBaD5cBSgzNLCh7KmvdjKnEaubCOdU=";
   };
 

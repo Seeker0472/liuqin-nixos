@@ -80,10 +80,18 @@ final: prev:
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };
 
   # libssc at the pinned downstream commit.
-  liuqinLibssc = final.callPackage ./pkgs/libssc.nix { };
+  liuqinQrtr = final.callPackage ./pkgs/qrtr.nix { };
+  liuqinLibssc = final.callPackage ./pkgs/libssc.nix {
+    qrtr = final.liuqinQrtr;
+  };
+  # Bounded, sequential real-sample checks for the SSC accelerometer,
+  # gyroscope, and light sensors.  These are deliberately separate from
+  # iio-sensor-proxy so each sensor can be accepted independently.
+  liuqinSensorCheck = final.callPackage ./pkgs/sensors-tools.nix { };
 
-  # iio-sensor-proxy with the liuqin SSC patches (4 of 6; 0001/0002 target
-  # hexagonrpcd and are applied there in pkgs/hexagonrpc.nix).
+  # iio-sensor-proxy with the liuqin SSC patches 0003-0006; the hexagonrpcd
+  # side is a single patch (0001-hexagonrpcd-implement-ssc-file-service),
+  # applied in pkgs/hexagonrpc.nix.
   liuqinIioSensorProxy = prev.iio-sensor-proxy.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [
       ./data/sensors-patches/0003-iio-sensor-proxy-start-preclaimed-coldplug-sensor.patch
@@ -105,4 +113,3 @@ final: prev:
     firmware = final.liuqinFirmware;
   };
 }
-

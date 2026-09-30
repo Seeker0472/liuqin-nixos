@@ -83,9 +83,11 @@ in
         default = null;
         description = ''
           sha256 (SRI form) of liuqin-ssc-config.tar.zst: the stock ROM's
-          vendor/etc/sensors/config, archived deterministically. Operator-only
-          data; see docs/PORTING-NOTES.md. The build fails with a clear error
-          while unset.'';
+          vendor/etc/sensors/config, optionally with sns_reg.conf and
+          sns_reg_version, archived deterministically. Operator-only data; see
+          docs/TODO/SENSORS-SSC.md. Config-only archives are accepted and the
+          audited plain-text registry contract is synthesized. The build fails
+          with a clear error while unset.'';
       };
     };
   };
