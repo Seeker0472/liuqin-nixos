@@ -24,16 +24,19 @@
 ```text
 ABL
  ├─ boot_a → Android（ABL 自己加载）
- └─ boot_b → U-Boot（设备菜单，音量键移动 / 电源键确认）
-               ├─ 0 Boot Android        → 完整切到 A 槽、复位、交还 ABL
-               ├─ 1 Boot NixOS          → extlinux 的 DEFAULT（= 最后一次安装的
+ └─ boot_b → U-Boot（设备菜单，音量键移动 / 电源键确认 / 5 s 无输入走第 0 项）
+               ├─ 0 Boot NixOS          → extlinux 的 DEFAULT（= 最后一次安装的
                │                          generation），不显示菜单
-               ├─ 2 NixOS Generations   → 同一个 extlinux 文件，逐个 generation
+               ├─ 1 NixOS Generations   → 同一个 extlinux 文件，逐个 generation
                │                          列出来给按键选（含 "Back to device menu"）
+               ├─ 2 Boot Android        → 完整切到 A 槽、复位、交还 ABL
                ├─ 3 Enable Fastboot Mode / 4 Reset / 5 Power Off
                ├─ 6 Reboot to ABL
                └─ 7 Mark Slot B / 8 GPT Probe / 9 Scan ABL Log（只读诊断）
 ```
+
+倒计时只挑 `Boot NixOS`：它失败时会在面板上说明原因并 `pause`，而
+`Boot Android` 是**持久槽位选择**（下面），不能被没人看的倒计时碰到。
 
 这里是 **NixOS system generation** 之间的选择，不是 derivation：每一代记录
 了配套的 kernel、initrd、DTB、内核参数与 `init=/nix/store/.../init`，而
@@ -174,6 +177,19 @@ dev 树仍然是 hack 与实机实验的地方，打包不反向修改它。
 这是没有 ESC 键的板子上唯一的"取消"出口。等待键盘期间照旧 `schedule()`，
 Gunyah 的 vWDT 不会咬。
 
+**菜单自绘、按行落位。** 通用 menu 代码的重绘是"再调一次
+`menu_display()`"，而它只把内容**接着往上一次的下面**打印；原来的
+`label_print()` 用相对打印，于是每按一次音量键，整份菜单（标题+提示+全部
+generation）就在下面再印一份，键按几下就滚出屏幕。现在 `label_print()` /
+`pxe_menu_statusline()` 一律先 `ANSI_CURSOR_POSITION` 定位：标题在第 1 行
+（通用代码打的）、提示在第 2 行、第 N 项在第 N+1 行；`pxe_choice()` 在让
+菜单重绘前把光标送回 (1,1)，所以重绘是原地覆盖。进入菜单先清屏并收起倒计时行
+（`pxe_choice_wait()` 无论被按键打断还是数完，都会把自己的行收回），选定后
+`pxe_menu_done()` 清屏再交棒，`label_boot()` 那句"回显选中项"因为
+`pxe_menu_open` 已经落下而退回普通打印，不会再去定位。
+`menu_display()` 里那份相对标题打印仍然保留，改动只在 `boot/pxe_utils.c`，
+`common/menu.c` 未动。
+
 补丁引入的全部新接口只有两个 env 开关（都是通用的、可上游化）：
 
 - `pxe_no_menu=1`：跳过菜单，直接取 `DEFAULT`（"Boot NixOS"用它）；空/未设
@@ -237,10 +253,24 @@ ABL 的槽状态所在（bits 48–55），把 bit 2 当成"能写"的开关去�
    ABL 头断言全过（`ANDROID!`、`kernel@0x8000`、`text_offset 0`、`flags 0xa`）；
    解开 boot.img 的 gzip payload 后，两个入口、`pxe_no_menu`、四个地址与新
    菜单项都在镜像里。
-4. **没做**：真机；以及"用原生 sandbox 跑一遍 U-Boot 菜单"——本仓库的
+4. **菜单行为（2026-09-30，qemu，与固件同一份源码）**：把补丁后的树编成
+   `qemu_arm64` 目标（只额外打开 `CMD_SYSBOOT`/FAT/NVMe，`bootdelay=-1`），
+   在 `sysboot nvme 0:1 … /extlinux/extlinux.conf` 下跑测试用 extlinux 文件
+   （每项都是 `LOCALBOOT -1`，选中即返回、不引导任何东西）；串口字节流喂给
+   一个小 ANSI 终端模拟器还原成屏幕来断言。结果：
+   - generation 菜单依次按 下/下/上：屏幕上始终只有**一份**菜单（每个
+     `MENU LABEL` 只出现一次、固定在第 2..N+1 行、下方无输出），高亮依次落在
+     第 3/4/5/4 行；按电源键后选中项回显在第 1 行、菜单消失；
+   - `TIMEOUT` 3 s 无输入取 `DEFAULT`，倒计时行被收回；中途按键则菜单留在
+     原地、高亮下移、屏上没有倒计时残留；
+   - 设备菜单同样的倒计时代码（`bootmenu 3`）：无输入跑第 0 项，中途按键停住
+     倒计时、电源键跑高亮项。
+   同一套探针在**修前**的树上复现了"每按一键整份菜单往下多印一份"的现象。
+   这套探针是一次性脚本（未入库）；要复跑，按上面三步重编 qemu 目标即可。
+5. **没做**：真机；以及"用原生 sandbox 跑一遍 U-Boot 菜单"——本仓库的
    sandbox 目标在这个环境里编不过（`arch/sandbox/include/asm/malloc.h` 与
-   `include/linux/compat.h` 拉进来的 `<malloc.h>` 冲突），与本次改动无关，
-   所以按键行为只能上机验。
+   `include/linux/compat.h` 拉进来的 `<malloc.h>` 冲突），与本次改动无关。
+   面板按键在真机上的行为仍需上机验一遍。
 
 ## TODO（上机前）
 
@@ -280,11 +310,17 @@ ABL 的槽状态所在（bits 48–55），把 bit 2 当成"能写"的开关去�
 
 1. 现场固定：读取并备份 GPT 与槽状态，保留可 `fastboot boot` 的旧镜像。
    不因本文直接刷 `boot_b` 或改槽位。
-2. `fastboot boot out/liuqin-uboot-nixos-menu.img` → 面板应出现
-   `Boot NixOS` 与 `NixOS Generations` 两项。
+2. `nix build .#uboot-bootimg` 得到 `result-uboot-bootimg/boot.img`
+   （`out/liuqin-uboot-*.img` 都是本次菜单修正之前的产物，别用来验这一条），
+   然后 `fastboot boot result-uboot-bootimg/boot.img` → 面板应出现设备菜单，
+   第一项 `Boot NixOS` 高亮，倒计时 5 s；**按键停住倒计时**后应能看见
+   `Boot NixOS`、`NixOS Generations` 与 `Boot Android` 在第 0/1/2 项。
+   此时 NixOS 还没装，不按键的话 5 s 后它走 `Boot NixOS`，打印
+   `NixOS: no partition named "linux"` 并 `pause` —— 这是预期结果，按一下
+   电源键就能回到菜单。
 3. 按键：进 `NixOS Generations`，音量键能移动高亮、电源键确认、
-   `Back to device menu` 能退回设备菜单；**按住音量键也不会卡在提示上**
-   （这正是改补丁之前的行为）。
+   `Back to device menu` 能退回设备菜单；**高亮移动时菜单必须原地重画**
+   （只有一份菜单、行不动），**按住音量键也不会卡在提示上**。
 4. 装好一代 NixOS（RAM 安装器 + `nixos-install`）后：
    - 选 `Boot NixOS` 应**不显示任何菜单**直接进系统，`/proc/cmdline` 里
      有 `init=/nix/store/...`，`readlink -f /run/current-system` 指向该代；
@@ -295,6 +331,7 @@ ABL 的槽状态所在（bits 48–55），把 bit 2 当成"能写"的开关去�
 6. 只有上述都通过，才按 `SLOT-SWITCH.md` 评估持久 `boot_b` 并复验 Android
    往返。目前的记录明确：错误的持久槽状态可能需要授权 EDL/售后。
 
-迁移期继续用无限等待的设备菜单（`bootmenu -1`）：第 0 项是
-`Boot Android`，它做槽位写入与复位，**不要**在 NixOS 项排到第一位之前给
-顶层菜单加自动倒计时。
+设备菜单现在是 `bootmenu 5`：5 s 无输入跑第 0 项 `Boot NixOS`（不写任何东西，
+失败时打印原因并 `pause`），任何按键都停住倒计时进入交互；倒计时只出现在第一次
+显示，菜单项返回后的菜单是无超时的常驻菜单（`cmd/bootmenu.c` 的重绘循环用
+`-1` 再问）。`Boot Android` 在第 2 项，倒计时够不到它。

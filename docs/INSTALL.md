@@ -169,7 +169,8 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   type-GUID roles and UFS `bBootLunEn`, then reset), `Boot NixOS`,
   `NixOS Generations` (rollback), `Enable Fastboot Mode`, `Reset Device`,
   `Power Off`, `Reboot to ABL`, `Mark Slot B Successful`, plus two read-only
-  diagnostics (GPT probe, ABL log scan).
+  diagnostics (GPT probe, ABL log scan). The menu counts down 5 s to the first
+  entry, `Boot NixOS`; any button press stops the countdown.
 - **Entering ABL fastboot**: cold start with **power + volume-down**.  Coming
   from the menu's `Reboot to ABL` also lands in ABL, but with the restart
   reason set to bootloader, and then `fastboot boot` is refused
