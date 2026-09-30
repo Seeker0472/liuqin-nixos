@@ -138,8 +138,8 @@ in
     # module links /share/polkit-1 from every system package, which installs
     # the net.hadess.SensorProxy.claim-sensor action the rules below reference
     # (polkitd reads it from /run/current-system/sw/share), and monitor-sensor
-    # lands on PATH for the acceptance steps in docs/TODO/SENSORS-SSC.md.  The
-    # action file is the package's own; no copy of it lives in this repository.
+    # lands on PATH for manual sensor acceptance.  The action file is the
+    # package's own; no copy of it lives in this repository.
     environment.systemPackages = [ pkgs.iw pkgs.liuqinSensorCheck pkgs.liuqinIioSensorProxy ];
 
     # iio-sensor-proxy is started with an explicit ExecStart below, so its

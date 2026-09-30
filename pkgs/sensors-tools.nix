@@ -4,11 +4,11 @@
 # firmware, so the first useful host-side acceptance test is a real libssc
 # measurement rather than an IIO directory count.
 #
-# Two consumers: the operator (docs/TODO/SENSORS-SSC.md) and the boot gate in
-# modules/liuqin/hardware.nix, which runs `--all --attempts 4 --require
-# accelerometer` so a slow SLPI publication cannot hang boot while desktop
-# rotation still requires a real accelerometer sample. Sensors that are not
-# required are recorded but cannot fail the run.
+# Two consumers: the operator and the boot gate in modules/liuqin/hardware.nix,
+# which runs `--all --attempts 4 --require accelerometer` so a slow SLPI
+# publication cannot hang boot while desktop rotation still requires a real
+# accelerometer sample. Sensors that are not required are recorded but cannot
+# fail the run.
 { writeShellApplication
 , coreutils
 , gnugrep
