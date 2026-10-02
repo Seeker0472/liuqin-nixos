@@ -98,8 +98,8 @@ flake comment explains why.
 
 Preconditions and rules first: read the workspace `AGENTS.md` §7 and the
 dualboot `docs/SLOT-SWITCH.md`.  On this device the slot state is written by
-exactly two things (`liuqin_setactive` in U-Boot, ABL's own `set_active`), and
-`boot_a` is Android's.
+three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
+`set_active`), and `boot_a` is Android's.
 
 1. **Carve the `linux` partition** out of userdata's tail, from a live
    environment (`sgdisk`/`resize.f2fs` are in the installer).  Measure the live
@@ -168,7 +168,7 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 - **U-Boot menu**: `Boot Android` (a real slot *selection*: GPT attributes,
   type-GUID roles and UFS `bBootLunEn`, then reset), `Boot NixOS`,
   `NixOS Generations` (rollback), `Enable Fastboot Mode`, `Reset Device`,
-  `Power Off`, `Reboot to ABL`, `Mark Slot B Successful`, plus two read-only
+  `Power Off`, `Reboot to ABL`, plus two read-only
   diagnostics (GPT probe, ABL log scan). The menu counts down 5 s to the first
   entry, `Boot NixOS`; any button press stops the countdown.
 - **Entering ABL fastboot**: cold start with **power + volume-down**.  Coming
@@ -180,7 +180,12 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   busybox first on the telnet shell's PATH; their `reboot` applet returns 0
   under systemd without restarting the device.
 - Coming back from Android: `adb reboot bootloader` → ABL's fastboot
-  (`set_active b`) → `fastboot reboot`.
+  (`set_active b`) → `fastboot reboot`; U-Boot's own fastboot (menu's
+  `Enable Fastboot Mode`) accepts `set_active b` too.  Either way ABL clears
+  the target's *successful* flag and refills its seven retries; U-Boot
+  re-claims the slot it was handed on every boot (`liuqin_slot_autoclaim`,
+  `liuqin_ab_mark=0` disables it), so the retry budget no longer drains
+  across reboots.
 
 ## 7. Traps (all measured)
 

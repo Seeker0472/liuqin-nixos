@@ -144,7 +144,7 @@ static void liuqin_stage_export(void)
 }
 
 /* What the host reads back as `getvar build` to tell images apart. */
-#define LIUQIN_DIAG_TAG		"v1"
+#define LIUQIN_DIAG_TAG		"v2-slot-autoclaim"
 
 /*
  * Gunyah NS virtual watchdog, driven over SMCCC (see the vendor kernel's
@@ -308,6 +308,18 @@ void qcom_board_late_init(void)
 		printf("ufs: scan failed; storage-backed boot paths may be unavailable\n");
 	liuqin_vwdt_pet();
 	liuqin_stage("ufs scanned");
+
+	/*
+	 * Claim the slot ABL booted before the menu can hand control on:
+	 * without the claim ABL spends one of the slot's seven retries per
+	 * reset and falls back to Android once they are gone. A failure is
+	 * ring/gpt* material and must not stop a boot.
+	 */
+	if (liuqin_slot_autoclaim())
+		liuqin_stage("slot claim skipped");
+	else
+		liuqin_stage("slot claim ok");
+	liuqin_vwdt_pet();
 
 	/*
 	 * Hand the first console lines to the host through the fastboot getvar

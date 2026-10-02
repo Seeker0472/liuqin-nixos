@@ -148,6 +148,9 @@ enum liuqin_slot_action {
 
 int liuqin_ab_commit_slot(char slot, bool successful,
 			  enum liuqin_slot_action action);
+/* Claim the slot ABL handed over successful, if it is bootable and not
+ * claimed yet; qcom_board_late_init() runs it once the UFS tables are up. */
+int liuqin_slot_autoclaim(void);
 void liuqin_ab_hold(const char *op);
 /* The two slots' state bytes, one line each (the menu's and the probe's form). */
 void liuqin_slot_attr_lines(const struct liuqin_gpt *g);

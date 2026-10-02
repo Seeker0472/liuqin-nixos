@@ -11,11 +11,14 @@
  * follows is what makes it irreversible, so everything is verified from media
  * before the caller is told it worked.
  *
- * The only persistent slot operation this image offers is the explicit Android
- * hand-off to A. There is deliberately no U-Boot successful marker: the
- * platform supplies no trustworthy proof that this execution came from
- * persistent boot_b rather than an ABL RAM boot, so that claim stays a human
- * menu action (docs/FACTS.md §2, §3.3).
+ * Both directions are offered - the explicit Android hand-off to A, and the
+ * return to U-Boot's own slot B - and the boot path claims the slot ABL handed
+ * over successful (liuqin_slot_autoclaim). That claim still cannot tell a
+ * persistent boot_b apart from an ABL RAM boot (both carry the same
+ * androidboot.slot_suffix), but leaving it automatic is the operator's call
+ * (docs/FACTS.md §2, §3.3): a boot that defers the claim to a human quietly
+ * spends one of the slot's seven retries per reset and falls back to Android
+ * when they run out.
  */
 
 #include <android_image.h>
@@ -323,6 +326,92 @@ out:
 }
 
 /*
+ * Claim the slot ABL says it booted, as soon as the tables are readable.
+ *
+ * ABL spends one of a slot's seven retries on every boot the slot is not
+ * marked successful for, and calls it unbootable - falling back to Android -
+ * once they run out. Nothing else in this image stops that: the claim used to
+ * be a manual menu action, and it is now made here on every boot, so B stops
+ * spending retries the first time it is up.
+ *
+ * The slot name is what ABL hands over in the control DT: a persistent boot
+ * and a `fastboot boot` RAM boot put the same androidboot.slot_suffix into
+ * /chosen/bootargs, so this claims the slot ABL points at, not the medium this
+ * image was loaded from. That trade is the operator's (docs/FACTS.md §2): a
+ * RAM boot while boot_b holds an unbootable payload must be followed by
+ * flashing B, because the claim tells ABL not to fall back.
+ *
+ * env liuqin_ab_mark=0 disables the claim for bring-up runs that must leave
+ * the table alone. Returns 0 when the slot is (now) successful, negative when
+ * it was skipped or the commit failed; the caller only stages the outcome.
+ */
+int liuqin_slot_autoclaim(void)
+{
+	const char *ba, *ss, *off;
+	char name[8];
+	struct liuqin_gpt g = {0};
+	gpt_entry *ent;
+	u64 at;
+	int ret = 0;
+
+	off = env_get("liuqin_ab_mark");
+	if (off && !strcmp(off, "0")) {
+		liuqin_out_linef("autoclaim: disabled by liuqin_ab_mark=0");
+		return -EACCES;
+	}
+
+	ba = ofnode_read_string(ofnode_path("/chosen"), "bootargs");
+	ss = ba ? strstr(ba, "androidboot.slot_suffix=") : NULL;
+	if (ss) {
+		ss += strlen("androidboot.slot_suffix=");
+		if (*ss == '_')
+			ss++;
+	}
+	if (!ss || (*ss != 'a' && *ss != 'b')) {
+		liuqin_out_linef("autoclaim: no usable slot_suffix in /chosen/bootargs");
+		ret = -ENOENT;
+		goto out;
+	}
+
+	snprintf(name, sizeof(name), "boot_%c", *ss);
+	if (!liuqin_gpt_holding(&g, name)) {
+		liuqin_out_linef("autoclaim: %s is in no GPT", name);
+		ret = -ENOENT;
+		goto out;
+	}
+	ent = liuqin_gpt_find(&g, name);
+	if (!ent) {
+		liuqin_out_linef("autoclaim: %s has no table entry", name);
+		ret = -ENOENT;
+		goto out;
+	}
+	at = liuqin_ent_attrs(ent);
+	liuqin_gpt_free(&g);
+
+	/* Successful already: never rewrite a boot-critical table for nothing.
+	 * ABL clears successful when it switches slots, so after every
+	 * set_active there is exactly one boot that needs the write below. */
+	if ((at & LIUQIN_SLOT_SUCCESSFUL) && !(at & LIUQIN_SLOT_UNBOOTABLE))
+		goto out;
+
+	/* Only a slot ABL itself points at may be claimed; a table with no
+	 * active slot (or both) is ABL fastboot's to normalize, not ours. */
+	if (!(at & LIUQIN_SLOT_ACTIVE) || !(at & LIUQIN_SLOT_PRIO_MASK)) {
+		liuqin_out_linef("autoclaim: %s is not active, leaving it alone", name);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	liuqin_out_linef("autoclaim: claiming %s", name);
+	ret = liuqin_ab_commit_slot(*ss, true, LIUQIN_SLOT_MARK);
+
+out:
+	if (ret)
+		liuqin_console_capture("gpt", 4);
+	return ret;
+}
+
+/*
  * ABL's fastboot entry path can leave a one-shot command in misc. It is not the
  * A/B slot store, but ABL does consult its first 32-byte command field when it
  * decides what to do after a reset: a stale "bootonce-bootloader" makes a
@@ -558,11 +647,6 @@ static int do_liuqin_setactive(struct cmd_tbl *cmdtp, int flag, int argc,
 		printf("slot: expected a or b, got \"%s\"\n", argv[1]);
 		return CMD_RET_USAGE;
 	}
-	if (*slot != 'a') {
-		printf("slot: selecting boot_b is an ABL-fastboot operation\n");
-		return CMD_RET_FAILURE;
-	}
-
 	/*
 	 * "hold" (bootmenu only) keeps a failure on the panel with the whole
 	 * picture instead of letting the menu redraw it away; "reset" reboots on
@@ -580,7 +664,7 @@ static int do_liuqin_setactive(struct cmd_tbl *cmdtp, int flag, int argc,
 
 	if (ret) {
 		if (hold)
-			liuqin_ab_hold("liuqin_setactive a");
+			liuqin_ab_hold("liuqin_setactive");
 		return CMD_RET_FAILURE;
 	}
 
@@ -614,67 +698,13 @@ static int do_liuqin_setactive(struct cmd_tbl *cmdtp, int flag, int argc,
 }
 
 U_BOOT_CMD(liuqin_setactive, 4, 0, do_liuqin_setactive,
-	"make Android A the slot ABL boots",
-	"<a> [hold] [reset] - set boot_a priority/active and demote boot_b;\n"
-	"  \"reset\" reboots on success (what \"boot Android\" wants), \"hold\"\n"
-	"  keeps a failure - with every detail behind it - on the panel until\n"
-	"  the board is power-cycled, so it can be read or photographed");
-
-/*
- * The one slot decision this image cannot make on its own: whether the payload
- * in a slot has proved that it boots. A persistent boot of that slot and an ABL
- * RAM boot hand over the same /chosen/bootargs slot string, so no runtime
- * evidence distinguishes them and the claim stays a human action from the
- * bootmenu (docs/FACTS.md §2).
- *
- * The cost of the claim belongs on the panel: a successful slot stops being
- * counted against its retry budget, so a payload in it that later cannot boot
- * is never called unbootable and ABL never falls back to the other slot.
- */
-static int do_liuqin_mark_successful(struct cmd_tbl *cmdtp, int flag, int argc,
-				     char *const argv[])
-{
-	char buf[32], running[8];
-	const char *slot;
-	bool hold;
-	int ret;
-
-	if (argc < 2)
-		return CMD_RET_USAGE;
-	slot = liuqin_arg_slot(argv[1]);
-	if (!slot) {
-		printf("mark: expected a or b, got \"%s\"\n", argv[1]);
-		return CMD_RET_USAGE;
-	}
-	hold = liuqin_arg_present(argc, argv, "hold");
-	liuqin_out_reset();
-
-	/* Worth saying out loud rather than refusing: ABL points at another
-	 * slot, so this execution did not come from the slot being marked. */
-	if (!fastboot_current_slot(running, sizeof(running)) &&
-	    *running != *slot)
-		liuqin_outf("mark: ABL points at %s, not %c", running, *slot);
-
-	ret = liuqin_ab_commit_slot(*slot, true, LIUQIN_SLOT_MARK);
-	snprintf(buf, sizeof(buf), ret ? "%c successful: failed" :
-		 "%c successful", *slot);
-	env_set("fastboot.slot", buf);
-
-	if (ret && hold)
-		liuqin_ab_hold("liuqin_mark_successful b");
-
-	return ret ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
-}
-
-U_BOOT_CMD(liuqin_mark_successful, 3, 0, do_liuqin_mark_successful,
-	"record that a slot's payload boots (bootmenu action)",
-	"<a|b> [hold] - boot_<slot> gets prio 3 + active + tries 7 + successful,\n"
-	"  the other slot is demoted; both GPT copies are written and read back;\n"
-	"  \"hold\" (bootmenu only) keeps a failure on the panel with every\n"
-	"  detail behind it until the board is power-cycled.\n"
-	"  ABL then stops spending that slot's retry budget and no longer falls\n"
-	"  back to the other slot when it cannot boot - only claim it for a slot\n"
-	"  whose persistent payload has been shown to boot.");
+	"make a slot the one ABL boots (bootmenu action)",
+	"<a|b> [hold] [reset] - boot_<slot> gets priority 3 + active + tries 7\n"
+	"  and the other slot is demoted; the UFS boot LUN and the A/B type-GUID\n"
+	"  roles follow the selection. \"reset\" reboots on success (what \"boot\n"
+	"  Android\" wants), \"hold\" keeps a failure - with every detail behind\n"
+	"  it - on the panel until the board is power-cycled, so it can be read\n"
+	"  or photographed");
 
 /*
  * fastboot protocol hooks (see include/fastboot.h). The generic versions know
@@ -683,16 +713,19 @@ U_BOOT_CMD(liuqin_mark_successful, 3, 0, do_liuqin_mark_successful,
  * the host would believe a slot switch that never happened. "has-slot" is what
  * the stock client asks first: it refuses to send "set_active" at all until
  * that answers yes for the boot partition.
+ *
+ * Both directions are accepted. 'a' is the Android hand-off; 'b' makes the
+ * slot this image boots from the target again after a round trip through
+ * Android, matching what ABL's own fastboot set_active b does. Each is a
+ * complete switch (GPT attributes, type-GUID roles, UFS boot LUN) verified
+ * from media before OKAY; the host's follow-up reboot then uses the board's
+ * normal-reset path below.
  */
 int fastboot_set_active_slot(const char *slot)
 {
 	slot = liuqin_arg_slot(slot ? slot : "");
 	if (!slot)
 		return -EINVAL;
-	/* U-Boot is never installed by this image. Its fastboot endpoint may
-	 * perform the explicit Android handoff to A, but cannot promote B. */
-	if (*slot != 'a')
-		return -EPERM;
 
 	liuqin_out_reset();
 

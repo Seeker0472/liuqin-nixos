@@ -32,7 +32,7 @@ ABL
                ├─ 2 Boot Android        → 完整切到 A 槽、复位、交还 ABL
                ├─ 3 Enable Fastboot Mode / 4 Reset / 5 Power Off
                ├─ 6 Reboot to ABL
-               └─ 7 Mark Slot B / 8 GPT Probe / 9 Scan ABL Log（只读诊断）
+               └─ 7 GPT Probe / 8 Scan ABL Log（只读诊断）
 ```
 
 倒计时只挑 `Boot NixOS`：它失败时会在面板上说明原因并 `pause`，而
