@@ -14,6 +14,15 @@ addition this makes the stream-powered model robust:
 The rail itself is always on and stays at its 3.0 V default; no code writes
 the vendor's 3.1 V.
 
+FIXME (2026-10-05, measured on system-129): both halves hinge on a
+runtime resume/suspend that a desktop session never produces - libcamera
+(wireplumber) keeps the lens subdev open from session start, so the driver
+stays active, a failed init is never retried, and the lens is never parked
+(it keeps the last DAC after the camera app closes).  The rail is on by
+design (regulator-always-on, 0022); the extra cost here is the un-parked
+actuator and an uninitialised chip.  See the FIXMEs in the code and
+docs/TODO/CAMERA-MAINLINE.md, open items.
+
 diff --git a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml b/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
 index a0855d3b7..c45c4e75a 100644
 --- a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
@@ -27,7 +36,7 @@ index a0855d3b7..c45c4e75a 100644
    reg:
      maxItems: 1
 diff --git a/drivers/media/i2c/dw9768.c b/drivers/media/i2c/dw9768.c
-index d037d3009..8e9b828c6 100644
+index d037d3009..bc2f5928b 100644
 --- a/drivers/media/i2c/dw9768.c
 +++ b/drivers/media/i2c/dw9768.c
 @@ -99,6 +99,7 @@ static const char * const dw9768_supply_names[] = {
@@ -38,7 +47,7 @@ index d037d3009..8e9b828c6 100644
  	struct regulator_bulk_data supplies[ARRAY_SIZE(dw9768_supply_names)];
  	struct v4l2_ctrl_handler ctrls;
  	struct v4l2_ctrl *focus;
-@@ -313,7 +314,15 @@ static int dw9768_runtime_suspend(struct device *dev)
+@@ -313,7 +314,24 @@ static int dw9768_runtime_suspend(struct device *dev)
  	struct v4l2_subdev *sd = dev_get_drvdata(dev);
  	struct dw9768 *dw9768 = sd_to_dw9768(sd);
  
@@ -47,6 +56,15 @@ index d037d3009..8e9b828c6 100644
 +	 * liuqin: only run the power-down sequence if the chip actually came
 +	 * up.  A resume whose init never reached the chip must not send more
 +	 * I2C into an unpowered part (each write would just time out).
++	 *
++	 * FIXME(2026-10-05, system-129): this power-down never runs in a
++	 * desktop session - libcamera (wireplumber) opens this node at
++	 * startup and holds it for the whole session - so dw9768_release()
++	 * never parks the lens: it keeps the last DAC (measured: 639 after
++	 * the camera app was closed) and the coil stays energised at that
++	 * position, on top of the rail the board DTS keeps on anyway
++	 * (regulator-always-on, 0022).  Park on stream-stop instead of on
++	 * suspend - see docs/TODO/CAMERA-MAINLINE.md, open items.
 +	 */
 +	if (dw9768->initialized)
 +		dw9768_release(dw9768);
@@ -55,7 +73,7 @@ index d037d3009..8e9b828c6 100644
  	regulator_bulk_disable(ARRAY_SIZE(dw9768_supply_names),
  			       dw9768->supplies);
  
-@@ -334,22 +343,34 @@ static int dw9768_runtime_resume(struct device *dev)
+@@ -334,22 +352,45 @@ static int dw9768_runtime_resume(struct device *dev)
  	}
  
  	/*
@@ -79,6 +97,17 @@ index d037d3009..8e9b828c6 100644
 +	 * Report it, stay active, and retry on the next resume - i.e. the
 +	 * next open, when the module may be powered (touch the lens while
 +	 * the sensor is streaming).
++	 *
++	 * FIXME(2026-10-05, system-129): that next resume never comes while
++	 * the node stays open - an already-active device is not resumed again
++	 * - so the chip stays uninitialized for the whole boot (POR defaults:
++	 * no AAC mode, no PD reset), every suspend skips its park, and only
++	 * direct DAC writes reach the lens once the module is up.  The rail
++	 * is on (always-on by the board DTS) while the module's I/O is down,
++	 * so the powered chip cannot be reached at all: writes time out
++	 * (-ETIMEDOUT) until the sensor streams again.  Retry from the
++	 * sensor's stream-on instead - see docs/TODO/CAMERA-MAINLINE.md,
++	 * open items.
 +	 */
  	ret = dw9768_init(dw9768);
 -	if (ret < 0)
@@ -101,7 +130,7 @@ index d037d3009..8e9b828c6 100644
  }
  
  static int dw9768_set_ctrl(struct v4l2_ctrl *ctrl)
-@@ -530,6 +551,7 @@ static void dw9768_remove(struct i2c_client *client)
+@@ -530,6 +571,7 @@ static void dw9768_remove(struct i2c_client *client)
  static const struct of_device_id dw9768_of_table[] = {
  	{ .compatible = "dongwoon,dw9768" },
  	{ .compatible = "giantec,gt9769" },
