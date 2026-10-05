@@ -214,6 +214,47 @@ payloads in `data/`.
 `configuration.nix` for users, hostname and timezone; use the BSP's
 `installer-bootimg` for the first install.
 
+## Camera
+
+The capture stack is opt-in through `hardware.liuqin.camera`:
+
+- `enable` installs `v4l-utils` and libcamera, blacklists the sensor module
+  and loads it late, and gates the option below.
+- `autofocus.enable` (EXPERIMENTAL) applies the local libcamera AF series; it
+  reaches pipewire and wireplumber, the processes that run libcamera in a GNOME
+  session.
+
+The sub-option does nothing without `enable`; the module warns rather than
+fails the eval.
+
+All three sensors share one CSID, so exactly one camera can be streamed at a
+time, and nothing routes at boot (a boot-time route wedged the camera path on
+2026-10-05).  libcamera's simple pipeline routes the graph itself for every
+stream; for a raw CLI capture, a link reset or manual focus:
+
+```sh
+cam --stream role=raw --capture=5 --file=/tmp/frame.raw  # routes the graph itself
+media-ctl -r -d /dev/media0                           # reset all links
+v4l2-ctl -d "$(media-ctl -p -d /dev/media0 | grep -A3 dw9768 | grep -o '/dev/v4l-subdev[0-9]*' | head -1)" \
+  --set-ctrl focus_absolute=536                       # focus while streaming
+```
+
+Probing an already-routed graph, or letting uDev autoload the sensor module in
+early boot, has wedged the SoC's camera path (2026-10-05); the module is loaded
+late by the `liuqin-camera-probe` oneshot (three attempts, 5 s apart), and
+nothing routes at boot.
+
+Only one consumer can hold the camera, and wireplumber's v4l2 monitor counts
+as one: in a GNOME session, mask wireplumber for the session
+(`systemctl --user mask wireplumber`) before a raw capture and unmask
+afterwards. The desktop user must be in the `video` group -
+it is what lets the software ISP open the dma-buf heaps (the module grants
+`video` only the heaps libcamera actually opens).
+
+The `cam` on `PATH` is the stock libcamera; the autofocus build is injected only
+into pipewire/wireplumber (`cam-af` runs it from the command line). A plain
+`cam` capture therefore verifies the stock path, not the AF path.
+
 ## Boot and display contract
 
 The ABL image carries the command line in `/chosen/bootargs`. The normal
@@ -276,9 +317,8 @@ flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
 modules/liuqin/           installed-system hardware and initrd modules
 kernel/                   Linux configuration and installer profile
-patches/kernel/           Linux 7.2.5 device patches (0001–0013, 0015–0018)
-pkgs/                     device packages and glue commands (the module wires
-                          the commands into units; each is a writeShellApplication)
+patches/kernel/           Linux 7.2.5 device patches, applied in filename
+                          order (index/provenance: patches/kernel/README.md)
 pkgs/bootimg.nix          ABL boot image and DTB construction
 u-boot/                   the bootloader: the port's own base tree + patches + files
                           (verify-port.sh proves the three equal the dev tree)

@@ -44,6 +44,21 @@ Making path A as clean as B is the "display-pipeline stop at probe" TODO in
   `liuqincache`).  Fill it on the host with `nix copy --to
   file:///var/tmp/liuqin-cache <store paths>`; the device then copies from
   `http://192.168.7.19:8137`.  It has to keep running while the device copies.
+  This local cache has no signing key.  Before every copy, set the Nix client
+  configuration explicitly (the setting must reach the daemon, so do not rely
+  on `--option require-sigs false` alone):
+
+  ```sh
+  export NIX_CONFIG='experimental-features = nix-command flakes
+  substituters = http://192.168.7.19:8137 https://cache.nixos.org/
+  require-sigs = false'
+  ```
+
+  The host cache has no signing key, so the client must be told not to require
+  signatures.  The per-invocation `NIX_CONFIG` above is the supported way to do
+  that: it keeps the exception scoped to the copy, and it carries the
+  transport-specific host cache.  No configuration in this repository sets
+  `nix.settings.require-sigs` any more.
 - **fastboot**: `nix shell nixpkgs#android-tools --command fastboot …`.
 
 ### Installed-system SSH and logs
@@ -113,9 +128,11 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
 
    ```sh
    export PATH=/run/current-system/sw/bin:$PATH     # nixos-install needs it
+   export NIX_CONFIG='experimental-features = nix-command flakes
+   substituters = http://192.168.7.19:8137 https://cache.nixos.org/
+   require-sigs = false'
    mount /dev/disk/by-partlabel/linux /mnt
-   nix --extra-experimental-features "nix-command" copy \
-       --from http://192.168.7.19:8137 --no-check-sigs --to /mnt <toplevel>
+   nix copy --from http://192.168.7.19:8137 --no-check-sigs --to /mnt <toplevel>
    nixos-install --root /mnt --no-channel-copy --no-root-passwd --system <toplevel>
    ```
 
@@ -135,17 +152,19 @@ Measured 2026-09-28.  `nixos-rebuild` does not exist on the device
 (`config/installer.nix` disables it, and the installed system has no channel);
 the update is three commands plus a reboot.
 
-```sh
-# host
-nix build .#nixosConfigurations.demo.config.system.build.toplevel
-LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
-nix copy --to file:///var/tmp/liuqin-cache "$(readlink -f result)" "$LOADER"
+   ```sh
+   # host
+   nix build .#nixosConfigurations.demo.config.system.build.toplevel
+   LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
+   nix copy --to file:///var/tmp/liuqin-cache "$(readlink -f result)" "$LOADER"
 
-# device (telnet 2323)
-N=/run/current-system/sw/bin
-$N/nix --extra-experimental-features "nix-command" copy \
-    --from http://192.168.7.19:8137 --no-check-sigs <toplevel> <loader>
-$N/nix-env --profile /nix/var/nix/profiles/system --set <toplevel>
+   # device (telnet 2323)
+   N=/run/current-system/sw/bin
+   export NIX_CONFIG='experimental-features = nix-command flakes
+   substituters = http://192.168.7.19:8137 https://cache.nixos.org/
+   require-sigs = false'
+   $N/nix copy --from http://192.168.7.19:8137 --no-check-sigs <toplevel> <loader>
+   $N/nix-env --profile /nix/var/nix/profiles/system --set <toplevel>
 <loader> <toplevel>          # copy kernel/initrd/dtb into /boot, rewrite extlinux.conf
 <toplevel>/bin/switch-to-configuration boot
 systemctl reboot
@@ -201,3 +220,42 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 - Never leave a self-built image on `boot_a`, and never leave the slot state
   half-switched: the dualboot `docs/SLOT-SWITCH.md` is the authority on both.
   The installer path never writes GPT or slot attributes.
+
+## 8. Camera
+
+The camera stack is off unless the configuration enables
+`hardware.liuqin.camera.enable`; `README.md` describes the option set and the
+sub-switch.  The installed demo configuration enables both.
+
+The three sensors share one CSID, so exactly one camera can be streamed at a
+time, and nothing routes at boot (a boot-time route wedged the camera path on
+2026-10-05).  libcamera's simple pipeline routes the graph itself; for a raw
+capture, a link reset or manual focus:
+
+```sh
+cam --stream role=raw --capture=5 --file=/tmp/frame.raw  # routes the graph itself
+media-ctl -r -d /dev/media0                           # reset all links
+v4l2-ctl -d "$(media-ctl -p -d /dev/media0 | grep -A3 dw9768 | grep -o '/dev/v4l-subdev[0-9]*' | head -1)" \
+  --set-ctrl focus_absolute=536                       # focus while streaming
+```
+
+The sensor module is blacklisted from uDev autoload and loaded late by the
+`liuqin-camera-probe` oneshot, which retries three times 5 s apart.  If it
+still fails, `systemctl status liuqin-camera-probe` shows the failed unit and
+every camera stays absent until a later success or a reboot - there is no
+second probe, and the panel is the only console.
+
+Only one consumer can hold the camera, and wireplumber's v4l2 monitor counts
+as one.  In a GNOME session mask wireplumber for the duration of a raw capture:
+
+```sh
+systemctl --user mask --now wireplumber
+# ... capture ...
+systemctl --user unmask --now wireplumber
+```
+
+The desktop user must be in the `video` group; the camera module grants that
+group the dma-buf heaps libcamera's software ISP opens.  Finally, the `cam`
+found on `PATH` is the stock libcamera - the autofocus-patched build is injected
+only into pipewire/wireplumber (`cam-af` runs it from the command line) - so a
+plain `cam` capture verifies the stock path, not the AF path.

@@ -10,12 +10,6 @@
     desktop.gnome.enable = true;
     # Verbose boot diagnostics; keep off unless bring-up needs it.
     boot.debug = false;
-    # Camera bring-up tooling (v4l-utils, i2c-tools, liuqin-camtest).  Off by
-    # default like the other debug channels: it is a bench tool, not a runtime
-    # dependency.  Enable it while working through
-    # docs/TODO/CAMERA-MAINLINE.md:
-    #   cameraDebug.enable = true;
-
     sensors = {
       # Operator-supplied stock ROM vendor/etc/sensors/config archive. No
       # proprietary SSC archive is committed; derive this hash locally with

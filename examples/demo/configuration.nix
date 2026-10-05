@@ -16,9 +16,10 @@
 #
 # Scope: this is the "everything the downstream community port has" target -
 # GNOME, touch (including the magnetic keyboard cover), rotation, audio,
-# Bluetooth, Wi-Fi and the SSC sensor stack - not a hardened system. See the
-# BSP README for what the hardware does not support (microphones, cameras,
-# USB 3.x OTG, fast charging, automatic brightness).
+# Bluetooth, Wi-Fi, the SSC sensor stack and the camera stack (three sensors
+# through libcamera's software ISP) - not a hardened system. See the BSP README
+# for what the hardware does not support (microphones, USB 3.x OTG, fast
+# charging, automatic brightness).
 { ... }:  # a plain module: the arguments are not needed here
 
 {
@@ -26,6 +27,9 @@
     enable = true;
     debugTransport = "ssh";
     desktop.gnome.enable = true;
+    # The camera stack: liuqin-camera (media-graph routing + formats),
+    # libcamera, and on-demand routing of the wide module.
+    camera.enable = true;
 
     # The U-Boot path: NixOS installs its extlinux generation list into /boot
     # on the `linux` partition, and the device menu offers "Boot NixOS" (the

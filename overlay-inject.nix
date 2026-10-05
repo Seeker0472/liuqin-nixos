@@ -29,7 +29,7 @@
 #
 # The device-glue commands (pkgs/screen-refresh.nix, backlight.nix,
 # persist-provision.nix, wlan-mac.nix, bt-public-addr.nix, slpi.nix,
-# sensor-proxy-refresh.nix, like the existing sensors-tools/camtest/usb-login)
+# sensor-proxy-refresh.nix, like the existing sensors-tools/usb-login)
 # are not injected either: they are single shell scripts with no closure of
 # their own, so building them natively costs one text derivation each and keeps
 # them out of the cross set's dependency graph.

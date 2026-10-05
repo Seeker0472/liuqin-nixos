@@ -38,7 +38,11 @@ in
     # GTK/WebKit dmabuf corruption on the Adreno 730: force the
     # memory-copy upload path until the kernel coherency story is fixed.
     environment.sessionVariables = {
-      GDK_DISABLE = "dmabuf";
+    # GDK_DISABLE=dmabuf deliberately NOT set: measured 2026-10-03, the
+    # dmabuf path works and the variable only makes GTK4's camera sink fail
+    # to transform frames (black viewfinder).  The actual camera-path issue
+    # is the pipewire/portal format handshake, tracked in
+    # docs/PORTING-NOTES.md (Camera).
       WEBKIT_DISABLE_DMABUF_RENDERER = "1";
     };
 

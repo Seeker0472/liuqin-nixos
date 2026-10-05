@@ -15,7 +15,7 @@ in
     ./gnome.nix
     ./initrd-guard.nix
     ./usb-shell.nix
-    ./camera-debug.nix
+    ./camera.nix
   ];
 
   options.hardware.liuqin = {
@@ -97,6 +97,17 @@ in
       nixpkgs.overlays = [ (import ../../overlay.nix) ];
 
       boot.kernelPackages = pkgs.linuxPackagesFor cfg.package;
+
+      # Post-mortem forensics on a unit with no reachable debug UART.  The
+      # PMIC vWDT resets ~20s after the kernel stops petting it; the lockup
+      # detectors (enabled in kernel/config.nix) bark earlier and panic, and
+      # the panic text plus the stuck task's stack land in the ramoops pstore
+      # dump, which survives the reset.  ftrace_dump_on_oops pushes an armed
+      # tracer's ring buffer into that same dump.
+      boot.kernel.sysctl = {
+        "kernel.watchdog_thresh" = 5;
+        "kernel.ftrace_dump_on_oops" = 1;
+      };
 
       boot.kernelParams =
         [

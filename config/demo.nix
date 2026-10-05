@@ -1,8 +1,14 @@
-# SPDX-License-Identifier: MIT
-#
-# The BSP's demo target, built as `nixosConfigurations.demo`: it is literally
-# the same module the consumer template ships, so examples/demo/configuration.nix
-# is the single source and there is nothing to keep in sync.  Keep this file as
-# the entry point rather than pointing the flake at examples/ directly, so the
-# demo target does not depend on where the example happens to live.
-import ../examples/demo/configuration.nix
+# The demo target: the example configuration plus the camera stack that needs
+# the still upstream-bound libcamera autofocus series (injected into the
+# session's libcamera consumers).  See docs/PORTING-NOTES.md (Camera) for the
+# hardware facts and open items.
+{ lib, ... }:
+{
+  imports = [ ../examples/demo/configuration.nix ];
+
+  # ssh-ng:// deployments (lq-deploy-direct) need the demo user to be
+  # trusted by the remote daemon; the legacy ssh:// store did not.
+  nix.settings.trusted-users = [ "root" "demo" ];
+
+  hardware.liuqin.camera.autofocus.enable = true;
+}
