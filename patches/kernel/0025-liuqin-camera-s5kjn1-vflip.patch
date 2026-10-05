@@ -1,0 +1,20 @@
+media: i2c: s5kjn1: default the vertical flip on for the liuqin module
+
+Downstream-only: the module is mounted 180 degrees and the driver already
+indexes its CFA table by the flip controls, so only the default changes (the
+rear module is upright with h=0, v=1, measured).  The upstream mechanism is
+the fwnode orientation property; keep this out of upstream submissions.
+
+diff --git a/drivers/media/i2c/s5kjn1.c b/drivers/media/i2c/s5kjn1.c
+index 4ad502c60..a338825fe 100644
+--- a/drivers/media/i2c/s5kjn1.c
++++ b/drivers/media/i2c/s5kjn1.c
+@@ -2092,7 +2092,7 @@ static int s5kjn1_init_controls(struct s5kjn1 *s5kjn1)
+ 		s5kjn1->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+ 
+ 	s5kjn1->vflip = v4l2_ctrl_new_std(ctrl_hdlr, &s5kjn1_ctrl_ops,
+-					  V4L2_CID_VFLIP, 0, 1, 1, 0);
++					  V4L2_CID_VFLIP, 0, 1, 1, 1);
+ 	if (s5kjn1->vflip)
+ 		s5kjn1->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+ 

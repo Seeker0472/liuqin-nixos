@@ -135,7 +135,10 @@ in
       make ARCH=arm64 O="$buildRoot" olddefconfig
     ''}
     # Check what the fragments required, derived from the same files that
-    # were just appended so the expectations cannot drift from the fragments.
+    # were just appended so the expectations cannot drift from the fragments,
+    # plus the frozen camera/media list in camera-symbols.txt (config.nix
+    # carries those answers, but ignoreConfigErrors would let a rejected one
+    # drift silently).
     # Each "CONFIG_X=y" line must survive as =y - '^CONFIG_X=' alone also
     # matches '=m', and olddefconfig silently downgrades to =m when a
     # dependency is still a module, which once left the display drivers
@@ -145,7 +148,7 @@ in
     # match - but a missing one leaves the ruleset half applied and
     # firewall.service fails with status=4/NOPERMISSION).
     sed -n 's/^CONFIG_\([A-Za-z0-9_]*\)=\([ym]\)$/\1 \2/p' \
-      ${lib.concatMapStrings (fragment: "${fragment} ") fragments} \
+      ${lib.concatMapStrings (fragment: "${fragment} ") (fragments ++ [ ./camera-symbols.txt ])} \
       > "$buildRoot/fragment-symbols"
     while read -r sym want; do
       case "$want" in

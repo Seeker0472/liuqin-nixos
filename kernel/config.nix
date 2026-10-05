@@ -112,6 +112,9 @@ with kernelLib;
   FONT_8x16 = yes;
   FONT_TER16x32 = yes;
   SM_DISPCC_8450 = lib.mkForce module;
+  # The SM8450 CAMCC driver also covers SM8475 and provides the MCLK,
+  # CSIPHY/IFE clocks and camera GDSCs consumed by the CAMSS DT node.
+  SM_CAMCC_8450 = lib.mkForce module;
   SM_GPUCC_8450 = lib.mkForce module;
 
   # Input: touchscreen (SPI Novatek, patch 0003), keyboard cover HID
@@ -195,9 +198,28 @@ with kernelLib;
   SND_SOC_SC8280XP = lib.mkForce module;
   SND_SOC_CS35L41_I2C = lib.mkForce module;
 
-  # Media: iris V4L2 decoder (patch 0007).
+  # Media: CAMSS raw capture plus the Iris V4L2 decoder (patch 0007).
+  # Keep these explicit so a future defconfig change cannot silently leave a
+  # camera DT node without its media-controller/subdev stack.
   MEDIA_SUPPORT = lib.mkForce module;
+  MEDIA_CONTROLLER = lib.mkForce yes;
+  VIDEO_V4L2_SUBDEV_API = lib.mkForce yes;
+  VIDEOBUF2_DMA_SG = lib.mkForce module;
+  I2C_QCOM_CCI = lib.mkForce module;
+  VIDEO_QCOM_CAMSS = lib.mkForce module;
+  VIDEO_S5KJN1 = lib.mkForce module;
+  VIDEO_QCOM_LIUQIN_SENSORS = lib.mkForce module;
   VIDEO_QCOM_IRIS = lib.mkForce module;
+  # The rear module's GT9764 autofocus (patch 0024).
+  VIDEO_DW9768 = lib.mkForce module;
+
+  # Camera flash (PM8350C) and the module EEPROMs on the CCI buses.  Both are
+  # answered explicitly because the flash class and the EEPROM driver are the
+  # consumers of the camera DT nodes; a defconfig change must not be able to
+  # drop them silently.
+  LEDS_CLASS_FLASH = lib.mkForce module;
+  LEDS_QCOM_FLASH = lib.mkForce module;
+  EEPROM_AT24 = lib.mkForce module;
 
   # Boot-image/initrd plumbing NixOS needs on this board.
   FW_LOADER = lib.mkForce yes;
@@ -224,4 +246,16 @@ with kernelLib;
 
   # GNOME portals (xdg-document-portal) mount via FUSE.
   FUSE_FS = lib.mkForce yes;
+
+  # Post-mortem capture on a unit with no reachable debug UART.  A stuck CPU
+  # or task should panic into the vendor-aligned ramoops console zone (readable
+  # from the stock kernel's /sys/fs/pstore on Android afterwards) rather than
+  # parking the unit silently; the persistent journal is the second channel.
+  # A deliberate sysrq crash was measured to leave no dump on this overlay, so
+  # the detectors are the panic path that actually produces a backtrace.
+  SOFTLOCKUP_DETECTOR = yes;
+  HARDLOCKUP_DETECTOR = yes;
+  HARDLOCKUP_DETECTOR_BUDDY = yes;
+  BOOTPARAM_HARDLOCKUP_PANIC = yes;
+  DETECT_HUNG_TASK = yes;
 }

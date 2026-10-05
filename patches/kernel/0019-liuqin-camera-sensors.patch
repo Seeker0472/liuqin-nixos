@@ -1,0 +1,1773 @@
+media: i2c: add the liuqin IMX596/SC202CS sensor driver
+
+One driver for the two auxiliary modules (front IMX596 on csiphy2, depth
+SC202CS on csiphy1), with its DT binding and the Kconfig/Makefile entries,
+including the findings from bring-up:
+
+- the IMX596 streams with the 16-bit write 0x0100 = 0x0103 (the byte write
+  never actually started it);
+- chip-id retries with a reset pulse between attempts: the module I2C comes
+  up marginal and one failed probe leaves the whole async notifier incomplete
+  (every camera disappears);
+- measured link rates: 678.4 MHz front, 360 MHz depth (the old values were
+  off by ~60% / 2x and left the PHY mistuned);
+- the depth link is a single lane;
+- the IMX596 analogue gain takes the vendor's Sony-style code, and the depth
+  sensor's 20-bit exposure layout is handled;
+- subdevices are named after their model so the per-sensor tuning files load.
+
+The register/mode tables are machine-generated from the MIUI sensor-module
+containers (the generator lived in the bring-up branch).  Both modules capture
+through the shared csid0/vfe0_rdi0 modelled in 0022.
+
+diff --git a/Documentation/devicetree/bindings/media/i2c/qcom,liuqin-camera-sensors.yaml b/Documentation/devicetree/bindings/media/i2c/qcom,liuqin-camera-sensors.yaml
+new file mode 100644
+index 000000000..a6bff3846
+--- /dev/null
++++ b/Documentation/devicetree/bindings/media/i2c/qcom,liuqin-camera-sensors.yaml
+@@ -0,0 +1,76 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/media/i2c/qcom,liuqin-camera-sensors.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Liuqin IMX596 and SC202CS image sensors
++
++description: |
++  The Xiaomi Liuqin board contains a Sony IMX596 front sensor and a
++  SmartSens SC202CS depth sensor.  The mode tables are supplied by the
++  mainline driver.  The SC202CS lane count and both modules' Bayer order
++  remain bring-up assumptions until hardware measurements are available.
++
++maintainers:
++  - Linux Media maintainers <linux-media@vger.kernel.org>
++
++allOf:
++  - $ref: /schemas/media/video-interface-devices.yaml#
++
++properties:
++  compatible:
++    enum:
++      - sony,imx596
++      - smartsens,sc202cs
++
++  reg:
++    maxItems: 1
++
++  clocks:
++    description: 19.2 MHz sensor master clock.
++    maxItems: 1
++
++  clock-names:
++    items:
++      - const: xvclk
++
++  reset-gpios:
++    maxItems: 1
++
++  vdda-supply:
++    description: Optional analogue sensor supply.
++
++  vddd-supply:
++    description: Optional digital core supply.
++
++  vddio-supply:
++    description: Optional digital I/O supply.
++
++  port:
++    $ref: /schemas/graph.yaml#/$defs/port-base
++    additionalProperties: false
++    properties:
++      endpoint:
++        $ref: /schemas/media/video-interfaces.yaml#
++        unevaluatedProperties: false
++        properties:
++          clock-lanes:
++            maxItems: 1
++          data-lanes:
++            minItems: 1
++            maxItems: 4
++          link-frequencies:
++            minItems: 1
++        required:
++          - data-lanes
++          - link-frequencies
++
++required:
++  - compatible
++  - reg
++  - clocks
++  - clock-names
++  - port
++
++unevaluatedProperties: false
+diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
+index 5d173e0ec..3341ed585 100644
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -793,6 +793,17 @@ config VIDEO_S5K6A3
+ 	  This is a V4L2 sensor driver for Samsung S5K6A3 raw
+ 	  camera sensor.
+ 
++config VIDEO_QCOM_LIUQIN_SENSORS
++	tristate "Liuqin IMX596 and SC202CS camera support"
++	select V4L2_CCI_I2C
++	help
++	  V4L2 sensor drivers for the Sony IMX596 front camera and
++	  SmartSens SC202CS depth camera used by Xiaomi Liuqin.
++
++	  The mode tables are derived from the shipped sensor-module
++	  containers; lane, link-frequency and Bayer assumptions are
++	  documented in the driver and board DTS.
++
+ config VIDEO_S5KJN1
+ 	tristate "Samsung S5KJN1 sensor support"
+ 	select V4L2_CCI_I2C
+diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
+index e45359efe..1f51018cd 100644
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -130,6 +130,7 @@ obj-$(CONFIG_VIDEO_S5C73M3) += s5c73m3/
+ obj-$(CONFIG_VIDEO_S5K3M5) += s5k3m5.o
+ obj-$(CONFIG_VIDEO_S5K5BAF) += s5k5baf.o
+ obj-$(CONFIG_VIDEO_S5K6A3) += s5k6a3.o
++obj-$(CONFIG_VIDEO_QCOM_LIUQIN_SENSORS) += qcom-liuqin-sensors.o
+ obj-$(CONFIG_VIDEO_S5KJN1) += s5kjn1.o
+ obj-$(CONFIG_VIDEO_SAA6588) += saa6588.o
+ obj-$(CONFIG_VIDEO_SAA6752HS) += saa6752hs.o
+diff --git a/drivers/media/i2c/qcom-liuqin-sensors.c b/drivers/media/i2c/qcom-liuqin-sensors.c
+new file mode 100644
+index 000000000..1ecfd6629
+--- /dev/null
++++ b/drivers/media/i2c/qcom-liuqin-sensors.c
+@@ -0,0 +1,1629 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Mainline V4L2 drivers for the two additional Liuqin camera modules.
++ *
++ * The register tables are the byte-write containers extracted from the
++ * shipped sensor-module blobs.  They are intentionally kept as data tables;
++ * no vendor camera ABI is required by this driver.  Clock, lane, Bayer and
++ * link-frequency values marked in the descriptor are bring-up assumptions
++ * until a physical board has been exercised.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
++#include <linux/units.h>
++#include <media/v4l2-cci.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-fwnode.h>
++
++#define LIUQIN_MCLK_FREQ	(19200000UL)
++#define LIUQIN_VTS_MAX		0xffff
++#define LIUQIN_EXPOSURE_MIN	8
++#define LIUQIN_EXPOSURE_MARGIN	8
++#define LIUQIN_AGAIN_MIN	1
++#define LIUQIN_AGAIN_MAX	16
++
++struct liuqin_reg_list {
++	const struct cci_reg_sequence *regs;
++	unsigned int num_regs;
++};
++
++struct liuqin_mode {
++	u32 width;
++	u32 height;
++	u32 hts;
++	u32 vts;
++	struct liuqin_reg_list reg_list;
++};
++
++struct liuqin_sensor_desc {
++	const char *name;
++	unsigned int lanes;
++	u32 mbus_code;
++	u64 link_freq;
++	const s64 *link_freq_menu;
++	unsigned int num_link_freqs;
++	unsigned int chip_reg;
++	u16 chip_id;
++	unsigned int vts_reg;
++	unsigned int exposure_reg;
++	unsigned int again_reg;
++	u32 again_min;
++	u32 again_max;
++	const struct liuqin_reg_list *init;
++	const struct liuqin_reg_list *stream_on;
++	const struct liuqin_reg_list *stream_off;
++	const struct liuqin_mode *modes;
++	unsigned int num_modes;
++	bool exposure_20bit;
++};
++
++struct liuqin_sensor {
++	struct device *dev;
++	struct regmap *regmap;
++	struct clk *mclk;
++	struct gpio_desc *reset_gpio;
++	struct regulator *vdda;
++	struct regulator *vddd;
++	struct regulator *vddio;
++	struct v4l2_subdev sd;
++	struct media_pad pad;
++	struct v4l2_ctrl_handler ctrl_handler;
++	struct v4l2_ctrl *vblank;
++	struct v4l2_ctrl *exposure;
++	const struct liuqin_sensor_desc *desc;
++	const struct liuqin_mode *mode;
++};
++
++#define to_liuqin(_sd) container_of(_sd, struct liuqin_sensor, sd)
++
++static const struct cci_reg_sequence imx596_init[] = {
++	{ CCI_REG8(0x0136), 0x13 },
++	{ CCI_REG8(0x0137), 0x33 },
++	{ CCI_REG8(0x321c), 0x00 },
++	{ CCI_REG8(0x33f0), 0x02 },
++	{ CCI_REG8(0x33f1), 0x03 },
++	{ CCI_REG8(0x0101), 0x00 },
++	{ CCI_REG8(0x32c8), 0x01 },
++	{ CCI_REG8(0x40a2), 0x01 },
++	{ CCI_REG8(0x441f), 0x01 },
++	{ CCI_REG8(0x4b20), 0x07 },
++	{ CCI_REG8(0x5abe), 0x3a },
++	{ CCI_REG8(0x5ac8), 0x3a },
++	{ CCI_REG8(0x5ad0), 0x3a },
++	{ CCI_REG8(0x5ada), 0x3a },
++	{ CCI_REG8(0x5c04), 0x00 },
++	{ CCI_REG8(0x5c05), 0x00 },
++	{ CCI_REG8(0x5c06), 0x00 },
++	{ CCI_REG8(0x5c0b), 0x00 },
++	{ CCI_REG8(0x5c0c), 0x00 },
++	{ CCI_REG8(0x5c0d), 0x00 },
++	{ CCI_REG8(0x5c0e), 0x00 },
++	{ CCI_REG8(0x5d55), 0x00 },
++	{ CCI_REG8(0x5d56), 0x00 },
++	{ CCI_REG8(0x6104), 0x0a },
++	{ CCI_REG8(0x6105), 0x0a },
++	{ CCI_REG8(0x6107), 0x0a },
++	{ CCI_REG8(0x610e), 0x07 },
++	{ CCI_REG8(0x610f), 0x07 },
++	{ CCI_REG8(0x6110), 0x07 },
++	{ CCI_REG8(0x6111), 0x07 },
++	{ CCI_REG8(0x6112), 0x07 },
++	{ CCI_REG8(0x6113), 0x07 },
++	{ CCI_REG8(0x6114), 0x07 },
++	{ CCI_REG8(0x6115), 0x07 },
++	{ CCI_REG8(0x611c), 0x0b },
++	{ CCI_REG8(0x611d), 0x07 },
++	{ CCI_REG8(0x611e), 0x09 },
++	{ CCI_REG8(0x611f), 0x07 },
++	{ CCI_REG8(0x6122), 0x09 },
++	{ CCI_REG8(0x612b), 0x07 },
++	{ CCI_REG8(0x612d), 0x07 },
++	{ CCI_REG8(0x612e), 0x07 },
++	{ CCI_REG8(0x612f), 0x07 },
++	{ CCI_REG8(0x6131), 0x07 },
++	{ CCI_REG8(0x6138), 0x0b },
++	{ CCI_REG8(0x6139), 0x07 },
++	{ CCI_REG8(0x613a), 0x0b },
++	{ CCI_REG8(0x613f), 0x07 },
++	{ CCI_REG8(0x6182), 0x01 },
++	{ CCI_REG8(0x6183), 0x01 },
++	{ CCI_REG8(0x6184), 0x01 },
++	{ CCI_REG8(0x6185), 0x01 },
++	{ CCI_REG8(0x6186), 0x01 },
++	{ CCI_REG8(0x6187), 0x01 },
++	{ CCI_REG8(0x6188), 0x01 },
++	{ CCI_REG8(0x6189), 0x01 },
++	{ CCI_REG8(0x618a), 0x01 },
++	{ CCI_REG8(0x618b), 0x01 },
++	{ CCI_REG8(0x618c), 0x01 },
++	{ CCI_REG8(0x618d), 0x01 },
++	{ CCI_REG8(0x618e), 0x01 },
++	{ CCI_REG8(0x618f), 0x01 },
++	{ CCI_REG8(0x6194), 0x01 },
++	{ CCI_REG8(0x6195), 0x01 },
++	{ CCI_REG8(0x6197), 0x01 },
++	{ CCI_REG8(0x6199), 0x01 },
++	{ CCI_REG8(0x619b), 0x01 },
++	{ CCI_REG8(0x619d), 0x01 },
++	{ CCI_REG8(0x61a2), 0x01 },
++	{ CCI_REG8(0x61a3), 0x01 },
++	{ CCI_REG8(0x61a5), 0x01 },
++	{ CCI_REG8(0x6205), 0x29 },
++	{ CCI_REG8(0x6207), 0x29 },
++	{ CCI_REG8(0x6209), 0x29 },
++	{ CCI_REG8(0x620b), 0x29 },
++	{ CCI_REG8(0x620d), 0x29 },
++	{ CCI_REG8(0x620f), 0x29 },
++	{ CCI_REG8(0x6211), 0x29 },
++	{ CCI_REG8(0x6213), 0x29 },
++	{ CCI_REG8(0x6215), 0x29 },
++	{ CCI_REG8(0x6217), 0x29 },
++	{ CCI_REG8(0x6219), 0x29 },
++	{ CCI_REG8(0x621b), 0x29 },
++	{ CCI_REG8(0x621d), 0x29 },
++	{ CCI_REG8(0x621f), 0x29 },
++	{ CCI_REG8(0x6221), 0x0a },
++	{ CCI_REG8(0x622b), 0x29 },
++	{ CCI_REG8(0x622d), 0x29 },
++	{ CCI_REG8(0x6231), 0x29 },
++	{ CCI_REG8(0x6235), 0x29 },
++	{ CCI_REG8(0x6239), 0x29 },
++	{ CCI_REG8(0x623d), 0x29 },
++	{ CCI_REG8(0x6249), 0x29 },
++	{ CCI_REG8(0x624b), 0x29 },
++	{ CCI_REG8(0x624f), 0x29 },
++	{ CCI_REG8(0x628f), 0x90 },
++	{ CCI_REG8(0x6291), 0x90 },
++	{ CCI_REG8(0x6293), 0x90 },
++	{ CCI_REG8(0x6295), 0x90 },
++	{ CCI_REG8(0x6297), 0x90 },
++	{ CCI_REG8(0x6299), 0x90 },
++	{ CCI_REG8(0x629b), 0x90 },
++	{ CCI_REG8(0x629d), 0x90 },
++	{ CCI_REG8(0x629f), 0x90 },
++	{ CCI_REG8(0x62a1), 0x90 },
++	{ CCI_REG8(0x62a3), 0x90 },
++	{ CCI_REG8(0x62a5), 0x90 },
++	{ CCI_REG8(0x62a7), 0x90 },
++	{ CCI_REG8(0x62a9), 0x90 },
++	{ CCI_REG8(0x62ab), 0x24 },
++	{ CCI_REG8(0x62b5), 0x90 },
++	{ CCI_REG8(0x62b7), 0x90 },
++	{ CCI_REG8(0x62bb), 0x90 },
++	{ CCI_REG8(0x62bf), 0x90 },
++	{ CCI_REG8(0x62c3), 0x90 },
++	{ CCI_REG8(0x62c7), 0x90 },
++	{ CCI_REG8(0x62d3), 0x90 },
++	{ CCI_REG8(0x62d5), 0x90 },
++	{ CCI_REG8(0x62d9), 0x90 },
++	{ CCI_REG8(0x6319), 0x90 },
++	{ CCI_REG8(0x631b), 0x90 },
++	{ CCI_REG8(0x631f), 0x90 },
++	{ CCI_REG8(0x6323), 0x90 },
++	{ CCI_REG8(0x636d), 0x28 },
++	{ CCI_REG8(0x636e), 0x2a },
++	{ CCI_REG8(0x636f), 0x29 },
++	{ CCI_REG8(0x6370), 0x29 },
++	{ CCI_REG8(0x6371), 0x0e },
++	{ CCI_REG8(0x6372), 0x0e },
++	{ CCI_REG8(0x6373), 0x28 },
++	{ CCI_REG8(0x6374), 0x0f },
++	{ CCI_REG8(0x6375), 0x1e },
++	{ CCI_REG8(0x6376), 0x0d },
++	{ CCI_REG8(0x637d), 0x2a },
++	{ CCI_REG8(0x637e), 0x2b },
++	{ CCI_REG8(0x637f), 0x2a },
++	{ CCI_REG8(0x6380), 0x2a },
++	{ CCI_REG8(0x6381), 0x28 },
++	{ CCI_REG8(0x6382), 0x29 },
++	{ CCI_REG8(0x6383), 0x2a },
++	{ CCI_REG8(0x6384), 0x27 },
++	{ CCI_REG8(0x6385), 0x1e },
++	{ CCI_REG8(0x6386), 0x1e },
++	{ CCI_REG8(0x638d), 0x28 },
++	{ CCI_REG8(0x638e), 0x32 },
++	{ CCI_REG8(0x638f), 0x28 },
++	{ CCI_REG8(0x6390), 0x32 },
++	{ CCI_REG8(0x6391), 0x29 },
++	{ CCI_REG8(0x6392), 0x2a },
++	{ CCI_REG8(0x6393), 0x28 },
++	{ CCI_REG8(0x6394), 0x29 },
++	{ CCI_REG8(0x6395), 0x1d },
++	{ CCI_REG8(0x6396), 0x1f },
++	{ CCI_REG8(0x639d), 0x28 },
++	{ CCI_REG8(0x639e), 0x32 },
++	{ CCI_REG8(0x639f), 0x28 },
++	{ CCI_REG8(0x63a0), 0x32 },
++	{ CCI_REG8(0x63a1), 0x2a },
++	{ CCI_REG8(0x63a2), 0x2b },
++	{ CCI_REG8(0x63a3), 0x28 },
++	{ CCI_REG8(0x63a4), 0x2a },
++	{ CCI_REG8(0x63a5), 0x1e },
++	{ CCI_REG8(0x63a6), 0x20 },
++	{ CCI_REG8(0x63ad), 0x28 },
++	{ CCI_REG8(0x63ae), 0x32 },
++	{ CCI_REG8(0x63af), 0x28 },
++	{ CCI_REG8(0x63b0), 0x1e },
++	{ CCI_REG8(0x63b4), 0x28 },
++	{ CCI_REG8(0x63b5), 0x32 },
++	{ CCI_REG8(0x63b6), 0x28 },
++	{ CCI_REG8(0x63b7), 0x1e },
++	{ CCI_REG8(0x63c9), 0x01 },
++	{ CCI_REG8(0x63da), 0x03 },
++	{ CCI_REG8(0x63de), 0x03 },
++	{ CCI_REG8(0x63ea), 0x05 },
++	{ CCI_REG8(0x63ed), 0x01 },
++	{ CCI_REG8(0x63ee), 0x04 },
++	{ CCI_REG8(0x63f8), 0x03 },
++	{ CCI_REG8(0x63fa), 0x03 },
++	{ CCI_REG8(0x63ff), 0x05 },
++	{ CCI_REG8(0x6401), 0x04 },
++	{ CCI_REG8(0x6403), 0x04 },
++	{ CCI_REG8(0x6404), 0x03 },
++	{ CCI_REG8(0x6405), 0x04 },
++	{ CCI_REG8(0x6406), 0x03 },
++	{ CCI_REG8(0x6407), 0x1f },
++	{ CCI_REG8(0x6408), 0x0e },
++	{ CCI_REG8(0x6409), 0x02 },
++	{ CCI_REG8(0x640a), 0x1f },
++	{ CCI_REG8(0x640b), 0x0d },
++	{ CCI_REG8(0x640c), 0x1f },
++	{ CCI_REG8(0x6417), 0x04 },
++	{ CCI_REG8(0x6418), 0x03 },
++	{ CCI_REG8(0x641a), 0x02 },
++	{ CCI_REG8(0x641b), 0x07 },
++	{ CCI_REG8(0x641c), 0x0d },
++	{ CCI_REG8(0x6427), 0x04 },
++	{ CCI_REG8(0x6428), 0x03 },
++	{ CCI_REG8(0x642a), 0x03 },
++	{ CCI_REG8(0x642b), 0x08 },
++	{ CCI_REG8(0x642c), 0x0c },
++	{ CCI_REG8(0x6437), 0x01 },
++	{ CCI_REG8(0x643a), 0x02 },
++	{ CCI_REG8(0x643b), 0x05 },
++	{ CCI_REG8(0x643c), 0x07 },
++	{ CCI_REG8(0x6446), 0x04 },
++	{ CCI_REG8(0x644d), 0x01 },
++	{ CCI_REG8(0x6499), 0x01 },
++	{ CCI_REG8(0x649a), 0x01 },
++	{ CCI_REG8(0x649b), 0x01 },
++	{ CCI_REG8(0x649c), 0x01 },
++	{ CCI_REG8(0x649d), 0x01 },
++	{ CCI_REG8(0x649e), 0x01 },
++	{ CCI_REG8(0x649f), 0x01 },
++	{ CCI_REG8(0x64a0), 0x01 },
++	{ CCI_REG8(0x64a7), 0x01 },
++	{ CCI_REG8(0x64a8), 0x01 },
++	{ CCI_REG8(0x64a9), 0x01 },
++	{ CCI_REG8(0x64aa), 0x01 },
++	{ CCI_REG8(0x64ab), 0x01 },
++	{ CCI_REG8(0x64ac), 0x01 },
++	{ CCI_REG8(0x64ad), 0x01 },
++	{ CCI_REG8(0x64ae), 0x01 },
++	{ CCI_REG8(0x64b5), 0x01 },
++	{ CCI_REG8(0x64b6), 0x01 },
++	{ CCI_REG8(0x64b7), 0x01 },
++	{ CCI_REG8(0x64b8), 0x01 },
++	{ CCI_REG8(0x64b9), 0x01 },
++	{ CCI_REG8(0x64ba), 0x01 },
++	{ CCI_REG8(0x64bb), 0x01 },
++	{ CCI_REG8(0x64bc), 0x01 },
++	{ CCI_REG8(0x64c3), 0x01 },
++	{ CCI_REG8(0x64c4), 0x01 },
++	{ CCI_REG8(0x64c5), 0x01 },
++	{ CCI_REG8(0x64c6), 0x01 },
++	{ CCI_REG8(0x64c7), 0x01 },
++	{ CCI_REG8(0x64c8), 0x01 },
++	{ CCI_REG8(0x64c9), 0x01 },
++	{ CCI_REG8(0x64ca), 0x01 },
++	{ CCI_REG8(0x64d1), 0x01 },
++	{ CCI_REG8(0x64d2), 0x01 },
++	{ CCI_REG8(0x64d3), 0x01 },
++	{ CCI_REG8(0x64d4), 0x01 },
++	{ CCI_REG8(0x64d8), 0x01 },
++	{ CCI_REG8(0x64d9), 0x01 },
++	{ CCI_REG8(0x64da), 0x01 },
++	{ CCI_REG8(0x64db), 0x01 },
++	{ CCI_REG8(0x651f), 0x1e },
++	{ CCI_REG8(0x6520), 0x1e },
++	{ CCI_REG8(0x6523), 0x1e },
++	{ CCI_REG8(0x6524), 0x1e },
++	{ CCI_REG8(0x6526), 0x1e },
++	{ CCI_REG8(0x6528), 0x1e },
++	{ CCI_REG8(0x6533), 0x1e },
++	{ CCI_REG8(0x6534), 0x1e },
++	{ CCI_REG8(0x6536), 0x1e },
++	{ CCI_REG8(0x6538), 0x1e },
++	{ CCI_REG8(0x666f), 0x15 },
++	{ CCI_REG8(0x6670), 0x15 },
++	{ CCI_REG8(0x6671), 0x15 },
++	{ CCI_REG8(0x6672), 0x15 },
++	{ CCI_REG8(0x6673), 0x15 },
++	{ CCI_REG8(0x6674), 0x15 },
++	{ CCI_REG8(0x6675), 0x15 },
++	{ CCI_REG8(0x6676), 0x15 },
++	{ CCI_REG8(0x6677), 0x15 },
++	{ CCI_REG8(0x6678), 0x15 },
++	{ CCI_REG8(0x6679), 0x15 },
++	{ CCI_REG8(0x667a), 0x15 },
++	{ CCI_REG8(0x667b), 0x15 },
++	{ CCI_REG8(0x667c), 0x15 },
++	{ CCI_REG8(0x6681), 0x15 },
++	{ CCI_REG8(0x6682), 0x15 },
++	{ CCI_REG8(0x6684), 0x15 },
++	{ CCI_REG8(0x6686), 0x15 },
++	{ CCI_REG8(0x6688), 0x15 },
++	{ CCI_REG8(0x668a), 0x15 },
++	{ CCI_REG8(0x668f), 0x15 },
++	{ CCI_REG8(0x6690), 0x15 },
++	{ CCI_REG8(0x6692), 0x15 },
++	{ CCI_REG8(0x66bd), 0x0a },
++	{ CCI_REG8(0x66be), 0x0a },
++	{ CCI_REG8(0x66ca), 0x0a },
++	{ CCI_REG8(0x66cb), 0x0a },
++	{ CCI_REG8(0x66d4), 0x0a },
++	{ CCI_REG8(0x66d7), 0x0a },
++	{ CCI_REG8(0x6a35), 0x36 },
++	{ CCI_REG8(0x6a36), 0x0e },
++	{ CCI_REG8(0x6a37), 0x36 },
++	{ CCI_REG8(0x6a38), 0x36 },
++	{ CCI_REG8(0x6a39), 0x36 },
++	{ CCI_REG8(0x6a3a), 0x36 },
++	{ CCI_REG8(0x6a3b), 0x36 },
++	{ CCI_REG8(0x6a3c), 0x0e },
++	{ CCI_REG8(0x6a3d), 0x36 },
++	{ CCI_REG8(0x6a3e), 0x36 },
++	{ CCI_REG8(0x6a3f), 0x36 },
++	{ CCI_REG8(0x6a40), 0x36 },
++	{ CCI_REG8(0x6a41), 0x36 },
++	{ CCI_REG8(0x7910), 0x00 },
++	{ CCI_REG8(0x8502), 0x01 },
++	{ CCI_REG8(0x8505), 0x00 },
++	{ CCI_REG8(0x8605), 0x01 },
++	{ CCI_REG8(0x9003), 0x02 },
++	{ CCI_REG8(0x9200), 0x86 },
++	{ CCI_REG8(0x9201), 0x08 },
++	{ CCI_REG8(0x9202), 0x86 },
++	{ CCI_REG8(0x9203), 0x09 },
++	{ CCI_REG8(0xbc77), 0x4c },
++	{ CCI_REG8(0xbc79), 0x7c },
++	{ CCI_REG8(0xbc7a), 0x06 },
++	{ CCI_REG8(0xbc7b), 0xe8 },
++	{ CCI_REG8(0xbc7c), 0x06 },
++	{ CCI_REG8(0xbc7d), 0x08 },
++	{ CCI_REG8(0xbc7e), 0x0f },
++	{ CCI_REG8(0xbc7f), 0x20 },
++	{ CCI_REG8(0xbc80), 0x06 },
++	{ CCI_REG8(0xbc81), 0xe8 },
++	{ CCI_REG8(0xbc82), 0x06 },
++	{ CCI_REG8(0xbc83), 0xe8 },
++	{ CCI_REG8(0xbc84), 0x06 },
++	{ CCI_REG8(0xbc85), 0xe8 },
++	{ CCI_REG8(0xbc86), 0x06 },
++	{ CCI_REG8(0xbc87), 0xe8 },
++	{ CCI_REG8(0xa015), 0x90 },
++	{ CCI_REG8(0xa016), 0x90 },
++	{ CCI_REG8(0xa017), 0x34 },
++	{ CCI_REG8(0xa018), 0xe8 },
++	{ CCI_REG8(0xa019), 0x50 },
++	{ CCI_REG8(0xa01a), 0x06 },
++	{ CCI_REG8(0xa165), 0x10 },
++	{ CCI_REG8(0xa16b), 0x10 },
++	{ CCI_REG8(0xa171), 0x10 },
++	{ CCI_REG8(0xa189), 0xc4 },
++	{ CCI_REG8(0xa18f), 0xc4 },
++	{ CCI_REG8(0xa195), 0xc4 },
++	{ CCI_REG8(0xa19b), 0x0b },
++	{ CCI_REG8(0xa1a1), 0x0b },
++	{ CCI_REG8(0xa1a7), 0x0b },
++	{ CCI_REG8(0xa337), 0x80 },
++	{ CCI_REG8(0xa339), 0x80 },
++	{ CCI_REG8(0xa33b), 0x80 },
++	{ CCI_REG8(0xa51d), 0x10 },
++	{ CCI_REG8(0xa520), 0x00 },
++	{ CCI_REG8(0xa905), 0x40 },
++	{ CCI_REG8(0xa90b), 0x00 },
++	{ CCI_REG8(0xaa08), 0xff },
++	{ CCI_REG8(0xaa0e), 0xff },
++	{ CCI_REG8(0xab11), 0x40 },
++	{ CCI_REG8(0xab1d), 0x40 },
++	{ CCI_REG8(0xad01), 0x70 },
++	{ CCI_REG8(0xad0d), 0x0b },
++	{ CCI_REG8(0xad0e), 0x00 },
++	{ CCI_REG8(0xad0f), 0x59 },
++	{ CCI_REG8(0xad10), 0x00 },
++	{ CCI_REG8(0xad11), 0x76 },
++	{ CCI_REG8(0xad13), 0x11 },
++	{ CCI_REG8(0xad15), 0xaf },
++	{ CCI_REG8(0xad17), 0xe7 },
++	{ CCI_REG8(0xad19), 0x0f },
++	{ CCI_REG8(0xad1a), 0x00 },
++	{ CCI_REG8(0xad1b), 0x69 },
++	{ CCI_REG8(0xad1c), 0x00 },
++	{ CCI_REG8(0xad1d), 0x89 },
++};
++
++static const struct cci_reg_sequence imx596_mode_0[] = {
++	{ CCI_REG8(0x0114), 0x03 },
++	{ CCI_REG8(0x0342), 0x1c },
++	{ CCI_REG8(0x0343), 0x78 },
++	{ CCI_REG8(0x0340), 0x26 },
++	{ CCI_REG8(0x0341), 0xf7 },
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x00 },
++	{ CCI_REG8(0x0347), 0x00 },
++	{ CCI_REG8(0x0348), 0x14 },
++	{ CCI_REG8(0x0349), 0x3f },
++	{ CCI_REG8(0x034a), 0x0f },
++	{ CCI_REG8(0x034b), 0x3f },
++	{ CCI_REG8(0x0220), 0x62 },
++	{ CCI_REG8(0x0221), 0x11 },
++	{ CCI_REG8(0x0222), 0x01 },
++	{ CCI_REG8(0x0900), 0x00 },
++	{ CCI_REG8(0x0901), 0x11 },
++	{ CCI_REG8(0x0902), 0x0a },
++	{ CCI_REG8(0x30d8), 0x00 },
++	{ CCI_REG8(0x3200), 0x01 },
++	{ CCI_REG8(0x3201), 0x01 },
++	{ CCI_REG8(0x0408), 0x00 },
++	{ CCI_REG8(0x0409), 0x00 },
++	{ CCI_REG8(0x040a), 0x00 },
++	{ CCI_REG8(0x040b), 0x00 },
++	{ CCI_REG8(0x040c), 0x14 },
++	{ CCI_REG8(0x040d), 0x40 },
++	{ CCI_REG8(0x040e), 0x0f },
++	{ CCI_REG8(0x040f), 0x40 },
++	{ CCI_REG8(0x034c), 0x14 },
++	{ CCI_REG8(0x034d), 0x40 },
++	{ CCI_REG8(0x034e), 0x0f },
++	{ CCI_REG8(0x034f), 0x40 },
++	{ CCI_REG8(0x0301), 0x05 },
++	{ CCI_REG8(0x0303), 0x02 },
++	{ CCI_REG8(0x0305), 0x03 },
++	{ CCI_REG8(0x0306), 0x01 },
++	{ CCI_REG8(0x0307), 0x1c },
++	{ CCI_REG8(0x030b), 0x01 },
++	{ CCI_REG8(0x030d), 0x03 },
++	{ CCI_REG8(0x030e), 0x00 },
++	{ CCI_REG8(0x030f), 0xd4 },
++	{ CCI_REG8(0x32d3), 0x01 },
++	{ CCI_REG8(0x32d5), 0x01 },
++	{ CCI_REG8(0x32d6), 0x01 },
++	{ CCI_REG8(0x4000), 0x04 },
++	{ CCI_REG8(0x4001), 0x04 },
++	{ CCI_REG8(0x40a0), 0x01 },
++	{ CCI_REG8(0x40a1), 0xf4 },
++	{ CCI_REG8(0x40a4), 0x03 },
++	{ CCI_REG8(0x40a5), 0x98 },
++	{ CCI_REG8(0x40b8), 0x03 },
++	{ CCI_REG8(0x40b9), 0x7a },
++	{ CCI_REG8(0x41a4), 0x00 },
++	{ CCI_REG8(0x0202), 0x26 },
++	{ CCI_REG8(0x0203), 0xdf },
++	{ CCI_REG8(0x0224), 0x01 },
++	{ CCI_REG8(0x0225), 0xf4 },
++	{ CCI_REG8(0x3116), 0x01 },
++	{ CCI_REG8(0x3117), 0xf4 },
++	{ CCI_REG8(0x0204), 0x00 },
++	{ CCI_REG8(0x0205), 0x00 },
++	{ CCI_REG8(0x020e), 0x01 },
++	{ CCI_REG8(0x020f), 0x00 },
++	{ CCI_REG8(0x0216), 0x00 },
++	{ CCI_REG8(0x0217), 0x00 },
++	{ CCI_REG8(0x0218), 0x01 },
++	{ CCI_REG8(0x0219), 0x00 },
++	{ CCI_REG8(0x3118), 0x00 },
++	{ CCI_REG8(0x3119), 0x00 },
++	{ CCI_REG8(0x311a), 0x01 },
++	{ CCI_REG8(0x311b), 0x00 },
++	{ CCI_REG8(0x3220), 0x01 },
++	{ CCI_REG8(0x0b06), 0x01 },
++};
++
++static const struct cci_reg_sequence imx596_mode_1[] = {
++	{ CCI_REG8(0x0114), 0x03 },
++	{ CCI_REG8(0x0342), 0x12 },
++	{ CCI_REG8(0x0343), 0x24 },
++	{ CCI_REG8(0x0340), 0x18 },
++	{ CCI_REG8(0x0341), 0x9e },
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x00 },
++	{ CCI_REG8(0x0347), 0x00 },
++	{ CCI_REG8(0x0348), 0x14 },
++	{ CCI_REG8(0x0349), 0x3f },
++	{ CCI_REG8(0x034a), 0x0f },
++	{ CCI_REG8(0x034b), 0x3f },
++	{ CCI_REG8(0x0220), 0x62 },
++	{ CCI_REG8(0x0221), 0x11 },
++	{ CCI_REG8(0x0222), 0x01 },
++	{ CCI_REG8(0x0900), 0x01 },
++	{ CCI_REG8(0x0901), 0x22 },
++	{ CCI_REG8(0x0902), 0x08 },
++	{ CCI_REG8(0x30d8), 0x00 },
++	{ CCI_REG8(0x3200), 0x41 },
++	{ CCI_REG8(0x3201), 0x41 },
++	{ CCI_REG8(0x0408), 0x00 },
++	{ CCI_REG8(0x0409), 0x00 },
++	{ CCI_REG8(0x040a), 0x00 },
++	{ CCI_REG8(0x040b), 0x00 },
++	{ CCI_REG8(0x040c), 0x0a },
++	{ CCI_REG8(0x040d), 0x20 },
++	{ CCI_REG8(0x040e), 0x07 },
++	{ CCI_REG8(0x040f), 0xa0 },
++	{ CCI_REG8(0x034c), 0x0a },
++	{ CCI_REG8(0x034d), 0x20 },
++	{ CCI_REG8(0x034e), 0x07 },
++	{ CCI_REG8(0x034f), 0xa0 },
++	{ CCI_REG8(0x0301), 0x05 },
++	{ CCI_REG8(0x0303), 0x02 },
++	{ CCI_REG8(0x0305), 0x03 },
++	{ CCI_REG8(0x0306), 0x01 },
++	{ CCI_REG8(0x0307), 0x57 },
++	{ CCI_REG8(0x030b), 0x01 },
++	{ CCI_REG8(0x030d), 0x03 },
++	{ CCI_REG8(0x030e), 0x00 },
++	{ CCI_REG8(0x030f), 0xd4 },
++	{ CCI_REG8(0x32d3), 0x01 },
++	{ CCI_REG8(0x32d5), 0x00 },
++	{ CCI_REG8(0x32d6), 0x00 },
++	{ CCI_REG8(0x4000), 0x06 },
++	{ CCI_REG8(0x4001), 0x04 },
++	{ CCI_REG8(0x40a0), 0x03 },
++	{ CCI_REG8(0x40a1), 0xc6 },
++	{ CCI_REG8(0x40a4), 0x03 },
++	{ CCI_REG8(0x40a5), 0xc6 },
++	{ CCI_REG8(0x40b8), 0x04 },
++	{ CCI_REG8(0x40b9), 0x29 },
++	{ CCI_REG8(0x41a4), 0x00 },
++	{ CCI_REG8(0x0202), 0x18 },
++	{ CCI_REG8(0x0203), 0x86 },
++	{ CCI_REG8(0x0224), 0x01 },
++	{ CCI_REG8(0x0225), 0xf4 },
++	{ CCI_REG8(0x3116), 0x01 },
++	{ CCI_REG8(0x3117), 0xf4 },
++	{ CCI_REG8(0x0204), 0x00 },
++	{ CCI_REG8(0x0205), 0x00 },
++	{ CCI_REG8(0x020e), 0x01 },
++	{ CCI_REG8(0x020f), 0x00 },
++	{ CCI_REG8(0x0216), 0x00 },
++	{ CCI_REG8(0x0217), 0x00 },
++	{ CCI_REG8(0x0218), 0x01 },
++	{ CCI_REG8(0x0219), 0x00 },
++	{ CCI_REG8(0x3118), 0x00 },
++	{ CCI_REG8(0x3119), 0x00 },
++	{ CCI_REG8(0x311a), 0x01 },
++	{ CCI_REG8(0x311b), 0x00 },
++	{ CCI_REG8(0x3220), 0x01 },
++	{ CCI_REG8(0x0b06), 0x01 },
++};
++
++static const struct cci_reg_sequence imx596_mode_2[] = {
++	{ CCI_REG8(0x0114), 0x03 },
++	{ CCI_REG8(0x0342), 0x12 },
++	{ CCI_REG8(0x0343), 0x24 },
++	{ CCI_REG8(0x0340), 0x18 },
++	{ CCI_REG8(0x0341), 0x9e },
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x01 },
++	{ CCI_REG8(0x0347), 0xe0 },
++	{ CCI_REG8(0x0348), 0x14 },
++	{ CCI_REG8(0x0349), 0x3f },
++	{ CCI_REG8(0x034a), 0x0d },
++	{ CCI_REG8(0x034b), 0x5f },
++	{ CCI_REG8(0x0220), 0x62 },
++	{ CCI_REG8(0x0221), 0x11 },
++	{ CCI_REG8(0x0222), 0x01 },
++	{ CCI_REG8(0x0900), 0x01 },
++	{ CCI_REG8(0x0901), 0x22 },
++	{ CCI_REG8(0x0902), 0x08 },
++	{ CCI_REG8(0x30d8), 0x00 },
++	{ CCI_REG8(0x3200), 0x41 },
++	{ CCI_REG8(0x3201), 0x41 },
++	{ CCI_REG8(0x0408), 0x00 },
++	{ CCI_REG8(0x0409), 0x00 },
++	{ CCI_REG8(0x040a), 0x00 },
++	{ CCI_REG8(0x040b), 0x00 },
++	{ CCI_REG8(0x040c), 0x0a },
++	{ CCI_REG8(0x040d), 0x20 },
++	{ CCI_REG8(0x040e), 0x05 },
++	{ CCI_REG8(0x040f), 0xc0 },
++	{ CCI_REG8(0x034c), 0x0a },
++	{ CCI_REG8(0x034d), 0x20 },
++	{ CCI_REG8(0x034e), 0x05 },
++	{ CCI_REG8(0x034f), 0xc0 },
++	{ CCI_REG8(0x0301), 0x05 },
++	{ CCI_REG8(0x0303), 0x02 },
++	{ CCI_REG8(0x0305), 0x03 },
++	{ CCI_REG8(0x0306), 0x01 },
++	{ CCI_REG8(0x0307), 0x57 },
++	{ CCI_REG8(0x030b), 0x01 },
++	{ CCI_REG8(0x030d), 0x03 },
++	{ CCI_REG8(0x030e), 0x00 },
++	{ CCI_REG8(0x030f), 0xd4 },
++	{ CCI_REG8(0x32d3), 0x01 },
++	{ CCI_REG8(0x32d5), 0x00 },
++	{ CCI_REG8(0x32d6), 0x00 },
++	{ CCI_REG8(0x4000), 0x06 },
++	{ CCI_REG8(0x4001), 0x04 },
++	{ CCI_REG8(0x40a0), 0x03 },
++	{ CCI_REG8(0x40a1), 0x70 },
++	{ CCI_REG8(0x40a4), 0x00 },
++	{ CCI_REG8(0x40a5), 0x14 },
++	{ CCI_REG8(0x40b8), 0x04 },
++	{ CCI_REG8(0x40b9), 0x7e },
++	{ CCI_REG8(0x41a4), 0x00 },
++	{ CCI_REG8(0x0202), 0x18 },
++	{ CCI_REG8(0x0203), 0x86 },
++	{ CCI_REG8(0x0224), 0x01 },
++	{ CCI_REG8(0x0225), 0xf4 },
++	{ CCI_REG8(0x3116), 0x01 },
++	{ CCI_REG8(0x3117), 0xf4 },
++	{ CCI_REG8(0x0204), 0x00 },
++	{ CCI_REG8(0x0205), 0x00 },
++	{ CCI_REG8(0x020e), 0x01 },
++	{ CCI_REG8(0x020f), 0x00 },
++	{ CCI_REG8(0x0216), 0x00 },
++	{ CCI_REG8(0x0217), 0x00 },
++	{ CCI_REG8(0x0218), 0x01 },
++	{ CCI_REG8(0x0219), 0x00 },
++	{ CCI_REG8(0x3118), 0x00 },
++	{ CCI_REG8(0x3119), 0x00 },
++	{ CCI_REG8(0x311a), 0x01 },
++	{ CCI_REG8(0x311b), 0x00 },
++	{ CCI_REG8(0x3220), 0x01 },
++	{ CCI_REG8(0x0b06), 0x01 },
++};
++
++static const struct cci_reg_sequence imx596_mode_3[] = {
++	{ CCI_REG8(0x0114), 0x03 },
++	{ CCI_REG8(0x0342), 0x12 },
++	{ CCI_REG8(0x0343), 0x24 },
++	{ CCI_REG8(0x0340), 0x0c },
++	{ CCI_REG8(0x0341), 0x4f },
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x01 },
++	{ CCI_REG8(0x0347), 0xe0 },
++	{ CCI_REG8(0x0348), 0x14 },
++	{ CCI_REG8(0x0349), 0x3f },
++	{ CCI_REG8(0x034a), 0x0d },
++	{ CCI_REG8(0x034b), 0x5f },
++	{ CCI_REG8(0x0220), 0x62 },
++	{ CCI_REG8(0x0221), 0x11 },
++	{ CCI_REG8(0x0222), 0x01 },
++	{ CCI_REG8(0x0900), 0x01 },
++	{ CCI_REG8(0x0901), 0x22 },
++	{ CCI_REG8(0x0902), 0x08 },
++	{ CCI_REG8(0x30d8), 0x00 },
++	{ CCI_REG8(0x3200), 0x41 },
++	{ CCI_REG8(0x3201), 0x41 },
++	{ CCI_REG8(0x0408), 0x00 },
++	{ CCI_REG8(0x0409), 0x00 },
++	{ CCI_REG8(0x040a), 0x00 },
++	{ CCI_REG8(0x040b), 0x00 },
++	{ CCI_REG8(0x040c), 0x0a },
++	{ CCI_REG8(0x040d), 0x20 },
++	{ CCI_REG8(0x040e), 0x05 },
++	{ CCI_REG8(0x040f), 0xc0 },
++	{ CCI_REG8(0x034c), 0x0a },
++	{ CCI_REG8(0x034d), 0x20 },
++	{ CCI_REG8(0x034e), 0x05 },
++	{ CCI_REG8(0x034f), 0xc0 },
++	{ CCI_REG8(0x0301), 0x05 },
++	{ CCI_REG8(0x0303), 0x02 },
++	{ CCI_REG8(0x0305), 0x03 },
++	{ CCI_REG8(0x0306), 0x01 },
++	{ CCI_REG8(0x0307), 0x57 },
++	{ CCI_REG8(0x030b), 0x01 },
++	{ CCI_REG8(0x030d), 0x03 },
++	{ CCI_REG8(0x030e), 0x00 },
++	{ CCI_REG8(0x030f), 0xd4 },
++	{ CCI_REG8(0x32d3), 0x01 },
++	{ CCI_REG8(0x32d5), 0x00 },
++	{ CCI_REG8(0x32d6), 0x00 },
++	{ CCI_REG8(0x4000), 0x06 },
++	{ CCI_REG8(0x4001), 0x04 },
++	{ CCI_REG8(0x40a0), 0x03 },
++	{ CCI_REG8(0x40a1), 0x70 },
++	{ CCI_REG8(0x40a4), 0x00 },
++	{ CCI_REG8(0x40a5), 0x14 },
++	{ CCI_REG8(0x40b8), 0x04 },
++	{ CCI_REG8(0x40b9), 0x7e },
++	{ CCI_REG8(0x41a4), 0x00 },
++	{ CCI_REG8(0x0202), 0x0c },
++	{ CCI_REG8(0x0203), 0x37 },
++	{ CCI_REG8(0x0224), 0x01 },
++	{ CCI_REG8(0x0225), 0xf4 },
++	{ CCI_REG8(0x3116), 0x01 },
++	{ CCI_REG8(0x3117), 0xf4 },
++	{ CCI_REG8(0x0204), 0x00 },
++	{ CCI_REG8(0x0205), 0x00 },
++	{ CCI_REG8(0x020e), 0x01 },
++	{ CCI_REG8(0x020f), 0x00 },
++	{ CCI_REG8(0x0216), 0x00 },
++	{ CCI_REG8(0x0217), 0x00 },
++	{ CCI_REG8(0x0218), 0x01 },
++	{ CCI_REG8(0x0219), 0x00 },
++	{ CCI_REG8(0x3118), 0x00 },
++	{ CCI_REG8(0x3119), 0x00 },
++	{ CCI_REG8(0x311a), 0x01 },
++	{ CCI_REG8(0x311b), 0x00 },
++	{ CCI_REG8(0x3220), 0x01 },
++	{ CCI_REG8(0x0b06), 0x01 },
++};
++
++static const struct cci_reg_sequence imx596_stream_off[] = {
++	{ CCI_REG8(0x0100), 0x00 },
++};
++
++static const struct cci_reg_sequence sc202cs_init[] = {
++	{ CCI_REG8(0x00fd), 0x01 },
++	{ CCI_REG8(0x0018), 0x01 },
++	{ CCI_REG8(0x00fe), 0x02 },
++	{ CCI_REG8(0x00fd), 0x00 },
++	{ CCI_REG8(0x0036), 0x00 },
++	{ CCI_REG8(0x0037), 0x0d },
++	{ CCI_REG8(0x007b), 0x80 },
++	{ CCI_REG8(0x00fd), 0x01 },
++	{ CCI_REG8(0x0094), 0x02 },
++	{ CCI_REG8(0x0095), 0xc9 },
++};
++
++static const struct cci_reg_sequence sc202cs_mode[] = {
++	{ CCI_REG8(0x0103), 0x01 },
++	{ CCI_REG8(0x0100), 0x00 },
++	{ CCI_REG8(0x36e9), 0x80 },
++	{ CCI_REG8(0x36ea), 0x0f },
++	{ CCI_REG8(0x36eb), 0x0c },
++	{ CCI_REG8(0x36ec), 0x01 },
++	{ CCI_REG8(0x36ed), 0x28 },
++	{ CCI_REG8(0x36e9), 0x20 },
++	{ CCI_REG8(0x301f), 0x04 },
++	{ CCI_REG8(0x320c), 0x07 },
++	{ CCI_REG8(0x320d), 0x78 },
++	{ CCI_REG8(0x320e), 0x04 },
++	{ CCI_REG8(0x320f), 0xe7 },
++	{ CCI_REG8(0x3301), 0xff },
++	{ CCI_REG8(0x3304), 0x68 },
++	{ CCI_REG8(0x3306), 0x40 },
++	{ CCI_REG8(0x3308), 0x08 },
++	{ CCI_REG8(0x3309), 0xa8 },
++	{ CCI_REG8(0x330b), 0xb0 },
++	{ CCI_REG8(0x330c), 0x18 },
++	{ CCI_REG8(0x330d), 0xff },
++	{ CCI_REG8(0x330e), 0x20 },
++	{ CCI_REG8(0x331e), 0x59 },
++	{ CCI_REG8(0x331f), 0x99 },
++	{ CCI_REG8(0x3333), 0x10 },
++	{ CCI_REG8(0x335e), 0x06 },
++	{ CCI_REG8(0x335f), 0x08 },
++	{ CCI_REG8(0x3364), 0x1f },
++	{ CCI_REG8(0x337c), 0x02 },
++	{ CCI_REG8(0x337d), 0x0a },
++	{ CCI_REG8(0x338f), 0xa0 },
++	{ CCI_REG8(0x3390), 0x01 },
++	{ CCI_REG8(0x3391), 0x03 },
++	{ CCI_REG8(0x3392), 0x1f },
++	{ CCI_REG8(0x3393), 0xff },
++	{ CCI_REG8(0x3394), 0xff },
++	{ CCI_REG8(0x3395), 0xff },
++	{ CCI_REG8(0x33a2), 0x04 },
++	{ CCI_REG8(0x33ad), 0x0c },
++	{ CCI_REG8(0x33b1), 0x20 },
++	{ CCI_REG8(0x33b3), 0x38 },
++	{ CCI_REG8(0x33f9), 0x40 },
++	{ CCI_REG8(0x33fb), 0x48 },
++	{ CCI_REG8(0x33fc), 0x0f },
++	{ CCI_REG8(0x33fd), 0x1f },
++	{ CCI_REG8(0x349f), 0x03 },
++	{ CCI_REG8(0x34a6), 0x03 },
++	{ CCI_REG8(0x34a7), 0x1f },
++	{ CCI_REG8(0x34a8), 0x38 },
++	{ CCI_REG8(0x34a9), 0x30 },
++	{ CCI_REG8(0x34ab), 0xb0 },
++	{ CCI_REG8(0x34ad), 0xb0 },
++	{ CCI_REG8(0x34f8), 0x1f },
++	{ CCI_REG8(0x34f9), 0x20 },
++	{ CCI_REG8(0x3630), 0xa0 },
++	{ CCI_REG8(0x3631), 0x92 },
++	{ CCI_REG8(0x3632), 0x64 },
++	{ CCI_REG8(0x3633), 0x43 },
++	{ CCI_REG8(0x3637), 0x49 },
++	{ CCI_REG8(0x363a), 0x85 },
++	{ CCI_REG8(0x363c), 0x0f },
++	{ CCI_REG8(0x3650), 0x31 },
++	{ CCI_REG8(0x3670), 0x0d },
++	{ CCI_REG8(0x3674), 0xc0 },
++	{ CCI_REG8(0x3675), 0xa0 },
++	{ CCI_REG8(0x3676), 0xa0 },
++	{ CCI_REG8(0x3677), 0x92 },
++	{ CCI_REG8(0x3678), 0x96 },
++	{ CCI_REG8(0x3679), 0x9a },
++	{ CCI_REG8(0x367c), 0x03 },
++	{ CCI_REG8(0x367d), 0x0f },
++	{ CCI_REG8(0x367e), 0x01 },
++	{ CCI_REG8(0x367f), 0x0f },
++	{ CCI_REG8(0x3698), 0x83 },
++	{ CCI_REG8(0x3699), 0x86 },
++	{ CCI_REG8(0x369a), 0x8c },
++	{ CCI_REG8(0x369b), 0x94 },
++	{ CCI_REG8(0x36a2), 0x01 },
++	{ CCI_REG8(0x36a3), 0x03 },
++	{ CCI_REG8(0x36a4), 0x07 },
++	{ CCI_REG8(0x36ae), 0x0f },
++	{ CCI_REG8(0x36af), 0x1f },
++	{ CCI_REG8(0x36bd), 0x22 },
++	{ CCI_REG8(0x36be), 0x22 },
++	{ CCI_REG8(0x36bf), 0x22 },
++	{ CCI_REG8(0x36d0), 0x01 },
++	{ CCI_REG8(0x370f), 0x02 },
++	{ CCI_REG8(0x3721), 0x6c },
++	{ CCI_REG8(0x3722), 0x8d },
++	{ CCI_REG8(0x3725), 0xc5 },
++	{ CCI_REG8(0x3727), 0x14 },
++	{ CCI_REG8(0x3728), 0x04 },
++	{ CCI_REG8(0x37b7), 0x04 },
++	{ CCI_REG8(0x37b8), 0x04 },
++	{ CCI_REG8(0x37b9), 0x06 },
++	{ CCI_REG8(0x37bd), 0x07 },
++	{ CCI_REG8(0x37be), 0x0f },
++	{ CCI_REG8(0x3901), 0x02 },
++	{ CCI_REG8(0x3903), 0x40 },
++	{ CCI_REG8(0x3905), 0x8d },
++	{ CCI_REG8(0x3907), 0x00 },
++	{ CCI_REG8(0x3908), 0x41 },
++	{ CCI_REG8(0x391f), 0x41 },
++	{ CCI_REG8(0x3933), 0x80 },
++	{ CCI_REG8(0x3934), 0x02 },
++	{ CCI_REG8(0x3937), 0x6f },
++	{ CCI_REG8(0x393a), 0x01 },
++	{ CCI_REG8(0x393d), 0x01 },
++	{ CCI_REG8(0x393e), 0xc0 },
++	{ CCI_REG8(0x39dd), 0x41 },
++	{ CCI_REG8(0x3e00), 0x00 },
++	{ CCI_REG8(0x3e01), 0x4d },
++	{ CCI_REG8(0x3e02), 0x40 },
++	{ CCI_REG8(0x3e09), 0x00 },
++	{ CCI_REG8(0x4509), 0x28 },
++	{ CCI_REG8(0x450d), 0x61 },
++	/* 0x66 flips both axes; this module needs one: 0x06 (0x60 if the axis
++	 * check shows the flip moved - the register is not reachable live). */
++	{ CCI_REG8(0x3221), 0x06 },
++};
++
++static const struct cci_reg_sequence sc202cs_stream_on[] = {
++	{ CCI_REG8(0x0100), 0x01 },
++};
++
++static const struct cci_reg_sequence sc202cs_stream_off[] = {
++	{ CCI_REG8(0x0100), 0x00 },
++};
++
++
++static const struct liuqin_mode imx596_modes[] = {
++	{ .width = 5184, .height = 3904, .hts = 7288, .vts = 9975,
++	  .reg_list = { imx596_mode_0, ARRAY_SIZE(imx596_mode_0) } },
++	{ .width = 2592, .height = 1952, .hts = 4644, .vts = 6302,
++	  .reg_list = { imx596_mode_1, ARRAY_SIZE(imx596_mode_1) } },
++	{ .width = 2592, .height = 1472, .hts = 4644, .vts = 6302,
++	  .reg_list = { imx596_mode_2, ARRAY_SIZE(imx596_mode_2) } },
++	{ .width = 2592, .height = 1472, .hts = 4644, .vts = 3151,
++	  .reg_list = { imx596_mode_3, ARRAY_SIZE(imx596_mode_3) } },
++};
++
++static const struct liuqin_mode sc202cs_modes[] = {
++	{ .width = 1600, .height = 1200, .hts = 1912, .vts = 1255,
++	  .reg_list = { sc202cs_mode, ARRAY_SIZE(sc202cs_mode) } },
++};
++
++/*
++ * The front preview mode runs at 678.4 MHz: measured on the vendor stack
++ * (CAM_START_PHYDEV datarate 1356800000 = 2 x 678.4 MHz).  The old 1.10 GHz
++ * default left the CSIPHY mistuned by ~60%, so the sensor streamed but no
++ * data ever reached the receiver.  The other rates stay selectable for
++ * bring-up.
++ */
++static const s64 imx596_link_freq_menu[] = { 678400000LL, 1100000000LL, 549000000LL, 2196000000LL };
++/*
++ * 360 MHz is the rate the SC202CS actually runs at: measured on the vendor
++ * stack (CAM_START_PHYDEV for csiphy1 reports Datarate 720000000 =
++ * 2 x 360 MHz).  The old 180 MHz value halved it twice, so the CSIPHY was
++ * mistuned 2x and no data ever arrived.
++ */
++static const s64 sc202cs_link_freq_menu[] = { 360000000LL };
++
++static const struct liuqin_reg_list imx596_init_list = {
++	.regs = imx596_init, .num_regs = ARRAY_SIZE(imx596_init),
++};
++static const struct liuqin_reg_list imx596_stream_off_list = {
++	.regs = imx596_stream_off, .num_regs = ARRAY_SIZE(imx596_stream_off),
++};
++static const struct cci_reg_sequence imx596_stream_on[] = {
++	/*
++	 * The vendor container streams with the 16-bit write 0x0100 = 0x0103
++	 * ({0x01, 0x03}).  The 8-bit form wrote 0x03 into the mode-select
++	 * register instead, so the sensor was never told to stream: STREAMON
++	 * succeeded and no data ever arrived.
++	 */
++	{ CCI_REG16(0x0100), 0x0103 },
++};
++static const struct liuqin_reg_list imx596_stream_on_list = {
++	.regs = imx596_stream_on, .num_regs = ARRAY_SIZE(imx596_stream_on),
++};
++static const struct liuqin_reg_list sc202cs_init_list = {
++	.regs = sc202cs_init, .num_regs = ARRAY_SIZE(sc202cs_init),
++};
++static const struct liuqin_reg_list sc202cs_stream_on_list = {
++	.regs = sc202cs_stream_on, .num_regs = ARRAY_SIZE(sc202cs_stream_on),
++};
++static const struct liuqin_reg_list sc202cs_stream_off_list = {
++	.regs = sc202cs_stream_off, .num_regs = ARRAY_SIZE(sc202cs_stream_off),
++};
++
++static const struct liuqin_sensor_desc imx596_desc = {
++	.name = "imx596",
++	.lanes = 4,
++	/*
++	 * Measured on the module: a red target comes out blue, i.e. the
++	 * readout is BGGR while this first assumed RGGB (the vendor
++	 * container carries no order).  The vendor HAL's table says BGGR
++	 * too.
++	 */
++	.mbus_code = MEDIA_BUS_FMT_SBGGR10_1X10,
++	/* 678.4 MHz, measured on the vendor stack (CAM_START_PHYDEV). */
++	.link_freq = 678400000ULL,
++	.link_freq_menu = imx596_link_freq_menu,
++	.num_link_freqs = ARRAY_SIZE(imx596_link_freq_menu),
++	.chip_reg = CCI_REG16(0x0016),
++	.chip_id = 0x0596,
++	.vts_reg = CCI_REG16(0x0340),
++	.exposure_reg = CCI_REG16(0x0202),
++	.again_reg = CCI_REG16(0x0204),
++	.again_min = 0,
++	.again_max = 1008,
++	.init = &imx596_init_list,
++	.stream_on = &imx596_stream_on_list,
++	.stream_off = &imx596_stream_off_list,
++	.modes = imx596_modes,
++	.num_modes = ARRAY_SIZE(imx596_modes),
++};
++
++static const struct liuqin_sensor_desc sc202cs_desc = {
++	.name = "sc202cs",
++	/* One lane: the PLL rate (720 Mbps) equals the internal pixel rate. */
++	.lanes = 1,
++	.mbus_code = MEDIA_BUS_FMT_SRGGB10_1X10,
++	.link_freq = 360000000ULL,
++	.link_freq_menu = sc202cs_link_freq_menu,
++	.num_link_freqs = ARRAY_SIZE(sc202cs_link_freq_menu),
++	.chip_reg = CCI_REG16(0x3107),
++	.chip_id = 0xeb52,
++	.vts_reg = CCI_REG16(0x320e),
++	.exposure_reg = CCI_REG16(0x3e00),
++	.again_reg = CCI_REG8(0x3e09),
++	.again_min = LIUQIN_AGAIN_MIN,
++	.again_max = LIUQIN_AGAIN_MAX,
++	.exposure_20bit = true,
++	.init = &sc202cs_init_list,
++	.stream_on = &sc202cs_stream_on_list,
++	.stream_off = &sc202cs_stream_off_list,
++	.modes = sc202cs_modes,
++	.num_modes = ARRAY_SIZE(sc202cs_modes),
++};
++
++static int liuqin_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct liuqin_sensor *sensor = container_of(ctrl->handler,
++							struct liuqin_sensor, ctrl_handler);
++	const struct liuqin_mode *mode = sensor->mode;
++	int ret = 0;
++
++	if (ctrl->id == V4L2_CID_VBLANK) {
++		u32 max = mode->height + ctrl->val - LIUQIN_EXPOSURE_MARGIN;
++
++		__v4l2_ctrl_modify_range(sensor->exposure, LIUQIN_EXPOSURE_MIN,
++					 max, 1, min_t(u32, mode->vts - LIUQIN_EXPOSURE_MARGIN,
++						       max));
++	}
++
++	if (!pm_runtime_get_if_active(sensor->dev))
++		return 0;
++
++	switch (ctrl->id) {
++	case V4L2_CID_EXPOSURE:
++		if (sensor->desc->exposure_20bit) {
++			struct cci_reg_sequence exposure[] = {
++				{ CCI_REG8(0x3e00), (ctrl->val >> 12) & 0x0f },
++				{ CCI_REG8(0x3e01), (ctrl->val >> 4) & 0xff },
++				{ CCI_REG8(0x3e02), (ctrl->val & 0x0f) << 4 },
++			};
++
++			ret = cci_multi_reg_write(sensor->regmap, exposure,
++						  ARRAY_SIZE(exposure), NULL);
++		} else {
++			ret = cci_write(sensor->regmap, sensor->desc->exposure_reg,
++					ctrl->val, NULL);
++		}
++		break;
++	case V4L2_CID_ANALOGUE_GAIN:
++		ret = cci_write(sensor->regmap, sensor->desc->again_reg,
++				ctrl->val, NULL);
++		break;
++	case V4L2_CID_VBLANK:
++		ret = cci_write(sensor->regmap, sensor->desc->vts_reg,
++				mode->height + ctrl->val, NULL);
++		break;
++	default:
++		break;
++	}
++
++	pm_runtime_put(sensor->dev);
++	return ret;
++}
++
++static const struct v4l2_ctrl_ops liuqin_ctrl_ops = {
++	.s_ctrl = liuqin_set_ctrl,
++};
++
++static int liuqin_init_controls(struct liuqin_sensor *sensor)
++{
++	const struct liuqin_mode *mode = sensor->mode;
++	struct v4l2_ctrl_handler *hdl = &sensor->ctrl_handler;
++	u32 vblank = mode->vts - mode->height;
++	u64 pixel_rate = div_u64(sensor->desc->link_freq * 2 * sensor->desc->lanes, 10);
++	int ret;
++
++	v4l2_ctrl_handler_init(hdl, 6);
++	v4l2_ctrl_new_int_menu(hdl, &liuqin_ctrl_ops, V4L2_CID_LINK_FREQ,
++			       sensor->desc->num_link_freqs - 1, 0,
++			       sensor->desc->link_freq_menu)->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	v4l2_ctrl_new_std(hdl, &liuqin_ctrl_ops, V4L2_CID_PIXEL_RATE,
++			  1, pixel_rate, 1, pixel_rate)->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	v4l2_ctrl_new_std(hdl, &liuqin_ctrl_ops, V4L2_CID_HBLANK,
++			  mode->hts - mode->width, mode->hts - mode->width, 1,
++			  mode->hts - mode->width)->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	sensor->vblank = v4l2_ctrl_new_std(hdl, &liuqin_ctrl_ops,
++					  V4L2_CID_VBLANK, vblank,
++					  LIUQIN_VTS_MAX - mode->height, 1, vblank);
++	sensor->exposure = v4l2_ctrl_new_std(hdl, &liuqin_ctrl_ops,
++					     V4L2_CID_EXPOSURE,
++					     LIUQIN_EXPOSURE_MIN,
++					     mode->vts - LIUQIN_EXPOSURE_MARGIN, 1,
++					     mode->vts - LIUQIN_EXPOSURE_MARGIN);
++	v4l2_ctrl_new_std(hdl, &liuqin_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
++			  sensor->desc->again_min, sensor->desc->again_max, 1,
++			  sensor->desc->again_min);
++
++	ret = hdl->error;
++	if (ret) {
++		v4l2_ctrl_handler_free(hdl);
++		return ret;
++	}
++	sensor->sd.ctrl_handler = hdl;
++	return 0;
++}
++
++static void liuqin_update_format(struct liuqin_sensor *sensor,
++				 const struct liuqin_mode *mode,
++				 struct v4l2_mbus_framefmt *fmt)
++{
++	fmt->width = mode->width;
++	fmt->height = mode->height;
++	fmt->code = sensor->desc->mbus_code;
++	fmt->field = V4L2_FIELD_NONE;
++	fmt->colorspace = V4L2_COLORSPACE_RAW;
++	fmt->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
++	fmt->quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	fmt->xfer_func = V4L2_XFER_FUNC_NONE;
++}
++
++static struct v4l2_fract liuqin_mode_interval(const struct liuqin_sensor *sensor,
++					 const struct liuqin_mode *mode)
++{
++	u64 pixel_rate = div_u64(sensor->desc->link_freq * 2 * sensor->desc->lanes,
++					 10);
++
++	return (struct v4l2_fract) {
++		.numerator = (u32)((u64)mode->hts * mode->vts),
++		.denominator = (u32)pixel_rate,
++	};
++}
++
++static u64 liuqin_interval_distance(struct v4l2_fract a,
++				    struct v4l2_fract b)
++{
++	s64 distance = (s64)a.numerator * b.denominator -
++			       (s64)b.numerator * a.denominator;
++
++	return distance < 0 ? -distance : distance;
++}
++
++static void liuqin_set_mode(struct liuqin_sensor *sensor,
++				    const struct liuqin_mode *mode)
++{
++	u32 vblank = mode->vts - mode->height;
++
++	/* Update the mode before changing VBLANK so the control callback uses it. */
++	sensor->mode = mode;
++	__v4l2_ctrl_modify_range(sensor->vblank, vblank,
++				 LIUQIN_VTS_MAX - mode->height, 1, vblank);
++	__v4l2_ctrl_s_ctrl(sensor->vblank, vblank);
++	__v4l2_ctrl_modify_range(sensor->exposure, LIUQIN_EXPOSURE_MIN,
++				 mode->vts - LIUQIN_EXPOSURE_MARGIN, 1,
++				 mode->vts - LIUQIN_EXPOSURE_MARGIN);
++}
++
++static int liuqin_set_pad_format(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state,
++				 struct v4l2_subdev_format *fmt)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	const struct liuqin_mode *mode;
++
++	mode = v4l2_find_nearest_size(sensor->desc->modes,
++				      sensor->desc->num_modes, width, height,
++				      fmt->format.width, fmt->format.height);
++	liuqin_update_format(sensor, mode, &fmt->format);
++	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE && sensor->mode != mode)
++		liuqin_set_mode(sensor, mode);
++	*v4l2_subdev_state_get_format(state, 0) = fmt->format;
++	*v4l2_subdev_state_get_interval(state, 0) =
++		liuqin_mode_interval(sensor, mode);
++	return 0;
++}
++
++static int liuqin_enum_mbus_code(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state,
++				 struct v4l2_subdev_mbus_code_enum *code)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++
++	if (code->index)
++		return -EINVAL;
++	code->code = sensor->desc->mbus_code;
++	return 0;
++}
++
++static int liuqin_enum_frame_size(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *state,
++				  struct v4l2_subdev_frame_size_enum *fse)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	const struct liuqin_mode *mode;
++
++	if (fse->index >= sensor->desc->num_modes ||
++	    fse->code != sensor->desc->mbus_code)
++		return -EINVAL;
++	mode = &sensor->desc->modes[fse->index];
++	fse->min_width = fse->max_width = mode->width;
++	fse->min_height = fse->max_height = mode->height;
++	return 0;
++}
++
++static int liuqin_enum_frame_interval(struct v4l2_subdev *sd,
++				      struct v4l2_subdev_state *state,
++				      struct v4l2_subdev_frame_interval_enum *fie)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	unsigned int index = 0;
++	unsigned int i;
++
++	if (fie->pad || fie->code != sensor->desc->mbus_code)
++		return -EINVAL;
++
++	for (i = 0; i < sensor->desc->num_modes; i++) {
++		const struct liuqin_mode *mode = &sensor->desc->modes[i];
++
++		if (mode->width != fie->width || mode->height != fie->height)
++			continue;
++		if (index++ == fie->index) {
++			fie->interval = liuqin_mode_interval(sensor, mode);
++			return 0;
++		}
++	}
++
++	return -EINVAL;
++}
++
++static int liuqin_get_frame_interval(struct v4l2_subdev *sd,
++				     struct v4l2_subdev_state *state,
++				     struct v4l2_subdev_frame_interval *fi)
++{
++	if (fi->pad)
++		return -EINVAL;
++
++	return v4l2_subdev_get_frame_interval(sd, state, fi);
++}
++
++static int liuqin_set_frame_interval(struct v4l2_subdev *sd,
++				     struct v4l2_subdev_state *state,
++				     struct v4l2_subdev_frame_interval *fi)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	const struct v4l2_mbus_framefmt *fmt;
++	const struct liuqin_mode *best = NULL;
++	u64 best_distance = U64_MAX;
++	unsigned int i;
++
++	if (fi->pad || !fi->interval.numerator || !fi->interval.denominator)
++		return -EINVAL;
++	fmt = v4l2_subdev_state_get_format(state, 0);
++	for (i = 0; i < sensor->desc->num_modes; i++) {
++		const struct liuqin_mode *mode = &sensor->desc->modes[i];
++		struct v4l2_fract interval;
++		u64 distance;
++
++		if (mode->width != fmt->width || mode->height != fmt->height)
++			continue;
++		interval = liuqin_mode_interval(sensor, mode);
++		distance = liuqin_interval_distance(interval, fi->interval);
++		if (distance < best_distance) {
++			best = mode;
++			best_distance = distance;
++		}
++	}
++	if (!best)
++		return -EINVAL;
++
++	fi->interval = liuqin_mode_interval(sensor, best);
++	*v4l2_subdev_state_get_interval(state, 0) = fi->interval;
++	if (fi->which == V4L2_SUBDEV_FORMAT_ACTIVE && sensor->mode != best)
++		liuqin_set_mode(sensor, best);
++	return 0;
++}
++
++static int liuqin_init_state(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	struct v4l2_subdev_format fmt = {
++		.which = V4L2_SUBDEV_FORMAT_TRY,
++		.pad = 0,
++		.format = { .width = sensor->mode->width, .height = sensor->mode->height },
++	};
++	return liuqin_set_pad_format(sd, state, &fmt);
++}
++
++static int liuqin_enable_streams(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state, u32 pad,
++				 u64 streams_mask)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	int ret;
++
++	ret = pm_runtime_resume_and_get(sensor->dev);
++	if (ret < 0)
++		return ret;
++	cci_multi_reg_write(sensor->regmap, sensor->desc->init->regs,
++				sensor->desc->init->num_regs, &ret);
++	cci_multi_reg_write(sensor->regmap, sensor->mode->reg_list.regs,
++				sensor->mode->reg_list.num_regs, &ret);
++	if (!ret)
++		ret = __v4l2_ctrl_handler_setup(sensor->sd.ctrl_handler);
++	if (!ret)
++		cci_multi_reg_write(sensor->regmap, sensor->desc->stream_on->regs,
++				 sensor->desc->stream_on->num_regs, &ret);
++	if (ret) {
++		dev_err(sensor->dev, "failed to start %s: %d\n", sensor->desc->name, ret);
++		pm_runtime_put_autosuspend(sensor->dev);
++	}
++	return ret;
++}
++
++static int liuqin_disable_streams(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *state, u32 pad,
++				  u64 streams_mask)
++{
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++	int ret;
++
++	ret = cci_multi_reg_write(sensor->regmap, sensor->desc->stream_off->regs,
++				  sensor->desc->stream_off->num_regs, NULL);
++	pm_runtime_put_autosuspend(sensor->dev);
++	return ret;
++}
++
++static const struct v4l2_subdev_video_ops liuqin_video_ops = {
++	.s_stream = v4l2_subdev_s_stream_helper,
++};
++static const struct v4l2_subdev_pad_ops liuqin_pad_ops = {
++	.set_fmt = liuqin_set_pad_format,
++	.get_fmt = v4l2_subdev_get_fmt,
++	.enum_mbus_code = liuqin_enum_mbus_code,
++	.enum_frame_size = liuqin_enum_frame_size,
++	.enum_frame_interval = liuqin_enum_frame_interval,
++	.get_frame_interval = liuqin_get_frame_interval,
++	.set_frame_interval = liuqin_set_frame_interval,
++	.enable_streams = liuqin_enable_streams,
++	.disable_streams = liuqin_disable_streams,
++};
++static const struct v4l2_subdev_ops liuqin_subdev_ops = {
++	.video = &liuqin_video_ops,
++	.pad = &liuqin_pad_ops,
++};
++static const struct v4l2_subdev_internal_ops liuqin_internal_ops = {
++	.init_state = liuqin_init_state,
++};
++static const struct media_entity_operations liuqin_entity_ops = {
++	.link_validate = v4l2_subdev_link_validate,
++};
++
++static int liuqin_check_hwcfg(struct liuqin_sensor *sensor)
++{
++	struct v4l2_fwnode_endpoint bus_cfg = {
++		.bus_type = V4L2_MBUS_CSI2_DPHY,
++	};
++	struct fwnode_handle *ep;
++	unsigned long bitmap;
++	int ret;
++
++	ep = fwnode_graph_get_next_endpoint(dev_fwnode(sensor->dev), NULL);
++	if (!ep)
++		return -EINVAL;
++	ret = v4l2_fwnode_endpoint_alloc_parse(ep, &bus_cfg);
++	fwnode_handle_put(ep);
++	if (ret)
++		return ret;
++	if (bus_cfg.bus.mipi_csi2.num_data_lanes != sensor->desc->lanes) {
++		dev_err(sensor->dev, "expected %u CSI-2 lanes, got %u\n",
++			sensor->desc->lanes, bus_cfg.bus.mipi_csi2.num_data_lanes);
++		ret = -EINVAL;
++		goto out;
++	}
++	ret = v4l2_link_freq_to_bitmap(sensor->dev, bus_cfg.link_frequencies,
++				       bus_cfg.nr_of_link_frequencies,
++				       sensor->desc->link_freq_menu,
++				       sensor->desc->num_link_freqs, &bitmap);
++out:
++	v4l2_fwnode_endpoint_free(&bus_cfg);
++	return ret;
++}
++
++static int liuqin_power_on(struct device *dev)
++{
++	struct liuqin_sensor *sensor =
++		container_of(dev_get_drvdata(dev), struct liuqin_sensor, sd);
++	int ret;
++
++	if (sensor->vddd) {
++		ret = regulator_enable(sensor->vddd);
++		if (ret)
++			return ret;
++	}
++	if (sensor->vdda) {
++		ret = regulator_enable(sensor->vdda);
++		if (ret)
++			goto disable_vddd;
++	}
++	if (sensor->vddio) {
++		ret = regulator_enable(sensor->vddio);
++		if (ret)
++			goto disable_vdda;
++	}
++	ret = clk_prepare_enable(sensor->mclk);
++	if (ret)
++		goto disable_vddio;
++	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
++	usleep_range(10 * USEC_PER_MSEC, 11 * USEC_PER_MSEC);
++	return 0;
++disable_vddio:
++	if (sensor->vddio)
++		regulator_disable(sensor->vddio);
++disable_vdda:
++	if (sensor->vdda)
++		regulator_disable(sensor->vdda);
++disable_vddd:
++	if (sensor->vddd)
++		regulator_disable(sensor->vddd);
++	return ret;
++}
++
++static int liuqin_power_off(struct device *dev)
++{
++	struct liuqin_sensor *sensor =
++		container_of(dev_get_drvdata(dev), struct liuqin_sensor, sd);
++
++	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
++	clk_disable_unprepare(sensor->mclk);
++	if (sensor->vddio)
++		regulator_disable(sensor->vddio);
++	if (sensor->vdda)
++		regulator_disable(sensor->vdda);
++	if (sensor->vddd)
++		regulator_disable(sensor->vddd);
++	return 0;
++}
++
++static int liuqin_identify(struct liuqin_sensor *sensor)
++{
++	u64 id;
++	int ret, i;
++
++	/*
++	 * The module's i2c comes up marginal on this board: the same probe that
++	 * succeeds on one boot times out (-110/-EIO) on another, and the failed
++	 * device then keeps the whole async notifier incomplete (no subdev nodes
++	 * at all).  Retry the chip-id read and power-cycle the sensor's reset
++	 * line between attempts: the part sometimes comes up with its i2c state
++	 * machine dead and only a reset pulse revives it - a plain retry within
++	 * the same boot never recovers.
++	 */
++	for (i = 0; i < 12; i++) {
++		ret = cci_read(sensor->regmap, sensor->desc->chip_reg, &id, NULL);
++		if (!ret)
++			break;
++		/* Reset pulse after the 1st, 5th and 9th failed attempt. */
++		if (i == 0 || i == 4 || i == 8) {
++			gpiod_set_value_cansleep(sensor->reset_gpio, 1);
++			usleep_range(5 * USEC_PER_MSEC, 6 * USEC_PER_MSEC);
++			gpiod_set_value_cansleep(sensor->reset_gpio, 0);
++		}
++		usleep_range(20 * USEC_PER_MSEC, 25 * USEC_PER_MSEC);
++	}
++	if (ret)
++		return ret;
++	if (id != sensor->desc->chip_id) {
++		dev_err(sensor->dev, "%s chip id 0x%04llx != 0x%04x\n",
++			sensor->desc->name, id, sensor->desc->chip_id);
++		return -ENODEV;
++	}
++	return 0;
++}
++
++static int liuqin_probe(struct i2c_client *client)
++{
++	const struct liuqin_sensor_desc *desc = device_get_match_data(&client->dev);
++	struct liuqin_sensor *sensor;
++	unsigned long freq;
++	int ret;
++
++	if (!desc)
++		return -ENODEV;
++	sensor = devm_kzalloc(&client->dev, sizeof(*sensor), GFP_KERNEL);
++	if (!sensor)
++		return -ENOMEM;
++	sensor->dev = &client->dev;
++	sensor->desc = desc;
++	sensor->mode = &desc->modes[0];
++	v4l2_i2c_subdev_init(&sensor->sd, client, &liuqin_subdev_ops);
++	/*
++	 * libcamera matches its per-sensor gain helpers and tuning files by
++	 * the sensor model, and the default subdev name is derived from the
++	 * driver name - which both sensors of this driver share
++	 * ("liuqin-camera-sensors 5-0010").  Name each one after its model.
++	 */
++	v4l2_i2c_subdev_set_name(&sensor->sd, client, sensor->desc->name, NULL);
++	sensor->regmap = devm_cci_regmap_init_i2c(client, 16);
++	if (IS_ERR(sensor->regmap))
++		return dev_err_probe(sensor->dev, PTR_ERR(sensor->regmap),
++				     "failed to init CCI\n");
++	sensor->mclk = devm_v4l2_sensor_clk_get(sensor->dev, NULL);
++	if (IS_ERR(sensor->mclk))
++		return dev_err_probe(sensor->dev, PTR_ERR(sensor->mclk),
++				     "failed to get MCLK\n");
++	freq = clk_get_rate(sensor->mclk);
++	if (freq != LIUQIN_MCLK_FREQ)
++		return dev_err_probe(sensor->dev, -EINVAL,
++				     "MCLK %lu Hz is not 19.2 MHz\n", freq);
++	ret = liuqin_check_hwcfg(sensor);
++	if (ret)
++		return dev_err_probe(sensor->dev, ret, "invalid CSI-2 endpoint\n");
++	sensor->reset_gpio = devm_gpiod_get_optional(sensor->dev, "reset",
++						     GPIOD_OUT_HIGH);
++	if (IS_ERR(sensor->reset_gpio))
++		return dev_err_probe(sensor->dev, PTR_ERR(sensor->reset_gpio),
++				     "failed to get reset GPIO\n");
++	sensor->vdda = devm_regulator_get_optional(sensor->dev, "vdda");
++	if (IS_ERR(sensor->vdda)) {
++		ret = PTR_ERR(sensor->vdda);
++		if (ret != -ENODEV)
++			return dev_err_probe(sensor->dev, ret, "failed to get vdda\n");
++		sensor->vdda = NULL;
++	}
++	sensor->vddd = devm_regulator_get_optional(sensor->dev, "vddd");
++	if (IS_ERR(sensor->vddd)) {
++		ret = PTR_ERR(sensor->vddd);
++		if (ret != -ENODEV)
++			return dev_err_probe(sensor->dev, ret, "failed to get vddd\n");
++		sensor->vddd = NULL;
++	}
++	sensor->vddio = devm_regulator_get_optional(sensor->dev, "vddio");
++	if (IS_ERR(sensor->vddio)) {
++		ret = PTR_ERR(sensor->vddio);
++		if (ret != -ENODEV)
++			return dev_err_probe(sensor->dev, ret, "failed to get vddio\n");
++		sensor->vddio = NULL;
++	}
++	ret = liuqin_power_on(sensor->dev);
++	if (ret)
++		return ret;
++	ret = liuqin_identify(sensor);
++	if (ret)
++		goto power_off;
++	ret = liuqin_init_controls(sensor);
++	if (ret)
++		goto power_off;
++	sensor->sd.state_lock = sensor->ctrl_handler.lock;
++	sensor->sd.internal_ops = &liuqin_internal_ops;
++	sensor->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	sensor->sd.entity.ops = &liuqin_entity_ops;
++	sensor->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
++	ret = media_entity_pads_init(&sensor->sd.entity, 1, &sensor->pad);
++	if (ret)
++		goto ctrl_free;
++	ret = v4l2_subdev_init_finalize(&sensor->sd);
++	if (ret)
++		goto entity_cleanup;
++	pm_runtime_set_active(sensor->dev);
++	pm_runtime_enable(sensor->dev);
++	ret = v4l2_async_register_subdev_sensor(&sensor->sd);
++	if (ret)
++		goto subdev_cleanup;
++	pm_runtime_set_autosuspend_delay(sensor->dev, 1000);
++	pm_runtime_use_autosuspend(sensor->dev);
++	pm_runtime_idle(sensor->dev);
++	return 0;
++subdev_cleanup:
++	v4l2_subdev_cleanup(&sensor->sd);
++	pm_runtime_disable(sensor->dev);
++entity_cleanup:
++	media_entity_cleanup(&sensor->sd.entity);
++ctrl_free:
++	v4l2_ctrl_handler_free(sensor->sd.ctrl_handler);
++power_off:
++	liuqin_power_off(sensor->dev);
++	return ret;
++}
++
++static void liuqin_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct liuqin_sensor *sensor = to_liuqin(sd);
++
++	v4l2_async_unregister_subdev(sd);
++	v4l2_subdev_cleanup(sd);
++	media_entity_cleanup(&sd->entity);
++	v4l2_ctrl_handler_free(sd->ctrl_handler);
++	pm_runtime_disable(sensor->dev);
++	if (!pm_runtime_status_suspended(sensor->dev)) {
++		liuqin_power_off(sensor->dev);
++		pm_runtime_set_suspended(sensor->dev);
++	}
++}
++
++static const struct dev_pm_ops liuqin_pm_ops = {
++	SET_RUNTIME_PM_OPS(liuqin_power_off, liuqin_power_on, NULL)
++};
++
++static const struct of_device_id liuqin_of_match[] = {
++	{ .compatible = "sony,imx596", .data = &imx596_desc },
++	{ .compatible = "smartsens,sc202cs", .data = &sc202cs_desc },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, liuqin_of_match);
++
++static struct i2c_driver liuqin_i2c_driver = {
++	.driver = {
++		.name = "liuqin-camera-sensors",
++		.of_match_table = liuqin_of_match,
++		.pm = pm_ptr(&liuqin_pm_ops),
++	},
++	.probe = liuqin_probe,
++	.remove = liuqin_remove,
++};
++module_i2c_driver(liuqin_i2c_driver);
++
++MODULE_AUTHOR("Liuqin mainline bring-up");
++MODULE_DESCRIPTION("IMX596 and SC202CS sensors used by Xiaomi Liuqin");
++MODULE_LICENSE("GPL");

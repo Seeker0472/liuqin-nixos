@@ -1,0 +1,111 @@
+media: i2c: dw9768: support the liuqin GT9764 autofocus
+
+The rear module's VCM is a Giantec GT9764, DW9768-register-compatible (the
+vendor AAC settings are encoded in the DT node, 0022).  Besides the binding
+addition this makes the stream-powered model robust:
+
+- the power-down sequence runs only if the chip actually came up, and a
+  failed resume is reported without setting the sticky runtime error - the
+  next open (i.e. the next stream) retries;
+- the resume delay covers the cold power-up: the VCM shares the camera
+  module's power and the module's supplies are switched by the sensor driver,
+  so the datasheet's t_OPR alone measured too short over this path.
+
+The rail itself is always on and stays at its 3.0 V default; no code writes
+the vendor's 3.1 V.
+
+diff --git a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml b/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
+index a0855d3b7..c45c4e75a 100644
+--- a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
++++ b/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
+@@ -23,6 +23,7 @@ properties:
+     enum:
+       - dongwoon,dw9768 # for DW9768 VCM
+       - giantec,gt9769  # for GT9769 VCM
++      - giantec,gt9764  # for GT9764 VCM
+ 
+   reg:
+     maxItems: 1
+diff --git a/drivers/media/i2c/dw9768.c b/drivers/media/i2c/dw9768.c
+index d037d3009..8e9b828c6 100644
+--- a/drivers/media/i2c/dw9768.c
++++ b/drivers/media/i2c/dw9768.c
+@@ -99,6 +99,7 @@ static const char * const dw9768_supply_names[] = {
+ 
+ /* dw9768 device structure */
+ struct dw9768 {
++	bool initialized;
+ 	struct regulator_bulk_data supplies[ARRAY_SIZE(dw9768_supply_names)];
+ 	struct v4l2_ctrl_handler ctrls;
+ 	struct v4l2_ctrl *focus;
+@@ -313,7 +314,15 @@ static int dw9768_runtime_suspend(struct device *dev)
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+ 	struct dw9768 *dw9768 = sd_to_dw9768(sd);
+ 
+-	dw9768_release(dw9768);
++	/*
++	 * liuqin: only run the power-down sequence if the chip actually came
++	 * up.  A resume whose init never reached the chip must not send more
++	 * I2C into an unpowered part (each write would just time out).
++	 */
++	if (dw9768->initialized)
++		dw9768_release(dw9768);
++	dw9768->initialized = false;
++
+ 	regulator_bulk_disable(ARRAY_SIZE(dw9768_supply_names),
+ 			       dw9768->supplies);
+ 
+@@ -334,22 +343,34 @@ static int dw9768_runtime_resume(struct device *dev)
+ 	}
+ 
+ 	/*
+-	 * The datasheet refers to t_OPR that needs to be waited before sending
+-	 * I2C commands after power-up.
++	 * liuqin: the VCM shares the camera module's power.  This rail itself
++	 * is always on, but the module's other supplies are switched by the
++	 * sensor driver, so a resume may find the part unpowered - the
++	 * datasheet's t_OPR alone measured too short over this path.
+ 	 */
+-	usleep_range(DW9768_T_OPR_US, DW9768_T_OPR_US + 100);
++	usleep_range(20000, 21000);
+ 
++	/*
++	 * liuqin: the VCM sits on the camera module, whose other rails (the
++	 * module's dvdd/avdd and the shared 1.8 V I/O) are switched by the
++	 * sensor driver's runtime PM.  While the module is down this init
++	 * cannot be answered and the CCI times out (-ETIMEDOUT).  Keep that
++	 * failure local: returning it here would set the sticky
++	 * runtime_error and turn every later open of this boot into -EINVAL.
++	 * Report it, stay active, and retry on the next resume - i.e. the
++	 * next open, when the module may be powered (touch the lens while
++	 * the sensor is streaming).
++	 */
+ 	ret = dw9768_init(dw9768);
+-	if (ret < 0)
+-		goto disable_regulator;
+-
+-	return 0;
++	if (ret < 0) {
++		dev_warn(dev, "init failed (%d), retrying on the next resume\n",
++			 ret);
++		return 0;
++	}
+ 
+-disable_regulator:
+-	regulator_bulk_disable(ARRAY_SIZE(dw9768_supply_names),
+-			       dw9768->supplies);
++	dw9768->initialized = true;
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ static int dw9768_set_ctrl(struct v4l2_ctrl *ctrl)
+@@ -530,6 +551,7 @@ static void dw9768_remove(struct i2c_client *client)
+ static const struct of_device_id dw9768_of_table[] = {
+ 	{ .compatible = "dongwoon,dw9768" },
+ 	{ .compatible = "giantec,gt9769" },
++	{ .compatible = "giantec,gt9764" },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, dw9768_of_table);

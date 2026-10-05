@@ -22,7 +22,9 @@ console lines appear on the panel as they are drawn.
 
 Not upstream: 7.2.5 and the community liuqin tree carry the unconditional skip.
 
+diff --git a/drivers/gpu/drm/msm/msm_fb.c b/drivers/gpu/drm/msm/msm_fb.c
 --- a/drivers/gpu/drm/msm/msm_fb.c
++++ b/drivers/gpu/drm/msm/msm_fb.c
 @@ -39,11 +39,21 @@
  				   unsigned int num_clips)
  {

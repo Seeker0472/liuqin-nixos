@@ -1,0 +1,19 @@
+# Camera/media symbols the liuqin camera stack needs.  kernel/config.nix
+# carries these answers, but ignoreConfigErrors = true downgrades a rejected
+# structured answer to a build warning, so assert the final .config here
+# (CONFIG_X=m tolerates y or m; CONFIG_X=y must survive as y).
+CONFIG_MEDIA_SUPPORT=m
+CONFIG_MEDIA_CONTROLLER=y
+CONFIG_VIDEO_V4L2_SUBDEV_API=y
+CONFIG_VIDEOBUF2_DMA_SG=m
+CONFIG_I2C_QCOM_CCI=m
+CONFIG_VIDEO_QCOM_CAMSS=m
+CONFIG_VIDEO_S5KJN1=m
+CONFIG_VIDEO_QCOM_LIUQIN_SENSORS=m
+CONFIG_VIDEO_DW9768=m
+CONFIG_SM_CAMCC_8450=m
+CONFIG_LEDS_CLASS_FLASH=m
+CONFIG_LEDS_QCOM_FLASH=m
+CONFIG_EEPROM_AT24=m
+CONFIG_DMABUF_HEAPS=y
+CONFIG_DMABUF_HEAPS_SYSTEM=m
