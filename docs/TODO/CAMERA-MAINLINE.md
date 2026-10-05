@@ -39,6 +39,8 @@
 | SC202CS 增益寄存器语义 | 厂律 Q10 的落点未知；当前把**模拟增益钉死 1x**（最小步进 3.4 倍会造成 AE 每帧 bang-bang），AE 只用曝光 + 数字增益 |
 | 景深翻转 | `0x3221 = 0x06` vs `0x60` 待上机确认（寄存器不可在线访问，需部署迭代） |
 | AF 画质上限 | 见补丁 0002 的 FIXME：对亮度敏感（AE 全程在动）、固定驻留、9+6 固定步进无插值、无 ROI |
+| VCM 不 park | 桌面对话期 libcamera 常驻持有 lens subdev ⇒ 驱动永不 suspend ⇒ 关相机后镜头停在最后 DAC（实测 639），`dw9768_release()` 从不执行（rail 常开是 DTS 设计，这条是额外的线圈保持电流）；应改为停流时 park；FIXME 见 `0021` |
+| VCM init 重试不到 | 模块未上电时 resume 的 `dw9768_init()` 超时（-110），"下次 resume 再试"在节点常开时永不发生 ⇒ 芯片整 boot 跑在 POR 默认（无 AAC/PD 复位）；修法：init/park 都挂到 sensor 的 `s_stream`；FIXME 见 `0021` |
 | 应用拍照/录像 | GNOME Snapshot：保存的 JPEG 为 0 字节；录像文件 moov 未 finalize |
 | suspend/resume | "睡醒后再抓帧"未测 |
 | probe 稳定性 | 重试后的跨重启统计未做 |
@@ -65,7 +67,8 @@
   之后 unmask。
 
 **对焦（VCM）**
-- 镜头只在**模组上电（推流）时**可动；空闲写 focus 得到 `-110`/`-ETIMEDOUT` 是**预期**行为。
+- 镜头只在**模组上电（推流）时**可动；空闲写 focus 得到 `-110`/`-ETIMEDOUT` 是**预期**行为
+  （注意：驱动在桌面对话期不 suspend，所以也不会自动 park / 重新 init —— 见 open items 两行）。
 - 对焦是流中动作：`v4l2-ctl -d <dw9768-subdev> --set-ctrl focus_absolute=<dac>`；
   536 是 30 cm 标定点。找节点：`media-ctl -p -d /dev/media0 | grep -A3 dw9768`。
 
