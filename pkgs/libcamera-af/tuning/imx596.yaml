@@ -1,0 +1,34 @@
+# Liuqin (Xiaomi Pad 6 Pro) — soft-ISP tuning for the front camera (IMX596).
+#
+# blackLevel=4096 (16-bit scale) = 64 at 10 bits = the measured optical-black
+# pedestal of this module.
+#
+# The analogue-gain control takes the Sony-style code 1024 - 1024/gain
+# (CameraSensorHelperImx596), i.e. 0 is 1x and 1008 is 64x; the AE uses the
+# ISP's digital gain on top.
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  # Identity CCM at three correlated-colour-temperature points: keeps hues
+  # untouched until a measured matrix is available, but switches the soft
+  # IPA's colour path on (context.ccmEnabled), which is also the gate for the
+  # Adjust algorithm's saturation stage - without a Ccm entry the whole matrix
+  # path is dead and saturation can never be applied.
+  - Ccm:
+      ccms:
+        - ct: 2860
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+        - ct: 4500
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+        - ct: 6500
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+  - Adjust:
+  - Agc:

@@ -1,0 +1,523 @@
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -35,6 +35,7 @@
+ 
+ #include "libcamera/internal/camera.h"
+ #include "libcamera/internal/camera_lens.h"
++#include "libcamera/internal/mapped_framebuffer.h"
+ #include "libcamera/internal/camera_manager.h"
+ #include "libcamera/internal/camera_sensor.h"
+ #include "libcamera/internal/camera_sensor_properties.h"
+@@ -289,6 +290,89 @@
+ 
+ 	CameraLens *focusLens() const { return focusLens_; }
+ 
++	/*
++	 * Contrast-detection autofocus, driven from processed frames: a coarse
++	 * full-range sweep, a fine sweep around the best point, then lock, and
++	 * (by default) keep tracking the scene for changes that warrant a
++	 * rescan.  Ported in spirit from the RPi IPA's AfAlgorithm, kept local
++	 * to the pipeline because the software ISP has no AF hooks.
++	 *
++	 * FIXME: this is deliberately crude - it works on this device, but
++	 * every part of it wants work:
++	 *
++	 *  - The score is the raw gradient energy and is therefore brightness
++	 *    sensitive, while the AE keeps adapting throughout the sweep, so
++	 *    a position that happens to be brighter scores higher regardless
++	 *    of focus.  A mean-luma normalisation was tried and reverted: on a
++	 *    dark, defocused position the AE's gain noise then dominates the
++	 *    normalised score (that is how the sweep once settled on position
++	 *    0).  The real fix is to hold the exposure for the duration of
++	 *    the sweep, which needs the soft IPA to honour AeEnable and
++	 *    ExposureTime - today it ignores both.
++	 *  - The dwell is a fixed 12 frames.  It should adapt to when the
++	 *    score and the AE actually settle, e.g. by watching the request
++	 *    metadata's exposure and gain.
++	 *  - The sweep is 9 coarse + 6 fine positions over the full 0..1023
++	 *    range, with no sub-step interpolation.  A parabolic fit around
++	 *    the coarse peak, and a range limited to the module's useful
++	 *    focus distances, would be faster and more accurate.
++	 *  - Tracking uses a fixed 3x score-drop threshold and a 10 s
++	 *    cooldown.  Scene-change detection would be better.
++	 *  - The score covers the central 3/5 of the frame with no
++	 *    region-of-interest weighting or face/subject awareness.
++	 */
++	struct Af {
++		enum class State { Idle, Coarse, Fine, Locked };
++		State state = State::Idle;
++		/* One of the controls::AfMode values. */
++		int32_t mode = controls::AfModeContinuous;
++		bool started = false;		/* Auto mode: AfTriggerStart armed a scan */
++		unsigned int settle = 90;	/* frames for AGC to converge: measured, the soft ISP's AE/AWB need ~3 s before a contrast score means anything (with 25 the coarse sweep runs on noise and locks anywhere) */
++		int idx = 0;
++		int count = 0;
++		int32_t pts[12] = {};
++		int32_t cur = -1;		/* position of the frame being scored */
++		unsigned int dwell = 11;	/* frames to let the VCM *and the AE* settle after a move */
++		int64_t bestScore = -1;
++		int32_t best = -1;
++		int32_t lo = 0;
++		int32_t hi = 1023;
++		unsigned int failCount = 0;	/* consecutive lens write failures */
++		bool warnedLensPosition = false;	/* one warning per stream */
++		/* locked state and continuous tracking */
++		int32_t lockedPos = -1;
++		int64_t lockedScore = -1;
++		unsigned int lowStreak = 0;	/* frames clearly below lockedScore */
++		unsigned int cooldown = 0;	/* frames to wait after a failed track */
++		bool track = false;		/* the running fine scan came from tracking */
++
++		/*
++		 * Reset the scan and tracking state, for a new stream or when
++		 * the application re-arms autofocus.  The mode survives: it is
++		 * the application's configuration, not part of a scan.
++		 */
++		void reset()
++		{
++			state = State::Idle;
++			started = false;
++			settle = 90;
++			idx = 0;
++			count = 0;
++			cur = -1;
++			dwell = 11;
++			bestScore = -1;
++			best = -1;
++			lowStreak = 0;
++			cooldown = 0;
++			track = false;
++			failCount = 0;
++			warnedLensPosition = false;
++		}
++	};
++	Af af_;
++	void afRun(FrameBuffer *buffer);
++	int64_t afScore(FrameBuffer *buffer);
++
+ 	int init();
+ 	int setupLinks();
+ 	int setupFormats(V4L2SubdeviceFormat *format,
+@@ -1068,6 +1152,8 @@
+ 
+ void SimpleCameraData::conversionOutputDone(FrameBuffer *buffer)
+ {
++	afRun(buffer);
++
+ 	SimplePipelineHandler *pipe = SimpleCameraData::pipe();
+ 
+ 	/* Complete the buffer and the request. */
+@@ -1717,6 +1803,13 @@
+ 	video->bufferReady.connect(data, &SimpleCameraData::imageBufferReady);
+ 
+ 	data->delayedCtrls_->reset();
++
++	/*
++	 * Start each stream with clean AF scan state.  This is what makes
++	 * AfModeContinuous re-run its initial sweep per stream, and drops
++	 * AfModeAuto back to Idle (waiting for a fresh AfTriggerStart).
++	 */
++	data->af_.reset();
+ 	if (frameStartEmitter) {
+ 		ret = frameStartEmitter->setFrameStartEnabled(true);
+ 		if (ret) {
+@@ -1786,19 +1879,393 @@
+ 	releasePipeline(data);
+ }
+ 
++int64_t SimpleCameraData::afScore(FrameBuffer *buffer)
++{
++	/*
++	 * Score the buffer's own stream.  streams_[0] is not necessarily the
++	 * processed stream: with a raw-first configuration it is the 10-bpp
++	 * packed Bayer stream whose bitsPerPixel is not 32, so every score
++	 * came back -1 while the state machine still walked the whole sweep
++	 * and parked the lens blind.  Refuse to score anything that is not a
++	 * 32-bpp processed frame.
++	 */
++	const Stream *stream = nullptr;
++	for (const auto &[s, b] : buffer->request()->buffers()) {
++		if (b == buffer) {
++			stream = s;
++			break;
++		}
++	}
++	if (!stream)
++		return -1;
++
++	const StreamConfiguration &cfg = stream->configuration();
++	const PixelFormatInfo &fmt = PixelFormatInfo::info(cfg.pixelFormat);
++	if (!fmt.isValid() || fmt.bitsPerPixel != 32)
++		return -1;
++
++	MappedFrameBuffer map(buffer, MappedFrameBuffer::MapFlag::Read);
++	if (!map.isValid())
++		return -1;
++
++	const uint8_t *data = map.planes()[0].data();
++	const unsigned int bpp = fmt.bitsPerPixel / 8;
++	const unsigned int w = cfg.size.width, h = cfg.size.height;
++	const unsigned int x0 = w / 5, x1 = w - w / 5;
++	const unsigned int y0 = h / 5, y1 = h - h / 5;
++
++	/* Luma as the sum of the first three bytes: channel-order independent. */
++	auto luma = [bpp](const uint8_t *row, unsigned int x) {
++		const uint8_t *p = row + (size_t)x * bpp;
++		return (int)p[0] + (int)p[1] + (int)p[2];
++	};
++
++	int64_t acc = 0;
++	unsigned int n = 0;
++
++	for (unsigned int y = y0; y < y1; y++) {
++		const uint8_t *row = data + (size_t)y * cfg.stride;
++		for (unsigned int x = x0; x < x1; x++) {
++			int l = luma(row, x);
++			int dx = l - luma(row, x - 1);
++			int dy = l - luma(row - cfg.stride, x);
++			acc += (int64_t)dx * dx + (int64_t)dy * dy;
++			n++;
++		}
++	}
++
++	if (!n)
++		return -1;
++
++	/*
++	 * liuqin: keep the raw gradient energy and rely on the dwell below
++	 * for exposure stability.  Normalising by the mean luma was tried
++	 * and reverted: on a defocused (dark) position the AE pushes the
++	 * gain and the extra noise then dominates a mean-normalised score,
++	 * which is how the sweep came to prefer position 0.
++	 */
++	return acc / n;
++}
++
++void SimpleCameraData::afRun(FrameBuffer *buffer)
++{
++	if (!focusLens_)
++		return;
++
++	Request *request = buffer->request();
++	ControlList &meta = request->_d()->metadata();
++
++	/* Report LensPosition whenever it is known, in every mode. */
++	auto reportPosition = [&]() {
++		if (af_.cur >= 0)
++			meta.set(controls::LensPosition, (float)af_.cur);
++	};
++
++	/*
++	 * Move the lens and track consecutive write failures.  The VCM can
++	 * fail (typically -EIO on a bus glitch); after three consecutive
++	 * failures afRun() reports AfStateFailed and drops back to Idle
++	 * instead of pretending the lens moved.
++	 */
++	auto moveLens = [&](int32_t position) {
++		int ret = focusLens_->setFocusPosition(position);
++		if (ret < 0) {
++			af_.failCount++;
++			LOG(SimplePipeline, Warning)
++				<< "Failed to set lens position " << position
++				<< ": " << strerror(-ret);
++			return false;
++		}
++		af_.failCount = 0;
++		return true;
++	};
++
++	auto failAf = [&]() {
++		LOG(SimplePipeline, Warning)
++			<< "AF disabled after " << af_.failCount
++			<< " consecutive lens write failures";
++		af_.state = Af::State::Idle;
++		af_.started = false;
++		af_.settle = 90;
++		af_.track = false;
++		reportPosition();
++		meta.set(controls::AfState, controls::AfStateFailed);
++	};
++
++	/*
++	 * Manual mode never scans: the application drives the lens through
++	 * LensPosition (honoured in queueRequestDevice()) and we only report
++	 * the position it last asked for.  AfState stays Idle.  Reporting
++	 * AfStateFocused here (as an earlier version did) claimed a lock the
++	 * pipeline never established.
++	 */
++	if (af_.mode == controls::AfModeManual) {
++		reportPosition();
++		meta.set(controls::AfState, controls::AfStateIdle);
++		return;
++	}
++
++	/*
++	 * Auto mode is dormant until AfTriggerStart arms a scan.  It must not
++	 * sweep on its own: an application that merely selects AfModeAuto
++	 * would otherwise get a full sweep it never asked for.
++	 */
++	if (af_.mode == controls::AfModeAuto && !af_.started &&
++	    af_.state == Af::State::Idle) {
++		reportPosition();
++		meta.set(controls::AfState, controls::AfStateIdle);
++		return;
++	}
++
++	/*
++	 * Only a 32-bpp processed frame can be scored.  When this buffer
++	 * cannot be scored, report the state and return without touching the
++	 * state machine, so a raw-first configuration can never step the
++	 * sweep with a bogus score.
++	 */
++	const int64_t score = afScore(buffer);
++	if (score < 0) {
++		reportPosition();
++		meta.set(controls::AfState, af_.state == Af::State::Idle
++						   ? controls::AfStateIdle
++						   : controls::AfStateScanning);
++		return;
++	}
++
++	if (af_.state == Af::State::Locked) {
++		/*
++		 * Auto mode has completed the scan it was triggered for and
++		 * stays put (reporting Focused) until the next
++		 * AfTriggerStart.
++		 */
++		if (af_.mode == controls::AfModeAuto) {
++			af_.started = false;
++			reportPosition();
++			meta.set(controls::AfState, controls::AfStateFocused);
++			return;
++		}
++
++		/*
++		 * Continuous tracking: once frames stop looking like what we
++		 * locked on (sharply lower score, sustained), re-examine the
++		 * neighbourhood instead of trusting the stored position.
++		 */
++		if (af_.cooldown > 0)
++			af_.cooldown--;
++
++		if (af_.lockedScore > 0 &&
++		    score * 3 < af_.lockedScore)
++			af_.lowStreak++;
++		else
++			af_.lowStreak = 0;
++
++		if (af_.cooldown == 0 && af_.lowStreak >= 10) {
++			const int32_t span =
++				std::max<int32_t>((af_.hi - af_.lo) / 16, 16);
++			af_.count = 5;
++			for (int i = 0; i < 5; i++)
++				af_.pts[i] = std::clamp(af_.lockedPos - span +
++							(span / 2) * i, af_.lo, af_.hi);
++			af_.idx = 0;
++			af_.bestScore = -1;
++			af_.best = -1;
++			af_.track = true;
++			af_.state = Af::State::Fine;
++			af_.lowStreak = 0;
++			LOG(SimplePipeline, Debug)
++				<< "AF tracking rescan around " << af_.lockedPos;
++			af_.cur = af_.pts[0];
++			if (!moveLens(af_.cur) && af_.failCount >= 3) {
++				failAf();
++				return;
++			}
++			reportPosition();
++			meta.set(controls::AfState, controls::AfStateScanning);
++			return;
++		}
++
++		reportPosition();
++		meta.set(controls::AfState, controls::AfStateFocused);
++		return;
++	}
++
++	if (af_.state == Af::State::Idle) {
++		if (af_.settle > 0) {
++			af_.settle--;
++			reportPosition();
++			meta.set(controls::AfState, controls::AfStateIdle);
++			return;
++		}
++		const ControlInfoMap &ctrls = focusLens_->controls();
++		auto it = ctrls.find(V4L2_CID_FOCUS_ABSOLUTE);
++		if (it != ctrls.end()) {
++			af_.lo = it->second.min().get<int32_t>();
++			af_.hi = it->second.max().get<int32_t>();
++		}
++		af_.count = 9;
++		for (int i = 0; i < 9; i++)
++			af_.pts[i] = af_.lo + (af_.hi - af_.lo) * i / 8;
++		af_.idx = 0;
++		af_.state = Af::State::Coarse;
++	} else {
++		if (af_.dwell > 0) {
++			/*
++			 * The frames right after a focus move are useless to
++			 * score: the VCM is still moving and the AE is still
++			 * chasing the new (de)focus.  Measured: with only 3
++			 * frames of dwell the AE's gain swing dominated the
++			 * score.  Drop 11, score the 12th, then step.
++			 */
++			af_.dwell--;
++			reportPosition();
++			meta.set(controls::AfState, controls::AfStateScanning);
++			return;
++		}
++		if (score > af_.bestScore) {
++			af_.bestScore = score;
++			af_.best = af_.cur;
++		}
++		af_.idx++;
++		af_.dwell = 11;
++	}
++
++	if (af_.idx >= af_.count) {
++		if (af_.state == Af::State::Coarse) {
++			const int32_t span = (af_.hi - af_.lo) / 8;
++			af_.count = 6;
++			for (int i = 0; i < 6; i++)
++				af_.pts[i] = std::clamp(af_.best - span +
++							(2 * span * i) / 5, af_.lo, af_.hi);
++			af_.idx = 0;
++			af_.state = Af::State::Fine;
++			LOG(SimplePipeline, Debug)
++				<< "AF coarse best " << af_.best
++				<< " (score " << af_.bestScore << "), fine scan";
++		} else {
++			/* the fine scan (initial or tracking) finished */
++			if (af_.track) {
++				af_.track = false;
++				if (af_.best >= 0 && af_.bestScore > af_.lockedScore) {
++					af_.lockedPos = af_.best;
++					af_.lockedScore = af_.bestScore;
++				} else {
++					/* nothing better: restore and back off */
++					af_.cooldown = 75;
++					af_.bestScore = af_.lockedScore;
++				}
++			} else if (af_.best >= 0) {
++				af_.lockedPos = af_.best;
++				af_.lockedScore = af_.bestScore;
++			} else {
++				/* no frame scored; keep the lens where it is */
++				af_.lockedPos = af_.cur >= 0 ? af_.cur : af_.lo;
++				af_.lockedScore = -1;
++			}
++			af_.cur = af_.lockedPos;
++			af_.state = Af::State::Locked;
++			if (af_.mode == controls::AfModeAuto)
++				af_.started = false;
++			af_.lowStreak = 0;
++			LOG(SimplePipeline, Debug)
++				<< "AF locked at " << af_.cur
++				<< " (score " << af_.lockedScore << ")";
++			if (!moveLens(af_.cur) && af_.failCount >= 3) {
++				failAf();
++				return;
++			}
++			reportPosition();
++			meta.set(controls::AfState, controls::AfStateFocused);
++			return;
++		}
++	}
++
++	af_.cur = af_.pts[af_.idx];
++	if (!moveLens(af_.cur) && af_.failCount >= 3) {
++		failAf();
++		return;
++	}
++	reportPosition();
++	meta.set(controls::AfState, controls::AfStateScanning);
++}
++
+ int SimplePipelineHandler::queueRequestDevice(Camera *camera, Request *request)
+ {
+ 	SimpleCameraData *data = cameraData(camera);
+ 	int ret;
+ 
+ 	if (data->focusLens()) {
++		SimpleCameraData::Af &af = data->af_;
++
++		if (auto mode = request->controls().get(controls::AfMode)) {
++			if (*mode != af.mode) {
++				af.mode = *mode;
++				switch (*mode) {
++				case controls::AfModeManual:
++					/*
++					 * Stop scanning and stay put; a
++					 * LensPosition in this same request is
++					 * honoured below.
++					 */
++					af.state = SimpleCameraData::Af::State::Idle;
++					af.started = false;
++					break;
++				case controls::AfModeAuto:
++					/* Armed but dormant until AfTriggerStart. */
++					af.reset();
++					break;
++				case controls::AfModeContinuous:
++					/* Restart from a fresh initial sweep. */
++					af.reset();
++					break;
++				}
++			}
++		}
++
++		if (auto trigger = request->controls().get(controls::AfTrigger)) {
++			if (af.mode == controls::AfModeAuto) {
++				if (*trigger == controls::AfTriggerStart) {
++					/*
++					 * Ignore a start while a scan is
++					 * already running.
++					 */
++					if (!af.started) {
++						af.reset();
++						af.started = true;
++					}
++				} else if (*trigger == controls::AfTriggerCancel) {
++					/*
++					 * Back to Idle; the lens stays.
++					 * Ignored when no scan is running
++					 * (e.g. after one completed).
++					 */
++					if (af.started) {
++						af.started = false;
++						af.state = SimpleCameraData::Af::State::Idle;
++					}
++				}
++			}
++		}
++
+ 		if (auto lp = request->controls().get(controls::LensPosition)) {
+-			int32_t position = static_cast<int32_t>(std::lround(*lp));
+-			ret = data->focusLens()->setFocusPosition(position);
+-			if (ret < 0)
++			if (af.mode == controls::AfModeManual) {
++				int32_t position = static_cast<int32_t>(std::lround(*lp));
++				af.cur = position;
++				ret = data->focusLens()->setFocusPosition(position);
++				if (ret < 0)
++					LOG(SimplePipeline, Warning)
++						<< "Failed to set lens position " << position
++						<< ": " << strerror(-ret);
++			} else if (!af.warnedLensPosition) {
++				/*
++				 * LensPosition is only honoured in manual
++				 * mode; warn once per stream instead of every
++				 * frame so a misbehaving application stays
++				 * diagnosable without flooding the log.
++				 */
++				af.warnedLensPosition = true;
+ 				LOG(SimplePipeline, Warning)
+-					<< "Failed to set lens position " << position
+-					<< ": " << strerror(-ret);
++					<< "Ignoring LensPosition in non-manual AF mode";
++			}
+ 		}
+ 	}
+ 

@@ -84,10 +84,25 @@ final: prev:
   mkLiuqinUsbGadget = final.callPackage ./pkgs/usb-gadget.nix { };
   liuqinUsbLogin = final.callPackage ./pkgs/usb-login.nix { };
 
-  # --- Camera bring-up tooling ---
-  # The capture/checksum helper behind hardware.liuqin.cameraDebug.enable;
-  # see pkgs/camtest.nix.
-  liuqinCamtest = final.callPackage ./pkgs/camtest.nix { };
+  # --- Camera ---
+  # The patched libcamera of the AF series (pkgs/libcamera-af/), built as a
+  # standalone package instead of an override of pkgs.libcamera: replacing
+  # libcamera in the closure rebuilds ~142 derivations (webkitgtk included),
+  # which is not worth it while the series is upstream-bound.  Consumers that
+  # need autofocus take this library by path - the demo module points
+  # pipewire/wireplumber at it with LD_LIBRARY_PATH (same soname, same
+  # version, patches confined to the simple pipeline's implementation).
+  liuqinLibcameraAf = final.callPackage ./pkgs/libcamera-af { };
+  # Convenience: the AF library's own `cam` under a distinct name (its
+  # RUNPATH already selects the patched library).
+  liuqinCamAf = prev.runCommand "cam-af" { } ''
+    mkdir -p $out/bin
+    cat > $out/bin/cam-af <<'SH'
+    #!${prev.runtimeShell}
+    exec ${final.liuqinLibcameraAf}/bin/cam "$@"
+    SH
+    chmod +x $out/bin/cam-af
+  '';
 
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc.nix { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };

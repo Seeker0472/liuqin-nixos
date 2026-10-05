@@ -1,0 +1,118 @@
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -566,6 +566,115 @@
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("imx258", CameraSensorHelperImx258)
+ 
++class CameraSensorHelperS5kjn1 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5kjn1()
++	{
++		/*
++		 * Optical-black pedestal: measured 64.0 on all four channels
++		 * (10-bit), i.e. 0x40 at 10 bits like the IMX258 above.
++		 */
++		blackLevel_ = 4096;
++	}
++
++	double gain(uint32_t code) const override
++	{
++		/*
++		 * Vendor law, recovered from the stock camx sensor library's
++		 * CalculateExposure(): the analogue-gain register value is
++		 * clamp(real_gain, 1x, 4x) * 512, i.e. this sensor's analogue
++		 * gain tops out at 4x and codes below 0x200 are clamped to
++		 * unity.  The kernel driver exposes the register in 1/16x
++		 * steps (control value = real_gain * 16, written as
++		 * value << 5), so a control value maps to a linear gain of
++		 * code / 16 with 1x as the floor.
++		 */
++		return code < 16 ? 1.0 : code / 16.0;
++	}
++
++	uint32_t gainCode(double gain) const override
++	{
++		double g = gain < 1.0 ? 1.0 : (gain > 4.0 ? 4.0 : gain);
++
++		return static_cast<uint32_t>(g * 16.0 + 0.5);
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5kjn1", CameraSensorHelperS5kjn1)
++
++class CameraSensorHelperImx596 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx596()
++	{
++		/*
++		 * Optical-black pedestal: measured 64.0 on all four channels
++		 * (10-bit), like the other modules on this device.
++		 */
++		blackLevel_ = 4096;
++	}
++
++	double gain(uint32_t code) const override
++	{
++		/*
++		 * Vendor law, recovered from the stock camx sensor library's
++		 * CalculateExposure(): the analogue-gain register value is
++		 * 1024 - 1024 / real_gain (a Sony-style code where 0 is 1x),
++		 * capped at 1008 by the vendor library, i.e. 64x.
++		 */
++		unsigned int c = code > 1008 ? 1008 : code;
++
++		return 1024.0 / (1024.0 - c);
++	}
++
++	uint32_t gainCode(double gain) const override
++	{
++		double g = gain < 1.0 ? 1.0 : gain;
++		double code = 1024.0 - 1024.0 / g;
++
++		return static_cast<uint32_t>(code > 1008.0 ? 1008.0 : code + 0.5);
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx596", CameraSensorHelperImx596)
++
++class CameraSensorHelperSc202cs : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperSc202cs()
++	{
++		/* Optical-black pedestal: 65-66 measured (10-bit scale). */
++		blackLevel_ = 4160;
++	}
++
++	double gain(uint32_t code) const override
++	{
++		/*
++		 * The depth module's analogue-gain register is still only
++		 * partly understood: the vendor law is a Q10 code on a 16-bit
++		 * register, but the kernel driver writes raw codes 1..16 to the
++		 * low byte, and measured on hardware the two smallest codes
++		 * differ by ~3.4x in frame brightness (MSV 1.33 vs 4.54 with
++		 * everything else fixed).  A control whose smallest step
++		 * oversteps the AE target three-fold makes the loop bang-bang
++		 * between the two codes every frame - the "flicker" users see.
++		 *
++		 * Until the register semantics are pinned down, report the
++		 * analogue gain as fixed at 1x so the AE never touches it and
++		 * converges with exposure and the ISP digital gain, which are
++		 * both smooth.
++		 */
++		(void)code;
++		return 1.0;
++	}
++
++	uint32_t gainCode(double gain) const override
++	{
++		(void)gain;
++		return 1;
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("sc202cs", CameraSensorHelperSc202cs)
++
+ class CameraSensorHelperImx283 : public CameraSensorHelper
+ {
+ public:

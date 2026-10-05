@@ -1,0 +1,37 @@
+# Liuqin (Xiaomi Pad 6 Pro) — soft-ISP tuning for the wide camera (S5KJN1).
+#
+# blackLevel=4096 (16-bit scale) = 64 at 10 bits = the measured optical-black
+# pedestal of this module; it makes the black level deterministic instead of
+# the soft IPA's histogram guess.
+#
+# The Ccm entry below is an identity matrix: it keeps hues untouched until
+# measured colour correction matrices are calibrated (see
+# docs/PORTING-NOTES.md), and it is what switches the soft IPA's
+# matrix path on (context.ccmEnabled) - the gate for the Adjust algorithm's
+# saturation stage.
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  # Identity CCM at three correlated-colour-temperature points: keeps hues
+  # untouched until a measured matrix is available, but switches the soft
+  # IPA's colour path on (context.ccmEnabled), which is also the gate for the
+  # Adjust algorithm's saturation stage - without a Ccm entry the whole matrix
+  # path is dead and saturation can never be applied.
+  - Ccm:
+      ccms:
+        - ct: 2860
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+        - ct: 4500
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+        - ct: 6500
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+  - Adjust:
+  - Agc:

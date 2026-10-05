@@ -1,0 +1,28 @@
+--- a/src/ipa/simple/algorithms/adjust.cpp
++++ b/src/ipa/simple/algorithms/adjust.cpp
+@@ -20,7 +20,15 @@
+ namespace ipa::soft::algorithms {
+ 
+ constexpr float kDefaultContrast = 1.0f;
+-constexpr float kDefaultSaturation = 1.0f;
++/*
++ * liuqin: the soft ISP's saturation defaults to unity, and with only the
++ * AWB's channel gains in play a scene reads noticeably washed out next to
++ * the vendor's rendering (measured on a white stimulus: channels within
++ * 2.5% of each other, so the white balance is fine - what is missing is
++ * the colour boost).  Default to a mild boost; an application that sets
++ * the Saturation control still overrides it.
++ */
++constexpr float kDefaultSaturation = 1.3f;
+ 
+ LOG_DEFINE_CATEGORY(IPASoftAdjust)
+ 
+@@ -41,7 +49,7 @@
+ {
+ 	context.activeState.knobs.gamma = kDefaultGamma;
+ 	context.activeState.knobs.contrast = std::optional<float>();
+-	context.activeState.knobs.saturation = std::optional<float>();
++	context.activeState.knobs.saturation = std::optional<float>(kDefaultSaturation);
+ 
+ 	return 0;
+ }

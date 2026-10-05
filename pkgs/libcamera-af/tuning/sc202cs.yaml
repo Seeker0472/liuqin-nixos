@@ -1,0 +1,30 @@
+# Liuqin (Xiaomi Pad 6 Pro) — soft-ISP tuning for the depth camera (SC202CS).
+#
+# blackLevel=4160 (16-bit scale) = 65 at 10 bits = the measured optical-black
+# pedestal of this module (65.6-65.8 mean, median 65).
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4160
+  - Awb:
+  # Identity CCM at three correlated-colour-temperature points: keeps hues
+  # untouched until a measured matrix is available, but switches the soft
+  # IPA's colour path on (context.ccmEnabled), which is also the gate for the
+  # Adjust algorithm's saturation stage - without a Ccm entry the whole matrix
+  # path is dead and saturation can never be applied.
+  - Ccm:
+      ccms:
+        - ct: 2860
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+        - ct: 4500
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+        - ct: 6500
+          ccm: [ 1, 0, 0,
+                 0, 1, 0,
+                 0, 0, 1]
+  - Adjust:
+  - Agc:

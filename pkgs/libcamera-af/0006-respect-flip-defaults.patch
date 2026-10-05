@@ -1,0 +1,47 @@
+--- a/src/libcamera/sensor/camera_sensor_legacy.cpp
++++ b/src/libcamera/sensor/camera_sensor_legacy.cpp
+@@ -209,11 +209,18 @@
+ 	/*
+ 	 * Clear any flips to be sure we get the "native" Bayer order. This is
+ 	 * harmless for sensors where the flips don't affect the Bayer order.
++	 *
++	 * liuqin: a module can be mounted mirrored and have its driver default
++	 * the flip on (the S5KJN1 here does).  Clearing that default does not
++	 * give the native order, it gives the mounting's mirror image, and
++	 * every frame ends up flipped.  Leave a non-zero default alone.
+ 	 */
+ 	ControlList ctrls(subdev_->controls());
+-	if (subdev_->controls().find(V4L2_CID_HFLIP) != subdev_->controls().end())
++	const struct v4l2_query_ext_ctrl *hflipInit = subdev_->controlInfo(V4L2_CID_HFLIP);
++	const struct v4l2_query_ext_ctrl *vflipInit = subdev_->controlInfo(V4L2_CID_VFLIP);
++	if (hflipInit && hflipInit->default_value == 0)
+ 		ctrls.set(V4L2_CID_HFLIP, 0);
+-	if (subdev_->controls().find(V4L2_CID_VFLIP) != subdev_->controls().end())
++	if (vflipInit && vflipInit->default_value == 0)
+ 		ctrls.set(V4L2_CID_VFLIP, 0);
+ 	subdev_->setControls(&ctrls);
+ 
+@@ -762,10 +769,21 @@
+ 	if (supportFlips_) {
+ 		ControlList flipCtrls(subdev_->controls());
+ 
++		/*
++		 * liuqin: the requested transform is relative to the module's
++		 * natural orientation, which for a mirrored module already
++		 * includes the flip its driver defaults to.  Fold the default
++		 * in, so Identity keeps the driver's flip and HFlip undoes it.
++		 */
++		const struct v4l2_query_ext_ctrl *hflipInfo = subdev_->controlInfo(V4L2_CID_HFLIP);
++		const struct v4l2_query_ext_ctrl *vflipInfo = subdev_->controlInfo(V4L2_CID_VFLIP);
++		bool hflipDefault = hflipInfo && hflipInfo->default_value;
++		bool vflipDefault = vflipInfo && vflipInfo->default_value;
++
+ 		flipCtrls.set(V4L2_CID_HFLIP,
+-			      static_cast<int32_t>(!!(transform & Transform::HFlip)));
++			      static_cast<int32_t>(!!(transform & Transform::HFlip) ^ hflipDefault));
+ 		flipCtrls.set(V4L2_CID_VFLIP,
+-			      static_cast<int32_t>(!!(transform & Transform::VFlip)));
++			      static_cast<int32_t>(!!(transform & Transform::VFlip) ^ vflipDefault));
+ 
+ 		int ret = subdev_->setControls(&flipCtrls);
+ 		if (ret)
