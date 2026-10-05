@@ -556,6 +556,59 @@ store.
 
 Each item needs its own kernel profile or device test, not an installer change.
 
+## Camera (2026-10-06)
+
+All three camera modules capture on mainline through the CAMSS driver plus
+libcamera's `simple` pipeline with the software ISP, and the GNOME path
+(portal -> pipewire -> libcamera) works; contrast autofocus runs in the
+simple pipeline while streaming.  The kernel side is the camera series
+indexed in `patches/kernel/README.md`; the userspace half is
+`pkgs/libcamera-af/` (patched libcamera, injected into pipewire/wireplumber
+by the camera module); raw captures and graph resets use the upstream tools
+(`cam --stream role=raw`, `media-ctl -r`).
+
+Hardware (measured on the vendor stack and from the module blobs):
+
+- rear S5KJN1 (wide, csiphy3, 4080x3060, four lanes, 700 MHz menu rate;
+  mounted 180 degrees, hence the driver's VFLIP default), I2C 0x10 on CCI0;
+  its GT9764 VCM (dw9768-compatible) answers at 0x0c while the module is
+  powered; the module EEPROM (GT24P128E) answers at 0x51.
+- front IMX596 (csiphy2, 2592x1952, 678.4 MHz measured, four lanes; streams
+  with the 16-bit write 0x0100 = 0x0103), I2C 0x10.
+- depth SC202CS (csiphy1, 1600x1200, monochrome, one lane, 360 MHz), I2C 0x36.
+- The modules share `csid0 -> vfe0_rdi0`, so exactly one camera can be routed
+  at a time.  Route on demand, never at boot, and leave exactly one enabled
+  phy->csid link: a leftover link makes the CSID resolve two inputs and no
+  camera streams.
+- Power: the module rails are switched by the sensor driver; the VCM's own
+  rail (pm8350c l7) is kept always on at its 3.0 V default and no code writes
+  a rail voltage.  The VCM therefore only answers while the module is powered
+  (i.e. during a stream).
+
+Operation:
+
+- Raw captures: `cam --stream role=raw --capture=N` (libcamera routes the
+  graph itself); `media-ctl -r -d /dev/media0` clears stale links.  Focus is a
+  stream-time action: `v4l2-ctl -d <dw9768-subdev> --set-ctrl
+  focus_absolute=536`.
+- The sensor module is blacklisted from uDev autoload and loaded late by
+  `liuqin-camera-probe` (three attempts).  A failed probe leaves every camera
+  absent, and touching the stack in that state can wedge the SoC - reboot.
+- One consumer at a time: a camera app and wireplumber's v4l2 monitor
+  exclude each other; mask wireplumber for raw captures.
+- `cam` is the stock libcamera; the autofocus build is injected only into
+  pipewire/wireplumber (`cam-af` runs it).
+
+Open items: SC202CS gain-register semantics; the depth flip register (0x06 vs
+0x60) pending an on-device check; the contrast-AF algorithm's limits (FIXME
+block in its patch); the app photo/recording paths (Snapshot writes a
+zero-length JPEG and leaves recordings unfinalized); suspend/resume
+re-capture; probe statistics across reboots; real colour calibration (the CCM
+entries are identity matrices); the UVC gadget (deferred); and the always-on
+bring-up workarounds (patch 0024: titan_top/IFE GDSCs and the GCC camera
+AXIs), which want a minimal-set bisect.  The curated status, open-item and
+operating-notes document is `docs/TODO/CAMERA-MAINLINE.md`.
+
 ## Known refactors (TODO)
 
 - `config/installer.nix`: `usbGadgetSetup` / `usbShellLogin` / `screenRefresh`
