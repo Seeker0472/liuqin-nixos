@@ -1,0 +1,39 @@
+CS35L41 subsystem ID: pick the Halo protection firmware linux-firmware keys by
+this board's amplifier subsystem ID.
+
+The generic cirrus/cs35l41-dsp1-spk-prot.wmfw (v0.58.0) that the driver falls
+back to when it cannot name the amplifier does not carry the MAX_LRCLK_DELAY /
+CAL_R / CAL_CHECKSUM / CAL_STATUS controls the protection bring-up in 0004
+writes, so the amplifier DSP never starts:
+
+    snd-sc8280xp sound: ASoC: POST_PMU: TL DSP1 event failed: -2        (ENOENT)
+    snd-sc8280xp sound: ASoC: POST_PMU: TL Main AMP event failed: -13   (gate)
+
+and the playback stream blocks forever.  linux-firmware already ships the
+matching build keyed by this board's subsystem ID
+(cirrus/cs35l41-dsp1-spk-prot-10251826.wmfw -> cs35l41/v6.83.0/
+halo_cspl_RAM_revB2_29.85.0.wmfw), so naming the four amplifiers is enough.
+Measured before/after on the unit: the generic build logs "Subsystem ID not
+found" and the DSP1/Main AMP events above; with the property the same boot
+loads the 10251826 keyed firmware.
+
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
+@@ -2293,3 +2293,17 @@
+ 	data-lanes = <0 1>;
+ };
+ 
++
++/*
++ * linux-firmware keys this board's CS35L41 Halo protection firmware on the
++ * amplifier subsystem ID.  Without the property the driver logs "Subsystem ID
++ * not found" and falls back to the generic cirrus/cs35l41-dsp1-spk-prot.wmfw,
++ * which does not carry the MAX_LRCLK_DELAY / CAL_* controls the protection
++ * bring-up (0004) writes; the amp DSP then fails to start (POST_PMU: * DSP1
++ * event failed: -2) and the amplifier gate never opens.  10251826 is the ID
++ * linux-firmware's own cirrus files are keyed by for this board.
++ */
++&cs35l41_tl { cirrus,subsystem-id = "10251826"; };
++&cs35l41_tr { cirrus,subsystem-id = "10251826"; };
++&cs35l41_br { cirrus,subsystem-id = "10251826"; };
++&cs35l41_bl { cirrus,subsystem-id = "10251826"; };

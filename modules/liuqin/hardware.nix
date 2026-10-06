@@ -197,12 +197,13 @@ in
     systemd.services.liuqin-persist-provision = {
       description = "Provision liuqin per-device data from the persist partition";
       wantedBy = [ "multi-user.target" "sound.target" ];
-      # CS35L41 calibration must exist before anything opens an audio
-      # stream: the driver request_firmware() fires as soon as the sound
-      # card is bound. Wanted by (and ordered before) sound.target so the
-      # per-channel calr blobs in /var/lib/firmware/cirrus are in place
-      # before PipeWire/WirePlumber can touch the card.
-      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "sound.target" ];
+      # The per-device calr blobs must exist before liuqin-firmware-path
+      # builds the firmware union, and the union before anything starts a
+      # stream on the CS35L41s (the protection firmware's calibration lookup
+      # runs inside the first DAPM power-up).  Both stay on sound.target's
+      # dependency chain - pinning them to sysinit.target creates an ordering
+      # cycle, because sound.target is reached well after it.
+      before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-firmware-path.service" "sound.target" ];
       after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
       serviceConfig = {
         Type = "oneshot";
@@ -216,6 +217,33 @@ in
           "--firmware-dir /var/lib/firmware"
           "--ssc-config ${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin"
         ];
+      };
+    };
+
+    # The firmware loader reads exactly one directory (firmware_class.path;
+    # fw_path_para is a single char[256] with no ':') and /lib/firmware does
+    # not exist on NixOS, so point it at an overlay of the three trees the
+    # board needs: the vendor CS35L41 payloads (they must shadow
+    # linux-firmware's same-named files in the system tree), the system
+    # firmware tree and the per-device calibration records under
+    # /var/lib/firmware.  See pkgs/firmware-path.nix; the unit only warns
+    # when the persist data is absent, so a device without calibration still
+    # boots.
+    systemd.services.liuqin-firmware-path = {
+      description = "Firmware union (overlay of vendor, system and calibration trees)";
+      wantedBy = [ "sound.target" ];
+      before = [ "sound.target" ];
+      after = [ "liuqin-persist-provision.service" "local-fs.target" ];
+      # A re-provision (e.g. after repairing the persist partition) must be
+      # followed by a fresh mount: the overlay reads its lower layers only
+      # once, so the union restarts together with the provisioner instead of
+      # keeping the previous calibration view.
+      partOf = [ "liuqin-persist-provision.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.liuqinFirmwarePath}/bin/liuqin-firmware-path";
+        ExecStop = "-${pkgs.util-linux}/bin/umount /run/firmware";
       };
     };
 

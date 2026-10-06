@@ -161,10 +161,10 @@ EOF
 
     # CS35L41 per-channel calibration (4x4 bytes, order TL TR BL BR).
     # The kernel requests cirrus/cs35l41-liuqin-<ch>-calr.bin through the
-    # firmware loader. /lib/firmware on the running system is the store-linked
-    # kernel-firmware tree (read-only), so the loader is pointed at an extra
-    # writable dir via firmware_class.path (see kernelParams in default.nix)
-    # and the blobs land in <firmware-dir>/cirrus/ with the exact 16-byte check.
+    # firmware loader; the blobs land in <firmware-dir>/cirrus/ (with the
+    # exact 16-byte check).  <firmware-dir> is one of the lowerdirs of the
+    # firmware overlay that liuqin-firmware-path mounts (pkgs/firmware-path.nix)
+    # because per-device data cannot live in the store.
     calr_size=$(wc -c < "$mnt/audio/crus_calr.bin" | tr -d ' ')
     [ "$calr_size" = 16 ]
     install -d -m 0755 "$firmware_dir/cirrus"

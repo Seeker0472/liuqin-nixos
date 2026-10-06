@@ -2,15 +2,17 @@
 #
 # liuqin firmware tree.
 #
-# Every payload except the VPU image comes out of the downstream project's
-# v0.1.0 release (github.com/yzddmr6/xiaomipad-6pro-mainline): its boot.img
+# Every payload except the VPU image and the CS35L41 archive (below) comes
+# out of the downstream project's v0.3.1 release
+# (github.com/yzddmr6/xiaomipad-6pro-mainline): its boot.img
 # ramdisk carries the firmware tree that port pins (196 files under
 # lib/firmware), and the hash below is the boot.img hash the release's own
 # SHA256SUMS lists.  boot.img and installer.img carry the same tree, so only
-# boot.img is fetched.  That tree is byte-identical to the archives this
-# expression used to require - verified file by file against the touch, DSP,
-# GPU, Bluetooth, WLAN-board and audio-topology sets - so the kernel sees the
-# same files as before.
+# boot.img is fetched.  v0.3.1 differs from v0.1.0 in exactly one file, the
+# AudioReach topology qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin: v0.1.0 carries
+# the speaker playback graph only, v0.3.1 adds the capture chain
+# (MultiMedia2 Capture -> TX_CODEC_DMA_TX_3) the UCM Mic device enables.
+# The final derivation asserts that blob's sha256.
 #
 # TODO: replace the release with a better source as soon as one exists: an
 # official Xiaomi image we can fetch, a mirror that outlives a single release,
@@ -46,9 +48,29 @@ let
     '';
   };
 
+  # The vendor's CS35L41 speaker DSP payloads, extracted from the stock ROM's
+  # vendor partition (`vendor/firmware/` in the super image): the two Halo
+  # wmfw files plus the per-position protection and calibration records and
+  # the music/voice tuning lists.  They are the set the protection bring-up in
+  # patch 0004 was written against; linux-firmware's generic
+  # cs35l41-dsp1-spk-prot.wmfw names the same controls but is a different
+  # build, and its -10251826 entry points at another SKU's tuning.  The files
+  # are installed under the names the mainline driver actually requests
+  # (generic and -10251826 suffixed).
+  cs35l41 = requireFile {
+    name = "liuqin-firmware-cs35l41.tar.zst";
+    hash = "sha256-D4DMG4r0aY+eIh0F+Wix/Js5nQNhaA63rVtUOr9umxw=";
+    message = ''
+      CS35L41 Halo protection/calibration payloads from this device's stock
+      vendor partition, packed as a zstd tar archive rooted at `cirrus/`.
+      Register it with
+      `nix-store --add-fixed sha256 liuqin-firmware-cs35l41.tar.zst`.
+    '';
+  };
+
   releaseBootImg = fetchurl {
-    url = "https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases/download/v0.1.0/boot.img";
-    hash = "sha256-X59akAjgwTQaLwPnajTe0NGah2lHhvkYUeAdBLnqcTo=";
+    url = "https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases/download/v0.3.1/boot.img";
+    hash = "sha256-llqA7RAZac8Tnesza5bTqwpxwxAgc40NbFwtSCgyVOI=";
   };
 
   # Unpack just the firmware tree out of that boot image's ramdisk.
@@ -78,6 +100,10 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   # the release's firmware tree does not carry.
   tar --zstd -xf ${vpu} -C $fw
 
+  # CS35L41: the vendor's Halo wmfw + per-position protection/calibration
+  # payloads (see the cs35l41 requireFile above).
+  tar --zstd -xf ${cs35l41} -C $fw
+
   # regulatory.db is packaged separately from linux-firmware in current
   # nixpkgs; it is redistributable, so prefer nixpkgs' copy over the one in
   # the release's tree.
@@ -99,8 +125,23 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
     updates/ath11k/WCN6855/hw2.1/amss.bin \
     qcom/vpu/vpu20_4v.mbn \
     qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin \
+    cirrus/cs35l41-dsp1-spk-prot.wmfw \
+    cirrus/cs35l41-dsp1-spk-prot-10251826.wmfw \
+    cirrus/cs35l41-dsp1-spk-prot-10251826.bin \
     regulatory.db \
     regulatory.db.p7s; do
     test -r "$fw/$required" || { echo "firmware missing: $required" >&2; exit 1; }
   done
+
+  # The capture subgraph is the one payload that differs between the v0.1.0
+  # and v0.3.1 trees, and it is the whole reason this pin moved.  Pin the
+  # bytes: without this hash a future source swap could silently ship a
+  # speaker-only topology again and the UCM Mic device would enable a
+  # capture chain that is not there.
+  tplg=$fw/qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin
+  test "$(sha256sum "$tplg" | cut -d' ' -f1)" = \
+    9c9f8bfcffde1f52c143d58cba821c5f6b3899553370ab92a88b90d81fef9ee9 || {
+    echo "unexpected AudioReach topology: $(sha256sum "$tplg")" >&2
+    exit 1
+  }
 ''

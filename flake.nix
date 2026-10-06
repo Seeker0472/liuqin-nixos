@@ -8,13 +8,15 @@
     let
       lib = nixpkgs.lib;
 
-      # The two requireFile payloads that have no public source (the VPU image
-      # and the SSC sensor config; see pkgs/firmware.nix) count as unfree.  The
-      # same predicate serves the flake's own package sets and mkLiuqinSystem.
+      # The requireFile payloads that have no public source count as unfree:
+      # the VPU image, the SSC sensor config and the vendor CS35L41 payloads
+      # (see pkgs/firmware.nix).  The same predicate serves the flake's own
+      # package sets and mkLiuqinSystem.
       allowLiuqinUnfree = pkg:
         builtins.elem (lib.getName pkg) [
           "liuqin-ssc-config.tar.zst"
           "liuqin-firmware-vpu.tar.zst"
+          "liuqin-firmware-cs35l41.tar.zst"
         ];
 
       pkgsHost = import nixpkgs { system = "x86_64-linux"; };

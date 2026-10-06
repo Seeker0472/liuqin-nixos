@@ -67,11 +67,12 @@ let
   # qmpphy node, and the Type-C &usb_1 hunk rewrites the node USB3 changed.
   # They are merged into one patch generated against the post-common tree, so
   # it applies without fuzz.
-  # 0015 extends the same board DTS (WCD9385 capture graph), so it is applied
-  # after 0014 as well.
+  # 0015 and 0016 extend the same board DTS (the WCD9385 capture graph and
+  # the CS35L41 amplifier naming), so they are applied after 0014 as well.
   dtPatchNames = [
     "0014-liuqin-board-usb-typec-dp-dt.patch"
     "0015-liuqin-audio-wcd-capture.patch"
+    "0016-liuqin-cs35l41-subsystem-id.patch"
   ];
 
   kernelPatches =

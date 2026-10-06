@@ -76,6 +76,7 @@ final: prev:
   liuqinScreenRefresh = final.callPackage ./pkgs/screen-refresh.nix { };
   liuqinBacklightDefault = final.callPackage ./pkgs/backlight.nix { };
   liuqinPersistProvision = final.callPackage ./pkgs/persist-provision.nix { };
+  liuqinFirmwarePath = final.callPackage ./pkgs/firmware-path.nix { };
   liuqinWlanMac = final.callPackage ./pkgs/wlan-mac.nix { };
   liuqinBtPublicAddr = final.callPackage ./pkgs/bt-public-addr.nix { };
   liuqinSlpi = final.callPackage ./pkgs/slpi.nix { };
