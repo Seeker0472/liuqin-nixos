@@ -17,6 +17,7 @@ in
     ./usb-shell.nix
     ./usb.nix
     ./camera.nix
+    ./fingerprint.nix
   ];
 
   options.hardware.liuqin = {

@@ -12,6 +12,12 @@
 
   hardware.liuqin.camera.autofocus.enable = true;
 
+  # Fingerprint (FPC1264): the QSEECOM TEE transport, the power/reset/IRQ
+  # control driver (no SPI: the trustlet owns the bus) and the OEM userspace
+  # stack.  Firmware and credentials are per-device data; the operator steps
+  # are in docs/TODO/FINGERPRINT-MAINLINE.md.
+  hardware.liuqin.fingerprint.enable = true;
+
   # USB bring-up deployment: the single kernel carries every feature
   # (USB3 peripheral, Type-C host/OTG, DP Alt Mode); the MiPPS coordinator
   # runs because this system carries the key files.

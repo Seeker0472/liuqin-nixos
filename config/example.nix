@@ -10,6 +10,12 @@
     desktop.gnome.enable = true;
     # Verbose boot diagnostics; keep off unless bring-up needs it.
     boot.debug = false;
+    # Fingerprint (FPC1264): OEM userspace, fprintd TOD integration and the
+    # QSEECOM/FPC kernel modules.  Off by default; the per-device fpcliu
+    # firmware and credentials are operator-supplied, see
+    # docs/TODO/FINGERPRINT-MAINLINE.md:
+    #   fingerprint.enable = true;
+
     sensors = {
       # Operator-supplied stock ROM vendor/etc/sensors/config archive. No
       # proprietary SSC archive is committed; derive this hash locally with

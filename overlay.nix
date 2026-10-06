@@ -151,4 +151,75 @@ final: prev:
   liuqinInitrdFirmware = final.callPackage ./pkgs/firmware-initrd.nix {
     firmware = final.liuqinFirmware;
   };
+
+  # --- OEM FPC1264 fingerprint stack (hardware.liuqin.fingerprint) ----------
+  # Cross-only adaptation of the upstream libfprint-tod the two compiled
+  # packages build against.  libfprint's meson configure RUNS
+  # tests/unittest_inspector.py; patchShebangs can only rewrite that helper's
+  # shebang when a python3 is visible on PATH, and a cross build only puts
+  # nativeBuildInputs there - none of libfprint's are a python3 - so the helper
+  # keeps a /usr/bin/env shebang that does not exist on NixOS and meson aborts
+  # with "Could not execute command".  Adding the build-host interpreter to the
+  # native build inputs is the upstream-equivalent fix (nixpkgs is simply not
+  # cross-clean here).  Only build-time helper shebangs change; the installed
+  # library is unchanged, and native builds keep using the cached derivation.
+  liuqinFpcOemLibfprintTod =
+    if final.stdenv.buildPlatform == final.stdenv.hostPlatform
+    then prev.libfprint-tod
+    else
+      let
+        # libfprint generates its udev hwdb by BUILDING AND RUNNING the target
+        # helper fprint-list-udev-hwdb; meson refuses that without an
+        # exe_wrapper.  The sandbox has no binfmt, so hand meson qemu-user (a
+        # build-time dependency only; it stays out of the device closure).
+        exeWrapper =
+          "${final.buildPackages.qemu-user}/bin/qemu-${final.stdenv.hostPlatform.qemuArch}";
+        crossFile = final.buildPackages.writeText "liuqin-fpc-oem-meson-cross-file.conf" ''
+          [binaries]
+          exe_wrapper = '${exeWrapper}'
+        '';
+      in
+      prev.libfprint-tod.overrideAttrs (old: {
+        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ final.buildPackages.python3 ];
+        # Appended, not replacing: nixpkgs' own cross file (if any) is merged
+        # with this one by meson, later keys winning.
+        mesonFlags = (old.mesonFlags or [ ]) ++ [ "--cross-file=${crossFile}" ];
+      });
+
+  # One pinned source tree of the OEM component feeds the three packages, so
+  # the revision cannot drift between the runtime, the TOD driver and the
+  # fprintd patch; the two libraries the component builds against are pinned
+  # from their own upstreams instead.
+  liuqinFpcOemSrc = final.callPackage ./pkgs/fingerprint/liuqin-fpc-oem-src.nix { };
+  liuqinFpcOemQcbor = final.callPackage ./pkgs/fingerprint/qcbor.nix { };
+  liuqinFpcOemSupplicant = final.callPackage ./pkgs/fingerprint/qsee-supplicant.nix { };
+  # libfprint TOD module (fpc1264_oem) plus the FpPrint serializer; the nixpkgs
+  # fprintd module turns passthru.driverPath into FP_TOD_DRIVERS_DIR.
+  liuqinFpcOemTodDriver = final.callPackage ./pkgs/fingerprint/libfprint-tod-fpc1264-oem.nix {
+    src = final.liuqinFpcOemSrc;
+    libfprint-tod = final.liuqinFpcOemLibfprintTod;
+  };
+  # Userspace runtime bundle (QSEE clients, TEE/RPMB supplicant, PAM input and
+  # the Python entry points) under one prefix; it owns fpc-oem-print from the
+  # TOD package so every helper the entry points expect is colocated.
+  liuqinFpcOem = final.callPackage ./pkgs/fingerprint/liuqin-fpc-oem.nix {
+    src = final.liuqinFpcOemSrc;
+    qcbor = final.liuqinFpcOemQcbor;
+    supplicant = final.liuqinFpcOemSupplicant;
+    todDriver = final.liuqinFpcOemTodDriver;
+  };
+  # PAM module that derives the FPC1264 credential input when the account
+  # authenticates with its password, so the TOD driver's enrolment runs from
+  # the desktop without a second prompt (see modules/liuqin/fingerprint.nix).
+  liuqinPamFpc = final.callPackage ./pkgs/fingerprint/pam-liuqin-fpc.nix { };
+  # fprintd 1.94.5 with the OEM adaptive-template persistence change, linked
+  # against the same libfprint-tod the TOD driver uses (this is also the
+  # override nixpkgs applies for fprintd-tod).
+  liuqinFprintdOem = final.callPackage ./pkgs/fingerprint/fprintd-oem.nix {
+    src = final.liuqinFpcOemSrc;
+    libfprint-tod = final.liuqinFpcOemLibfprintTod;
+    # Build-host glib for gdbus-codegen during cross builds; identical to glib
+    # in a native build.
+    glibBuild = final.buildPackages.glib;
+  };
 }

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+#
+# NixOS adaptation: the OEM runtime points the kernel's firmware_class.path at
+# the OEM firmware directory next to itself.  A store path cannot carry
+# per-device firmware, so the operator-supplied directory
+# (hardware.liuqin.fingerprint.firmwareDir, exported as
+# LIUQIN_FPC_OEM_FIRMWARE) wins when set and the component's colocated default
+# is kept for every other deployment.  resolve() keeps the value absolute,
+# which the kernel parameter requires.
+#
+diff -r a/oem_runtime.py b/oem_runtime.py
+--- a/oem_runtime.py	2026-10-07 00:39:18.028384603 +0800
++++ b/oem_runtime.py	2026-10-07 00:39:18.067415508 +0800
+@@ -67,7 +67,7 @@
+         listener_command = [str(provider), "--serve-authenticated" if
+                             rpmb_mode == "--ufs-rpmb-authenticated" else "--serve-read-only"]
+         expected_listeners = 3
+-    firmware = here / "firmware"
++    firmware = Path(os.environ.get("LIUQIN_FPC_OEM_FIRMWARE") or (here / "firmware")).resolve()
+     expected = json.loads((firmware / "SHA256.json").read_text())
+     for name, digest in expected.items():
+         if hashlib.sha256((firmware / name).read_bytes()).hexdigest() != digest:

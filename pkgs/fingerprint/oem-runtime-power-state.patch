@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+#
+# NixOS adaptation: the OEM runtime verifies that the sensor powered down
+# after an operation.  The community driver exposed power_state on the SPI
+# device; the vendor-faithful control driver in this tree exposes it under
+# the fpc1020 platform driver.  Look there first and keep the SPI path as a
+# fallback for community deployments.
+--- a/oem_runtime.py
++++ b/oem_runtime.py
+@@ -13,6 +13,15 @@
+ import time
+ 
+ 
++def _liuqin_power_state():
++    """The control driver's sysfs node, wherever this deployment exposes it."""
++    for node in sorted(Path("/sys/bus/platform/drivers/fpc1020").glob("*/power_state")):
++        return node.read_text()
++    # Community SPI-driver deployments keep the node on the SPI device.
++    node = Path("/sys/bus/spi/devices/spi1.0/power_state")
++    return node.read_text() if node.exists() else None
++
++
+ def main():
+     arguments = sys.argv[1:]
+     rpmb_mode = None
+@@ -177,7 +186,7 @@
+                 if line.startswith((b"event=listener_request ", b"event=rpmb_")):
+                     print(line.decode("ascii"))
+             restored = parameter.read_bytes() == old_value + b"\n"
+-            power_off = Path("/sys/bus/spi/devices/spi1.0/power_state").read_text().strip() == "off"
++            power_off = (_liuqin_power_state() or "").strip() == "off"
+             print(f"oem_runtime_cleanup firmware_path_restored={int(restored)} "
+                   f"sensor_power_off={int(power_off)} listener_stopped={int(listener.poll() is not None)}")
+             if not restored or not power_off:

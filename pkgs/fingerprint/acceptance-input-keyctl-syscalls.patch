@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: MIT
+#
+# NixOS adaptation: acceptance_input.py talks to the root kernel keyring
+# through libkeyutils by soname.  The Nix store keeps no libkeyutils on the
+# interpreter's library search path, and the target package set resolves the
+# keyutils argument to the *build* platform's library, so the module is
+# rewritten to call the keyctl syscalls libkeyutils wraps (same stable
+# asm-generic numbers and the same negative-errno convention).  The custody
+# itself - key description, permissions, 18 h timeout, one-use revocation and
+# the metadata file - is unchanged, so it stays interchangeable with the PAM
+# module and the TOD driver.
+#
+--- a/acceptance_input.py
++++ b/acceptance_input.py
+@@ -17,25 +17,66 @@
+ ROOT = Path("/run/liuqin-fpc-oem-runtime")
+ LIFETIME = 18 * 3600
+ 
++class _KeyctlSyscalls:
++    """libkeyutils, replaced by the keyctl syscalls it wraps.
++
++    The target package set resolves the keyutils argument to the build
++    platform's library (and NixOS keeps no libkeyutils on the interpreter's
++    library search path anyway), so this module calls the kernel directly with
++    the stable asm-generic syscall numbers and the libkeyutils return
++    convention (negative errno on failure).
++    """
++    _SYS_add_key = 217
++    _SYS_keyctl = 219
++
++    def __init__(self):
++        self._libc = ctypes.CDLL(None, use_errno=True)
++        self._libc.syscall.restype = ctypes.c_long
++
++    @staticmethod
++    def _arguments(arguments):
++        return tuple(ctypes.c_long(value) if isinstance(value, int) else value
++                     for value in arguments)
++
++    def _keyctl(self, operation, *arguments):
++        return self._libc.syscall(self._SYS_keyctl, ctypes.c_long(operation),
++                                  *self._arguments(arguments))
++
++    def add_key(self, type_, description, payload, size, keyring):
++        return self._libc.syscall(self._SYS_add_key, type_, description, payload,
++                                  ctypes.c_long(size), ctypes.c_long(keyring))
++
++    def keyctl_get_keyring_ID(self, key, create):
++        return self._keyctl(0, key, create)
++
++    def keyctl_revoke(self, key):
++        return self._keyctl(3, key)
++
++    def keyctl_setperm(self, key, perm):
++        return self._keyctl(5, key, perm)
++
++    def keyctl_link(self, key, keyring):
++        return self._keyctl(8, key, keyring)
++
++    def keyctl_unlink(self, key, keyring):
++        return self._keyctl(9, key, keyring)
++
++    def keyctl_search(self, keyring, type_, description, destringid):
++        return self._keyctl(10, keyring, type_, description, destringid)
++
++    def keyctl_read(self, key, buffer, size):
++        return self._keyctl(11, key, buffer, size)
++
++    def keyctl_set_timeout(self, key, timeout):
++        return self._keyctl(15, key, timeout)
++
++
+ def context(username):
+     if os.geteuid() != 0 or not username or "/" in username or username in (".", ".."):
+         raise ValueError("root account scope required")
+     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+     libc = ctypes.CDLL(None, use_errno=True)
+-    keys = ctypes.CDLL("libkeyutils.so.1", use_errno=True)
+-    keys.keyctl_get_keyring_ID.argtypes = (ctypes.c_int, ctypes.c_int)
+-    keys.keyctl_get_keyring_ID.restype = ctypes.c_int
+-    keys.keyctl_link.argtypes = (ctypes.c_int, ctypes.c_int)
+-    keys.add_key.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+-    keys.add_key.restype = ctypes.c_int
+-    keys.keyctl_setperm.argtypes = (ctypes.c_int, ctypes.c_uint)
+-    keys.keyctl_set_timeout.argtypes = (ctypes.c_int, ctypes.c_uint)
+-    keys.keyctl_revoke.argtypes = (ctypes.c_int,)
+-    keys.keyctl_unlink.argtypes = (ctypes.c_int, ctypes.c_int)
+-    keys.keyctl_search.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
+-    keys.keyctl_search.restype = ctypes.c_int
+-    keys.keyctl_read.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t)
+-    keys.keyctl_read.restype = ctypes.c_long
++    keys = _KeyctlSyscalls()
+     libc.read.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t)
+     libc.read.restype = ctypes.c_ssize_t
+     libc.write.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t)

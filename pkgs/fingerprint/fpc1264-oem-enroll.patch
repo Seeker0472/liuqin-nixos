@@ -1,0 +1,319 @@
+# SPDX-License-Identifier: MIT
+#
+# NixOS adaptation: implement the TOD driver's enrolment path so GNOME's
+# standard "Add fingerprint" flow works without a second prompt.  The trustlet
+# still authorises enrolment with the account credential input, but that input
+# is prepared by pam_liuqin_fpc at password authentication (root keyring, one
+# use) and consumed here through user_credentials.py --enrol-prepared; the
+# driver only drives the touches, translates the trustlet's progress lines into
+# libfprint progress/retry signals and hands the opaque single-finger database
+# to fprintd as the enrolled FpPrint.  The CLI acceptance flow stays available
+# and shares the same custody.
+#
+--- a/fpc1264-oem.c
++++ b/fpc1264-oem.c
+@@ -18,6 +18,9 @@
+ typedef struct {
+   FpDevice parent;
+   GSubprocess *child;
++  GDataInputStream *enroll_stream;
++  GString *enroll_output;
++  guint enroll_stages;
+   gchar *directory;
+   gchar *database;
+   gchar *updated_database;
+@@ -32,6 +35,13 @@
+ clear_operation (FpiDeviceFpc1264Oem *self)
+ {
+   g_clear_object (&self->child);
++  g_clear_object (&self->enroll_stream);
++  if (self->enroll_output)
++    {
++      g_string_free (self->enroll_output, TRUE);
++      self->enroll_output = NULL;
++    }
++  self->enroll_stages = 0;
+   if (self->database)
+     g_unlink (self->database);
+   if (self->updated_database)
+@@ -71,12 +81,253 @@
+   fpi_device_close_complete (device, NULL);
+ }
+ 
++/* ---- enrolment ----------------------------------------------------------
++ * The 32-byte credential input the trustlet requires is prepared by
++ * pam_liuqin_fpc during password authentication (root keyring, one use) and
++ * consumed by user_credentials.py --enrol-prepared, so this driver only drives
++ * the touches and turns the trustlet's progress lines into the libfprint
++ * signals the desktop renders.  fprintd stores the returned FpPrint itself.
++ * The CLI's one-finger scope is kept: verification selects a single print for
++ * a user without 1:N identification.
++ */
++/* The trustlet requires 20 accepted samples for one template (measured on the
++ * unit: the runtime reported remaining=19 after the first sample and counted
++ * down to 1).  fprintd forwards neither progress nor retry hints once
++ * completed_stages reaches this value, so it has to match. */
++#define LIUQIN_ENROL_MAX_STAGES 20
++#define LIUQIN_ENROL_OUTPUT_LIMIT (64u * 1024u)
++
++static gboolean
++account_has_print (const gchar *username)
++{
++  g_autofree gchar *directory = g_build_filename ("/var/lib/fprint", username, "fpc1264_oem",
++                                                  "liuqin-fpc1264-oem", NULL);
++  g_autoptr(GDir) dir = g_dir_open (directory, 0, NULL);
++
++  if (!dir)
++    return FALSE;
++  for (const gchar *name = g_dir_read_name (dir); name; name = g_dir_read_name (dir))
++    if (name[0] && !name[1] && strchr ("123456789a", name[0]))
++      return TRUE;
++  return FALSE;
++}
++
++static gboolean
++read_private_database (const gchar *path, guint8 **database, gsize *length, GError **error)
++{
++  struct stat info;
++  guint8 *data;
++  int fd = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0);
++
++  if (fd < 0 || fstat (fd, &info) || !S_ISREG (info.st_mode) || info.st_uid != 0 ||
++      (info.st_mode & 0777) != 0600 || info.st_size <= 0 ||
++      info.st_size > 16u * 1024u * 1024u)
++    goto failed;
++  data = g_malloc (info.st_size);
++  for (gsize offset = 0; offset < (gsize) info.st_size;)
++    {
++      ssize_t count = read (fd, data + offset, info.st_size - offset);
++      if (count < 0 && errno == EINTR)
++        continue;
++      if (count <= 0)
++        {
++          g_free (data);
++          goto failed;
++        }
++      offset += count;
++    }
++  close (fd);
++  *database = data;
++  *length = info.st_size;
++  return TRUE;
++
++failed:
++  if (fd >= 0)
++    close (fd);
++  g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_GENERAL,
++                       "OEM enrolment produced no usable private database");
++  return FALSE;
++}
++
+ static void
++report_enrol_diagnostics (const gchar *output, gint status)
++{
++  const gchar *prefixes[] = {
++    "linux_user_credential=", "acceptance_input=", "oem_runtime=", "oem_runtime_timed_out=",
++    "pipeline_incomplete=", "end_enrol_not_submitted=", "enrol_output_rejected=",
++    "template_count_response_invalid=", "finger_irq_failed=", "capture_rejected=", NULL
++  };
++  g_auto(GStrv) lines = g_strsplit (output ? output : "", "\n", -1);
++
++  g_warning ("OEM enrolment runtime exit=%d", status);
++  for (gsize i = 0; lines[i]; i++)
++    for (gsize j = 0; prefixes[j]; j++)
++      if (g_str_has_prefix (lines[i], prefixes[j]))
++        {
++          g_warning ("OEM enrolment diagnostic: %s", lines[i]);
++          break;
++        }
++}
++
++static void
++enrol_read_line (GObject *source, GAsyncResult *result, gpointer user_data)
++{
++  FpDevice *device = user_data;
++  FpiDeviceFpc1264Oem *self = (FpiDeviceFpc1264Oem *) device;
++  g_autoptr(GError) error = NULL;
++  g_autofree gchar *line = g_data_input_stream_read_line_finish_utf8 (G_DATA_INPUT_STREAM (source),
++                                                                     result, NULL, &error);
++
++  if (!line)
++    {
++      g_object_unref (device);
++      return;
++    }
++  if (self->enroll_output->len < LIUQIN_ENROL_OUTPUT_LIMIT)
++    g_string_append_printf (self->enroll_output, "%s\n", line);
++  if (g_str_has_prefix (line, "enrol_progress_status="))
++    {
++      self->enroll_stages++;
++      g_message ("OEM enrolment status: %s", line);
++      fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
++      fpi_device_enroll_progress (device, (gint) self->enroll_stages, NULL, NULL);
++    }
++  else if (g_str_has_prefix (line, "READY lift finger"))
++    {
++      fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
++      fpi_device_enroll_progress (device, (gint) self->enroll_stages, NULL,
++                                  fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
++                                                            "Lift the finger, then press it again"));
++    }
++  else if (g_str_has_prefix (line, "READY enrol attempt="))
++    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
++  else if (g_str_has_prefix (line, "enrol_authorization_phase=end_enrol"))
++    fpi_device_enroll_progress (device, (gint) self->enroll_stages + 1, NULL, NULL);
++  if (self->child)
++    g_data_input_stream_read_line_async (G_DATA_INPUT_STREAM (source), G_PRIORITY_DEFAULT, NULL,
++                                         enrol_read_line, device);
++  else
++    g_object_unref (device);
++}
++
++static void
++enrol_wait_finished (GObject *source, GAsyncResult *result, gpointer user_data)
++{
++  FpDevice *device = user_data;
++  FpiDeviceFpc1264Oem *self = (FpiDeviceFpc1264Oem *) device;
++  g_autoptr(GError) error = NULL;
++  g_autoptr(GVariant) replacement = NULL;
++  g_autoptr(FpPrint) print = NULL;
++  g_autofree guint8 *database = NULL;
++  gsize length = 0;
++  gboolean cancelled, exited;
++  gint status;
++
++  g_subprocess_wait_finish (G_SUBPROCESS (source), result, &error);
++  exited = g_subprocess_get_if_exited (G_SUBPROCESS (source));
++  status = exited ? g_subprocess_get_exit_status (G_SUBPROCESS (source)) : -1;
++  cancelled = self->cancelled || fpi_device_action_is_cancelled (device);
++  if (self->enrolled_print)
++    print = g_object_ref (self->enrolled_print);
++  if (cancelled)
++    ;
++  else if (!error && exited && status == 0 && print)
++    {
++      if (read_private_database (self->database, &database, &length, &error))
++        {
++          replacement = g_variant_ref_sink (g_variant_new ("(u@ay)", 1u,
++                           g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE, database, length, 1)));
++          fpi_print_set_type (print, FPI_PRINT_RAW);
++          g_object_set (print, "fpi-data", replacement, NULL);
++        }
++      else
++        {
++          report_enrol_diagnostics (self->enroll_output ? self->enroll_output->str : NULL, status);
++        }
++    }
++  else
++    {
++      if (!error)
++        error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
++                                          "OEM enrolment did not complete");
++      report_enrol_diagnostics (self->enroll_output ? self->enroll_output->str : NULL, status);
++    }
++  clear_operation (self);
++  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
++  if (cancelled)
++    fpi_device_enroll_complete (device, NULL,
++                                g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
++                                                     "Fingerprint enrolment cancelled"));
++  else if (error)
++    fpi_device_enroll_complete (device, NULL, g_steal_pointer (&error));
++  else
++    fpi_device_enroll_complete (device, g_steal_pointer (&print), NULL);
++  g_object_unref (device);
++}
++
++static void
+ enrol (FpDevice *device)
+ {
+-  fpi_device_enroll_complete (device, NULL,
+-                             fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+-                                                       "OEM enrolment requires an authenticated credential-input provider"));
++  FpiDeviceFpc1264Oem *self = (FpiDeviceFpc1264Oem *) device;
++  FpPrint *print = NULL;
++  const gchar *username;
++  g_autoptr(GError) error = NULL;
++  g_autofree gchar *runtime = NULL;
++  const gchar *bundle = g_getenv ("LIUQIN_FPC_OEM_RUNTIME");
++  struct stat info;
++
++  fpi_device_get_enroll_data (device, &print);
++  if (!print || !(username = fp_print_get_username (print)) || !*username)
++    {
++      error = fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
++                                        "A named print is required for enrolment");
++      goto failed;
++    }
++  if (!bundle || !g_path_is_absolute (bundle) || lstat (bundle, &info) ||
++      !S_ISDIR (info.st_mode) || info.st_uid != 0 || (info.st_mode & 0022))
++    {
++      error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
++                                        "Supply a trusted private OEM runtime directory");
++      goto failed;
++    }
++  runtime = g_build_filename (bundle, "user_credentials.py", NULL);
++  if (lstat (runtime, &info) || !S_ISREG (info.st_mode) || info.st_uid != 0 ||
++      (info.st_mode & 0022))
++    {
++      error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
++                                        "Trusted OEM credential entry point is missing");
++      goto failed;
++    }
++  if (account_has_print (username))
++    {
++      error = fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_DUPLICATE,
++                                        "Only one fingerprint per account is supported; delete the existing one first");
++      goto failed;
++    }
++  self->directory = g_dir_make_tmp ("liuqin-fpc-enrol-XXXXXX", &error);
++  if (!self->directory)
++    goto failed;
++  self->database = g_build_filename (self->directory, "single-finger.db", NULL);
++  self->enrolled_print = g_object_ref (print);
++  self->enroll_output = g_string_sized_new (4096);
++  self->enroll_stages = 0;
++  self->cancelled = FALSE;
++  self->child = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE,
++                                 &error, "/usr/bin/python3", runtime, "--enrol-prepared",
++                                 username, self->database, NULL);
++  if (!self->child)
++    goto failed;
++  self->enroll_stream = g_data_input_stream_new (g_subprocess_get_stdout_pipe (self->child));
++  g_data_input_stream_set_newline_type (self->enroll_stream, G_DATA_STREAM_NEWLINE_TYPE_LF);
++  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
++  g_data_input_stream_read_line_async (self->enroll_stream, G_PRIORITY_DEFAULT, NULL,
++                                       enrol_read_line, g_object_ref (device));
++  g_subprocess_wait_async (self->child, NULL, enrol_wait_finished, g_object_ref (device));
++  return;
++
++failed:
++  clear_operation (self);
++  fpi_device_enroll_complete (device, NULL, g_steal_pointer (&error));
+ }
+ 
+ /* Hold the unmodified print for fprintd's compare-and-replace storage update.
+@@ -181,9 +432,14 @@
+   /* The OEM client only emits these inconclusive results after an ordinary
+    * identify response and successful DB export. They never authorize a match.
+    * Finish this cleaned attempt and let fprintd request a fresh press. */
++  /* A rejected capture is inconclusive like the identify statuses below: the
++   * match never ran, so let fprintd restart the verification instead of
++   * failing the authentication (measured: a short press returns status 1 with
++   * match_incomplete=capture_rejected). */
+   gboolean retry_scan = cleaned && status == 1 && !matched && !missed && output &&
+     (strstr (output, "match_result=inconclusive identify_app_status=4\n") ||
+-     strstr (output, "match_result=inconclusive identify_app_status=12\n"));
++     strstr (output, "match_result=inconclusive identify_app_status=12\n") ||
++     strstr (output, "match_incomplete=capture_rejected"));
+   if (!cancelled && valid_result && status == 0 &&
+       !accept_updated_database (self, output && strstr (output, "database_update_required=1\n"), &error))
+     valid_result = FALSE;
+@@ -320,6 +576,7 @@
+   device->full_name = "FPC1264 OEM on liuqin";
+   device->type = FP_DEVICE_TYPE_VIRTUAL;
+   device->scan_type = FP_SCAN_TYPE_PRESS;
++  device->nr_enroll_stages = LIUQIN_ENROL_MAX_STAGES;
+   device->id_table = devices;
+   device->temp_hot_seconds = -1;
+   device->probe = probe;
