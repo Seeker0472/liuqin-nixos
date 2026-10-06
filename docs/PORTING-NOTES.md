@@ -1,289 +1,260 @@
-# Porting notes: xiaomipad-6pro-mainline → liuqin-nixos
+# Porting notes: Xiaomi Pad 6 Pro (liuqin, SM8475) on Linux 7.2.5
 
-Nix expression of the downstream device work, on Linux 7.2.5 (downstream is on
-6.17). A downstream behaviour is a candidate to port, not proof it is safe here.
+NixOS support for the Xiaomi Pad 6 Pro (`xiaomi,liuqin`, SM8475) on Linux
+7.2.5, built from the kernel.org tarball plus the device patch series in
+`patches/kernel/`.  This is the *current state* record: subsystem status,
+the MiPPS key contract, debug/deployment methods, and how the kernel patch
+series is organised.  Dated bring-up history, failed experiments and
+per-run measurements live in git history.
 
-## Real-device verification (2026-09-29)
+Verification labels used throughout:
 
-The installed system was checked on a running tablet over the USB debug NCM
-gadget (`192.168.7.2:2323`, root shell). This verifies the running NixOS
-system; it does not verify the U-Boot menu or persistent `boot_b` path.
+- **verified** — observed on the tablet.  The date is the last run recorded
+  in the sources.
+- **unverified** — implemented or expected, never confirmed on hardware.
+- **not implemented** — no code path exists.
 
-Working at the time of the check:
+Companion documents: `README.md` (build outputs and configuration model),
+`docs/INSTALL.md` (install/update/recover), `docs/BOOT-ARCHITECTURE.md`
+(boot chain and U-Boot menu), `docs/TODO/CAMERA-MAINLINE.md` (camera detail).
 
-- DSI display/DRM, framebuffer, backlight, touch, pen, Nanosic keyboard and
-  touchpad, power keys, Wi-Fi association, Bluetooth, USB shell, UFS, GPU and
-  CPU capacity/energy-model support.
-- The DRM connector identifies the 1800x2880 panel, but its sysfs `modes` file
-  omits refresh-rate information and the panel was blank during this snapshot;
-  the source-level mode list is the authoritative result below.
-- PMIC GLINK battery management is active: the battery and USB power supplies
-  report charging state, voltage and current. This is basic power-supply
-  support; it is not proof of Xiaomi high-power charging.
-- CPU idle governor is `teo`; the three capacity groups read 277/832/1024
-  (rounding of the expected 278/833/1024 values).
-- EAS is active (`/proc/sys/kernel/sched_energy_aware=1`); all three policies
-  use `qcom-cpufreq-hw` with `schedutil`. `CONFIG_UCLAMP_TASK` is not enabled.
+## 1. What works and what does not
 
-Not registered or not driven:
+### Summary
 
-- **Audio:** `/proc/asound/cards` reports no soundcards. The four CS35L41
-  amplifiers bind, but the LPASS/WCD machine driver is deferred because the
-  RX/TX macro clocks and CPU DAI are unresolved.
-- **Sensors:** The Android probe identified BMI3x0 accelerometer/gyroscope,
-  TCS3701 ambient/CCT sensors and a TSL2522 rear ambient sensor. The SSC
-  userspace path is now implemented: the package serves the registry contract,
-  the persist import is atomic, and bounded `libssc` checks cover acceleration,
-  angular rate, and the default SSC ambient-light Lux instance. A successful
-  light check does not distinguish the front TCS3701 from the rear TSL2522.
-  The stock CCT/RGB calibration records
-  have no corresponding API in the pinned `libssc`, so CCT remains unimplemented
-  and unverified. `/sys/bus/iio/devices` can still be empty because
-  these devices are owned by SLPI rather than an AP-side IIO bus; only the
-  accelerometer is bridged to `iio-sensor-proxy`. Real measurements and the
-  resulting Android-derived gravity/rotation/step/tilt/motion behaviour remain
-  unverified until `liuqin-sensor-check` runs against the tablet's own SLPI
-  firmware.
-- **PMIC ADC:** the ADC5 device has no configured channels and fails probe;
-  no corresponding IIO device is present.
-- **Camera capture:** only Iris codec nodes (`/dev/video0` and `/dev/video1`)
-  exist; there are no media-controller or CSI/ISP capture nodes.
-- **Fingerprint:** Android has an FPC1020-compatible power-button sensor and
-  `fpc1552.ko`; the current system has no fingerprint device or driver.
-- **Type-C high-speed path:** the UCSI power-supply child is present, but
-  `/sys/bus/typec/devices` has no port and the USB gadget reports
-  `current_speed=high-speed` and `maximum_speed=high-speed`. USB3, OTG role
-  switching, PD/PPS negotiation and DP Alt Mode remain unverified.
+| Subsystem | Status | One-line limit |
+| --- | --- | --- |
+| DSI display / DRM / backlight | verified | one fixed 120 Hz mode; U-Boot boots need the first-modeset cycle workaround |
+| Touch, pen, keyboard folio, touchpad, keys | verified | touch drifts when an external DP monitor is bound (Mutter heuristic); touch resume retries firmware |
+| Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
+| Audio | **not working** (patch present) | no ALSA card registers; LPASS/WCD probe deferred |
+| USB3 device (peripheral) | verified | 10-hotplug stability record still open |
+| Type-C host + OTG power | verified | 10-hotplug record and automatic gadget re-bind still open |
+| DP Alt Mode | verified | single-link-rate tables (HBR2 capture); 2-lane DT only; repeated hotplug unverified |
+| Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
+| Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
+| Sensors (SSC/SLPI) | partly verified | accelerometer bridged to iio-sensor-proxy; gyro/light real samples, CCT/RGB unverified |
+| Wi-Fi / Bluetooth | verified | ath11k `msdu_done` noise, occasional reconnects |
+| Storage (UFS, root guard) | verified | — |
+| CPU scheduling / Energy Model | verified | — |
+| Thermal | partial | 38 zones vs 81 on Android; no IPA |
+| Fingerprint | not implemented | FPC1020-compatible power-button sensor |
+| Microphone capture | not implemented | WCD938x/SoundWire graph not enabled |
+| U-Boot SuperSpeed | not implemented | U-Boot is USB2 fastboot |
 
-Working with faults:
+### Display
 
-- Touch resume repeatedly retries firmware download and can end with
-  `resume failed closed`; the input device then reappears after recovery.
-- Wi-Fi is usable but ath11k reports repeated `msdu_done` errors and has
-  experienced carrier reconnects.
-- Battery charging currently reports `charge_type=Fast`, but the live Xiaomi
-  attributes read `raw_xm_authentic=0`, `raw_xm_pd_verified=0`,
-  `raw_xm_fastchg_mode=0` and `raw_xm_power_max=0`. The connected USB source is
-  limited to 5 V/0.5 A, so PD/PPS/MiPPS high-power charging is not validated.
-- The eUSB2 repeater and GPU log occasional recoverable errors.
+- DSI panel `xiaomi,pipa-nt36532` (CSOT module `m81_42_02_0b`), 1800x2880,
+  `MIPI_DSI_MODE_VIDEO`, two DSI hosts, KTZ8866 backlight.  The DTS delay
+  firmware fallback `novatek/liuqin/novatek_nt36532_m81_fw_csot.bin` is the
+  correct one for this unit; automatic TM/CSOT selection is **not
+  implemented**.
+- DRM client is `DRM_CLIENT_DEFAULT_FBDEV`, giving `fb0`/`msmdrmfb` and a
+  getty on `tty1`; `earlycon=simplefb console=tty0` keeps the console alive
+  from the first line.  `fb0: framebuffer is not in virtual address space`
+  is informational.
+- **verified** (2026-09-29): panel lights, backlight, console, fbcon on the
+  DSI panel.
+- **Limit — one refresh rate.** The mainline panel driver exposes only the
+  120 Hz mode.  The panel hardware supports 144/120/90/60/50/48/30 Hz
+  (Android/vendor timing set).  Adding 60 Hz is the single most valuable
+  power item; each mode needs its panel timing-switch command, DSI/DSC
+  validation and a device test.
+- **Limit — U-Boot first modeset.** Booting through the U-Boot menu inherits
+  a *running* display pipeline (ABL keeps the panel up for the menu), and
+  the first in-place modeset leaves the panel dark.  Patch 0003
+  (`msm-first-modeset-cycle`) retries a stop/start cycle at 6, 10, 14, 18
+  and 22 s, which costs visible dark seconds.  The kernel-side root cause is
+  still unknown; the ABL/`fastboot boot` path (which disables the display
+  first) lights at ~1.9 s with no cycle.  The known hand-off difference and
+  the candidate fix (an ordered quiesce of DPU timing + both DSI streams
+  before the first modeset) are recorded in the patch/Source.  Once a proper
+  fix lands, the retry cycle can be deleted.
+- **Do not** re-add the `arm_smmu_init` / `disp_cc_sm8450_driver_init`
+  blacklist: it crashes this unit, and the option that enabled it was
+  removed.
 
-The Android probe reported 35 sensor-service entries, 43 ALSA PCM endpoints,
-three physical camera sensors (six HAL devices), and a power-button fingerprint
-sensor. Those counts describe the vendor stack, not features currently
-available in this system. Hall switches are already covered by `gpio-keys`.
-Android itself did not expose a magnetometer, barometer, proximity sensor,
-GNSS, NFC or vibrator feature; those should remain marked as unconfirmed or
-disabled rather than counted as missing Android hardware.
+### Touch and input
 
-Thermal support is partial: the current system has 38 zones covering the
-battery, TSENS CPU/GPU, video, memory, camera, CDSP and PMIC paths. The Android
-snapshot had 81 zones, including vendor `charger`, `wifi`, `xo`, `ddr`, `flash`
-and connector zones that are not present under those names here.
+- Novatek NT36523 SPI touchscreen, pen, Nanosic WN8030 keyboard-folio
+  bridge (keyboard, media keys, touchpad) and the power keys are **verified**
+  (2026-09-29).  Hall switches are covered by `gpio-keys`.
+- Touch resume repeatedly retries the firmware download and can end in
+  `resume failed closed`; the input device reappears after recovery.  The
+  installer does not ship the touchscreen firmware payload (its panel is
+  output-only); the installed system carries it.
+- **Touch drift with an external DP monitor.** With a DP display attached,
+  touch coordinates drift.  Root cause is Mutter's touchscreen-to-output
+  association: the I2C touchscreen reports vendor/product `0x0000` and no
+  resolution, and the DSI output is `unknown/unknown/unknown`, so the
+  same-vendor/product and same-size heuristics cannot bind it.  Two
+  attempts failed and must not be repeated blindly: (1) the relocatable
+  GSettings touchscreen output override matches no monitorspec and makes
+  touch unresponsive; (2) adding `input_abs_set_res()` in the driver made
+  evdev report **zero** events (cause unknown; the change was reverted).
+  Remaining options: a synthetic EDID on the DSI connector (vendor/product),
+  or an explicit Mutter/GNOME mapping; `modules/liuqin/hardware.nix` carries
+  the same record next to the driver code.
+- The touchscreen firmware parser should validate ranges
+  (`offset <= length && size <= length - offset`) before checksums/copies;
+  the 7.2.5 adaptation does not do this yet.
 
-## USB-C / USB3 / DP / fast charging: what the static analysis settled (2026-09-29)
+### Camera
 
-Analysis that needs no device (vendor 5.10 sources, the stock firmware and
-deployed binaries, upstream 7.2.5) pins this chain down. The full reports are
-in `../../liuqin-stock-dump/re/usb/` (`batterysecret.md`, `dp-altmode.md`,
-`phy-table.md`, `dt-config.md`, `mipps-spec.md`, `phy-table.patch`; not in
-git), and the implementation checklist is the "已确定的逻辑" section of
-`docs/TODO/USB-C-USB3-FASTCHARGE.md`. In short:
+All three modules capture on mainline through CAMSS plus libcamera's `simple`
+pipeline with the software ISP; the GNOME path (portal → pipewire →
+libcamera) works, and contrast autofocus runs in the simple pipeline while
+streaming.  Kernel side is patch 0012/0013; userspace is `pkgs/libcamera-af/`.
+**verified** (2026-10-06).
 
-- **PD/PPS is the ADSP's job.** The deployed kernel and modules carry no
-  AP-side PD stack: the AP can only write `input_current_limit`, and the
-  charging tier is derived from `usb_type` + `pd_verified` + `power_max`
-  (`qti_battery_charger.c:1497`). Standard PD/PPS therefore needs no port,
-  only not being interrupted.
-- **MiPPS (67 W) is driven by `/vendor/bin/batterysecret`, not by the kernel.**
-  HMAC-SHA-256 with keys in `.data` (`0x7490..`; hw_id 17, i.e. liuqin,
-  selects `0x7510`), talking to the UVDM sequence through
-  `/sys/class/qcom-battery/{verify_process,verify_digest,request_vdm_cmd,…}`.
-  0006 exposes the kernel side of that transport, but not yet the ABI a daemon
-  needs: seven changes remain (see the TODO document), and the userspace
-  daemon after them. `is_old_hw` does not exist in the deployed kernel;
-  `BATTERY_DIGEST_LEN=32`.
-- **liuqin has no USB3 redriver.** Board-id `0x10008` / miboard-id `0x10` apply
-  overlay-15 only; `onnn,redriver` belongs to waipio-QRD's overlay-25/26/27.
-- **The combo PHY is a V6 layout.** The stock `qcom,qmp-phy-init-seq` (174
-  entries) matches the upstream SM8550/V6 table (TX, PCS and PCS_USB
-  bit-identical; COM has the same 48 offsets but 24 different values), while
-  7.2.5 selects the sm8350 table for `qcom,sm8450-qmp-usb3-dp-phy`; upstream
-  parses no DT init-seq at all.
-- **DP Alt Mode reuses the upstream protocol.** `pmic_glink_altmode.c` and the
-  vendor `altmode-glink.c` agree field for field, so DP bring-up is DT
-  (`pmic-glink`'s `connector@0` with graph endpoints, `usb_1_qmpphy`,
-  `mdss_dp0`, FSA4480) plus configuration.
-- **Type-C role/orientation.** The `connector@0` graph also provides UCSI's
-  role switch; `orientation-gpios` is the mechanism, but GPIO91 is only a
-  candidate here (the vendor uses it as a portselect pinctrl and the evidence
-  is not sufficient), so the plan deliberately leaves it out of the DTS. The
-  vendor counterpart is `usb-role-switch` + EUD extcon.
+Operating facts (full detail in `docs/TODO/CAMERA-MAINLINE.md`):
 
-Implementation-level artifacts (not in git; they embed vendor-private material)
-live under `liuqin-stock-dump/re/usb/`:
+- rear S5KJN1 (wide, csiphy3, 4080x3060, 4 lanes, 700 MHz menu rate, mounted
+  180°, I2C 0x10, VFLIP default 1); front IMX596 (csiphy2, 2592x1952,
+  678.4 MHz measured, 4 lanes, streams with `0x0100 = 0x0103`); depth
+  SC202CS (csiphy1, 1600x1200 mono, 1 lane, 360 MHz, I2C 0x36).
+- The modules share `csid0 -> vfe0_rdi0`, so exactly one camera can be
+  routed at a time.  **Never route at boot**; a leftover enabled
+  phy→csid link makes the CSID resolve two inputs and nothing streams.
+  Reset with `media-ctl -r -d /dev/media0`.
+- The sensor module is blacklisted from udev autoload and loaded late by the
+  `liuqin-camera-probe` oneshot (three attempts, 5 s apart).  A failed probe
+  leaves every camera absent; touching the stack in that state can wedge the
+  SoC — reboot.
+- libcamera routes the graph itself: `cam --stream role=raw --capture=N`
+  (the `cam` on `PATH` is stock libcamera; `cam-af` runs the patched build).
+  Focus is a stream-time action:
+  `v4l2-ctl -d <dw9768-subdev> --set-ctrl focus_absolute=536`.
+- Only one consumer can hold the camera; wireplumber's v4l2 monitor counts
+  as one.  In a GNOME session mask it for a raw capture.
+- Open items: SC202CS gain semantics, depth flip register, AF quality
+  limits, VCM not parking, app photo/recording paths, suspend/resume
+  re-capture, colour calibration, UVC gadget, and the always-on bring-up
+  workaround (patch 0013) that still needs a minimal-set bisect.
 
-- `dt-config.md`: pasteable DT fragments plus config lines, the electrical
-  facts still open, and a first-boot checklist;
-- `phy-table.patch`: draft adding the `sm8450_usb3dpphy_cfg` combo-PHY table
-  (V6 base plus the board delta); applies cleanly to 7.2.5;
-- `mipps-spec.md`: MiPPS daemon ABI, state machine, digest byte order and key
-  selection, plus the seven minimal 0006 changes.
+### Audio
 
-## Kernel
+Patch 0004 carries the AudioReach/sc8280xp path with CS35L41 amplifiers,
+`wm_adsp` and the q6apm LPASS DAIs, and the module installs UCM2 for the
+card.  **Not working** on this branch: `/proc/asound/cards` reports no
+soundcard, because the LPASS/WCD machine driver is deferred (RX/TX macro
+clocks and CPU DAI unresolved).  Microphone capture (WCD938x/SoundWire) is
+**not implemented**/not enabled.  The separate `audio/mainline` branch is not
+part of this tree.
 
-Sixteen patches, applied in filename order (there is no 0014: it was a
-temporary PCIe PHY diagnostic):
+### USB3 device (peripheral data path)
 
-| # | content |
-|---|---|
-| 0001 | DTS and bindings for SM8475/liuqin |
-| 0002 | Nanosic WN8030 keyboard bridge |
-| 0003 | Novatek NT36523 SPI touchscreen |
-| 0004 | Novatek NT36532 DSI panel |
-| 0005 | AudioReach/TDM/CS35L41 audio |
-| 0006 | PON, battmgr, PMIC GLINK |
-| 0007 | Iris video decoder adaptation |
-| 0008 | misc, UBWC, simplefb early console |
-| 0009 | I2C eUSB2 repeater |
-| 0010 | SM8475 TLMM pinctrl |
-| 0011 | gpio function flag in that pinctrl driver |
-| 0012 | dirtyfb flush for CPU-written framebuffers |
-| 0013 | the board's own QMP PCIe PHY cape tables (21 values); without them the PHY times out and the WCN6855 never enumerates |
-| 0015 | temporary workaround: up to five delayed display-pipeline stop/start cycles after U-Boot hands over a still-running panel |
-| 0016 | CPU capacity and energy model for the three Kryo clusters (see below) |
-| 0017 | CPU thermal cooling maps: the zones' passive trips drive their cluster's cpufreq cooling device (see Energy) |
+**verified** (2026-10-07, full-feature kernel): with a USB3 host port and a
+USB3 cable, the device side reports
+`a600000.usb: maximum_speed=super-speed, current_speed=super-speed` and the
+host `lsusb -t` shows the NCM function at **5000M**; `usb0`/NCM works over
+the link.  The same cable on a USB2 port/cable only reached 480M.  Status is
+read from the link negotiation, not from a throughput benchmark.
 
-Three config inputs:
+Open: a recorded 10-hotplug stability run and a USB2-cable downgrade retest.
 
-- `kernel/config.nix` — structured answers, installed system. `enableCommonConfig`
-  is deliberately **off** (`kernel/default.nix`): the base is the arm64 defconfig
-  plus these answers. Of nixpkgs common-config's ~470 `=y/=m` answers only ~180
-  hold here (BINFMT_MISC, USERFAULTFD, KPROBES/FUNCTION_TRACER, ANDROID_BINDER_IPC,
-  FS_VERITY/FS_ENCRYPTION … are out), and `config.nix` was deduplicated against
-  common-config while it was still enabled, so re-enabling means re-deriving that
-  diff;
-- `kernel/liuqin-firstboot.config` — raw fragment appended in `postConfigure`
-  for symbols a structured answer cannot settle (Kconfig question order, or
-  `olddefconfig` downgrading `=y` to `=m`), then `make olddefconfig`;
-- `kernel/installer.config` — same mechanism, installer kernel only (its RAM
-  image has no module tree, so the USB/HID gadget paths are built in).
+### Type-C host and OTG
 
-Both fragments are appended **before** a single check pass, and the expectations
-are derived from the fragments themselves (each `CONFIG_X=y` must survive as
-`=y`, each `CONFIG_X=m` as `=y|=m`; `ZRAM` is an explicit exact-`m` exception —
-zram-generator modprobes it with `num_devices=1`). The hand-written symbol lists
-this replaced had missed four lines that could never hold: `NFT_COUNTER` does
-not exist, `NFT_FIB` has no prompt (the family helpers select it), `NFT_FIB_INET`
-depended on helpers nobody enabled, and `NFT_REDIRECT` is really `NFT_REDIR`.
+**verified** (2026-10-07): with a Xiaomi 15 phone attached, the tablet
+enumerates it at **5000M** (`usb 2-1: new SuperSpeed USB device … using
+xhci-hcd`); with the tablet as host/source it discharges **−2.886 A** into the
+phone, so the OTG VBUS path works.  The charger → phone-as-device →
+phone-as-host sequence of role changes completes cleanly, and XHCI reclaims
+the bus when the phone is the device.
 
-Nothing in this derivation is an ImportFromDerivation: `buildLinux` hands
-`build.nix` an explicit `config`, so the generated `.config` is an ordinary
-build input (the `allowImportFromDerivation` knob only matters for
-`linuxManualConfig` / `linuxPackages_custom`).
+- `data_role`/`power_role`/`usb_role` come from UCSI (`/sys/class/typec/port0`);
+  orientation comes from the charger service's `XM_PROP_CC_ORIENTATION`,
+  because the ADSP reports UCSI 1.0.0 (no orientation field).  Patch 0005
+  reads it and drives the QMP combo PHY's typec switch
+  (1 = CC1/NORMAL, 2 = CC2/REVERSE).
+- `pm8350_l1` (combo-PHY `vdda-pll`) must be ≥912 mV; the DT pins it there.
+- Open: a stated 10-hotplug record, and **automatic gadget unbind/rebind**
+  across Host↔Device transitions.  Today, if the debug gadget fails to
+  re-bind, restart it from Wi-Fi SSH:
+  `systemctl restart liuqin-usb-gadget liuqin-usb-shell`.
+  No verified Host VBUS/OCP automatic fallback exists.
 
-The experimental DRAM-resident console patch was removed: unreliable on this
-device.
+### DP Alt Mode
 
-## CPU scheduling: cluster capacity and the Energy Model
+**verified** (2026-10-06, retested 2026-10-07 on the full-feature kernel):
+a USB-C→DP adapter drives a 2560x1600 monitor; `card0-DP-1/enabled=enabled`,
+`modes = 2560x1600`, link trained (2-lane HBR2, wide bus 2 px/clk, vendor
+behaviour).
 
-The three Kryo clusters are three different cores at three different maximum
-frequencies (4×A510 at 2.016 GHz, 3×A710 at 2.7456 GHz, 1×X2 at 3.1872 GHz -
-the frequencies `qcom-cpufreq-hw` reads out of the EPSS LUT), and no upstream
-device tree says so.  With no `capacity-dmips-mhz` on any CPU,
-`topology_parse_cpu_capacity()` leaves `raw_capacity` NULL,
-`topology_normalize_cpu_scale()` returns before writing a scale and every CPU
-keeps the default `cpu_capacity` 1024.  `SD_ASYM_CPUCAPACITY` is then never set
-(no misfit handling, no capacity-aware placement), and
-`cpufreq_register_em_with_opp()` fails for the same reason a second time: it
-requires `dynamic-power-coefficient`.  Without both, EAS is unreachable - the
-kernel could not tell the A510s and the X2 apart at all.
+Known limits:
 
-`patches/kernel/0016` puts both properties on the board's CPU nodes with the
-values the stock bootloader hands the vendor kernel
-(`liuqin-audit/evidence/final-runtime.dts`, the `qcom,kryo` nodes): DMIPS/MHz
-1024 / 2253 / 2386 and capacitance 100 / 257 / 509.  The rating is per MHz and
-`arch_topology` scales it by each policy's `cpuinfo.max_freq`, giving expected
-capacities of 278 / 833 / 1024; this kernel's sysfs values read 277 / 832 / 1024
-after integer rounding.  The coefficients are what makes the EM work:
-the driver adds every LUT OPP with its own voltage (0.864 V at 2.016 GHz, for
-example), and `dev_pm_opp_calc_power()` then has everything for
-`P = C·V²·f`.  Measured before the change on the unit (2026-09-28):
-`cpu_capacity` was 1024 on all eight CPUs and `/sys/kernel/debug/energy_model`
-was empty.
+- **Single-link-rate tables.** The combo-PHY DP serdes/TX tables are the live
+  register state of the vendor stack captured at **HBR2 4-lane,
+  2560x1600@60, widebus**.  The per-rate (RBR/HBR/HBR3) tables are NULL, so
+  the PLL keeps the HBR2 programming; other link rates/monitors are
+  unsupported.  Adding one means capturing the vendor's registers at that
+  rate the same way (`FIXME(dp-link-rates)` in
+  `files/kernel/phy-qcom-qmp-combo.c`).
+- The DT declares **2 data lanes** only; 4-lane DP is not implemented.
+- Repeated DP/PD hotplug (10×) and long-run stability are unverified.
 
-Re-check on a running system:
+### Standard PD and PPS
 
-```sh
-cat /sys/devices/system/cpu/cpu[0-7]/cpu_capacity  # 277 277 277 277 832 832 832 1024
-ls /sys/kernel/debug/energy_model/                 # perf domains 0-3, 4-6 and 7
-cat /proc/sys/kernel/sched_energy_aware            # 1
-```
-`cpu_capacity` is read-only; the only way to set it is the device tree.  The
-DTB is also what `overlay.nix`'s `liuqinKernelDtb` guards: it decompiles the
-built board DTB and fails the build if the six property/value pairs are not
-there, because losing them again would be silent.
+The deployed kernel has **no AP-side PD stack**: PD/PPS is negotiated by the
+ADSP.  The AP can only write `input_current_limit`, and the charging tier is
+derived from `usb_type` + `pd_verified` + `power_max`.  Measured on hardware
+(2026-10-06/07): an unauthenticated standard PPS contract gives ~8.4–8.5 V
+at ~5 A (≈38–45 W) into the battery.  Standard PD/PPS therefore works in
+practice; formal acceptance (5 V fallback, PDO/PPS visibility, hotplug) is
+**unverified**, and there is no AP-side PDO/PPS control.
 
-## Energy
+### Xiaomi MiPPS (67 W)
 
-Wired here, beyond the CPU scheduling above:
+**verified** (2026-10-07): with the original 67 W charger and the key files
+installed, the daemon completes automatically — `pd_verifed=1`,
+`adapter_svid=2717`, `adapter_id=0000a819`, `authentic=1`,
+`slave_authentic=1`, `usb: 9.10 V / lim 6 A`, battery current rising from
+8.4 to **8.654 A** (~34 °C, SOC 66 %), comparable to the Android golden run
+(8.94 V, 6 A, −8.69 A).  Without keys the verdict stays `pd_verifed=0`
+(negative control, 2026-10-06).  `reverseAuth` (command 8) is
+**unverified**; the daemon correctly does nothing against a phone
+(`pdo2 == 0`).
 
-- `cpuidle.governor=teo` (`modules/liuqin/default.nix`).  The firstboot
-  fragment builds TEO in and selects it for the installed system.  The running
-  tablet reports `teo` in
-  `/sys/devices/system/cpu/cpuidle/current_governor`.
-- `networking.networkmanager.wifi.powersave` stated explicitly, and `iw`
-  installed so the state can be read back (`iw dev wlp1s0 get power_save`):
-  mac80211's debugfs is not built in this kernel, and nothing else in the
-  closure can show it.
-- CPU thermal cooling maps (`patches/kernel/0017`).  Upstream SM8450 declares
-  passive trips on every CPU zone and `#cooling-cells` on every CPU, but no
-  cooling map: the per-policy `cpufreq-cpuN` cooling devices were bound to
-  nothing, so the OS could not throttle at all and only the hardware LMh
-  limiter reacted.  The maps point each zone's trips at its cluster's policy
-  device, trips untouched (nothing throttles below 90 °C).
+Details and the key contract are in §2.
 
-Not done, in rough order of expected value:
+### Sensors
 
-- **Panel refresh rate.**  The mainline driver exposes one fixed 120 Hz mode:
-  `pipa_mode_120` is the only mode returned by `nt36532_get_modes()`.  The
-  Android audit and final runtime DT show the active M81PB panel supports
-  **144, 120, 90, 60, 50, 48 and 30 Hz**, including a `wqhd_60hz_index_00`
-  timing.  Adding 60 Hz first is useful for battery life; each mode needs its
-  panel timing-switch command, DSI clock/DSC validation and real-device test.
-  The display is the largest consumer on a tablet, so dynamic refresh support
-  remains the biggest single power item.
-- **IPA (`power_allocator`) for the CPU zones** - what the energy model from
-  patch 0016 is for.  Deferred because `sustainable-power` needs tuning and
-  the current PMIC GLINK readout is a charger/battery estimate rather than a
-  calibrated board input measurement.  A USB power meter is still needed to
-  choose a defensible `sustainable-power` value.
-- **CPU to DDR bandwidth.**  Interconnect providers are registered, but the CPU
-  nodes have no `interconnects` and there is no CPU bwmon/memlat device
-  (`/sys/class/devfreq` carries only the GPU and UFS). CPU frequency therefore
-  has no policy-level memory-bandwidth vote. `sm8550` has `cpu_bwmon`; porting
-  the equivalent path is a separate workload-performance project. It affects
-  memory-bound load scaling, not the basic idle governor or EAS enablement.
-- **uclamp**: `# CONFIG_UCLAMP_TASK is not set`.  Enabling it is free but
-  does nothing until something sets per-task hints, so it waits for that
-  policy rather than for the config.
-- **GPU devfreq policy.** The running mainline system uses
-  `simple_ondemand` (220--818 MHz). The Android audit records vendor KGSL
-  frequency tables and limits, but does not establish a portable `msm/tz`
-  governor contract. Treat this as a separate sustained-GPU power/performance
-  investigation, not as a CPU scheduler failure.
-- **PCIe ASPM**: this port cannot even read the link state (`lspci` shows no
-  LnkCtl for the WLAN bridge), and ASPM has a history of ath11k link
-  problems, so it stays at the kernel default.
+The SSC/SLPI path is implemented: the package serves the registry contract,
+the persist import is atomic, and bounded `libssc` checks cover acceleration,
+angular rate and the default SSC ambient-light Lux instance.  Only the
+accelerometer is bridged to `iio-sensor-proxy`, and the light check does not
+distinguish the front TCS3701 from the rear TSL2522.  The stock CCT/RGB
+calibration records have no API in the pinned `libssc`, so CCT remains
+**not implemented**.  `/sys/bus/iio/devices` can be empty because these
+devices are owned by SLPI, not an AP-side IIO bus.  Real measurements and
+the Android-derived gravity/rotation/step/tilt/motion behaviour are
+**unverified** until `liuqin-sensor-check` runs against this unit's SLPI
+firmware.  `hardware.liuqin.sensors.sscConfigHash` must be set (a
+config-only archive is accepted; `sns_reg.conf`/`sns_reg_version` are
+synthesized when absent) or the build fails.
 
-Checked and already fine: interrupt affinity (nothing lands on the single X2;
-ath11k's MSI vectors sit on cpu1..cpu6, ufshcd on cpu0), the GPU and UFS
-devfreq governors (`simple_ondemand`, 220 MHz and 75 MHz floors), and the
-per-CPU idle states (both `cpu-sleep-*` states are in use).
+### Wi-Fi, Bluetooth, storage, power
 
-## Command line
+- Wi-Fi (ath11k/WCN6855) associates and Bluetooth works (**verified**
+  2026-09-29), with repeated `msdu_done` errors and occasional carrier
+  reconnects.  WLAN MAC and BT public address are per-device values
+  provisioned from persist.
+- UFS, GPU, PCIe/WCN6855 (needs patch 0010's cape tables) and the initrd
+  storage guard work (**verified**).
+- CPU: cluster capacities 277/832/1024 (expected 278/833/1024), EAS active,
+  `teo` idle governor, CPU thermal cooling maps in place (**verified**).
+  `CONFIG_UCLAMP_TASK` is not enabled (free to enable, useless until
+  something sets hints).  Panel refresh control and IPA are the open energy
+  items.
+- Thermal is partial: 38 zones (battery, TSENS CPU/GPU, video, memory,
+  camera, CDSP, PMIC); Android had 81 including vendor charger/wifi/xo/ddr/
+  flash/connector zones that do not exist under those names here.
+- Fingerprint: **not implemented** (Android has an FPC1020-compatible
+  power-button sensor and `fpc1552.ko`).
 
-Installed system (extlinux `APPEND`; `init=` and `root=fstab` are added by the
-loader integration):
+### Kernel command line and config inputs
+
+Installed-system `APPEND` (the loader adds `init=` and `root=`):
 
 ```text
 qcom_q6v5_pas.slpi_auto_boot=0 rootwait initcall_blacklist=simplefb_driver_init
@@ -291,336 +262,340 @@ earlycon=simplefb console=tty0 firmware_class.path=/var/lib/firmware
 root=fstab loglevel=7 lsm=landlock,yama,bpf
 ```
 
-`earlycon=simplefb` plus `console=tty0` keep a console alive from the first line
-and hand it to the panel; the loglevel stays at 7 (NixOS' `loglevel=4` hid the
-log). `keep_bootcon` is deliberately **not** in the default: it keeps simplefb0
-writing into the bootloader framebuffer all session, which a compositor cannot
-draw over — it lives behind `hardware.liuqin.boot.debug` (the RAM installer does
-carry it). The SMMU/display-clock blacklist and the option that enabled it
-(`hardware.liuqin.boot.legacySmmuDispccBlacklist`) are gone: a configuration
-with those initcalls disabled crashes this unit.
+- `earlycon=simplefb` + `console=tty0` keep a console from the first line;
+  `loglevel=7` (NixOS' 4 hid the log).  `keep_bootcon` is **not** in the
+  default — it keeps simplefb0 writing over the compositor — and lives behind
+  `hardware.liuqin.boot.debug`.
+- `firmware_class.path=` takes **exactly one** directory (`fw_path_para` is a
+  single `char[256]`, no `:` splitting).  A second `:`-joined path
+  invalidates the parameter and every `request_firmware()` fails with `-2`.
+  Both call sites point at `/var/lib/firmware`.
+- Three config inputs: `kernel/config.nix` (structured answers),
+  `kernel/liuqin-firstboot.config` and `kernel/installer.config` (raw
+  fragments appended in `postConfigure` before one `make olddefconfig`, then
+  asserted against the final `.config`).  `enableCommonConfig` is
+  deliberately off.
+- The ramoops node is disabled in `dts/liuqin-abl-boot-overlay.dts` because
+  ABL supplies the same region; keeping both overlaps.
 
-`firmware_class.path=` takes **exactly one directory** — `fw_path_para` is a
-single `char[256]` (`module_param_string`, `drivers/base/firmware_loader/main.c`)
-and there is no `:` splitting. A `a:b` value invalidates the whole parameter and
-every `request_firmware()` after that fails with `-2`; that is how the RAM
-installer's WLAN was dead until 2026-09-28. Both call
-sites now point it at `/var/lib/firmware` only, which the initrd seeds with the
-full (installed) or WLAN-only (installer) tree; the loader also tries the
-`.zst`-compressed variants (`FW_LOADER_COMPRESS_ZSTD=y`).
+## 2. MiPPS key material and the daemon
 
-`0008`'s early framebuffer clears each reused line rather than the whole
-screen, so the newest screenful survives a wrap.
+MiPPS (Xiaomi 67 W) authentication is driven by `/vendor/bin/batterysecret`
+on the stock system, **not** by the kernel.  This tree reproduces that state
+machine in `pkgs/mipps-daemon.c` on top of the `qcom-battmgr` sysfs ABI
+(patch 0005).
 
-Ramoops: the reserved-memory node exists in the DTS, and
-`dts/liuqin-abl-boot-overlay.dts` disables it, because ABL supplies the same
-region in the final DT and two copies overlap.
+### 2.1 Where the keys come from (extraction, no device needed)
 
-## Display
+The keys are static tables inside the shipped `batterysecret` binary.  The
+whole procedure is offline, on the operator's stock dump:
 
-- Panel `xiaomi,pipa-nt36532`, CSOT module `m81_42_02_0b`, `MIPI_DSI_MODE_VIDEO`,
-  two DSI hosts, DPMS on, KTZ8866 backlight at 1500/2047. The DTS fallback
-  `novatek/liuqin/novatek_nt36532_m81_fw_csot.bin` is correct for this unit;
-  automatic TM/CSOT selection is not implemented.
-- The panel hardware's Android/vendor timing set is 144/120/90/60/50/48/30 Hz;
-  the current mainline panel implementation advertises only 120 Hz.
-- DRM client is `DRM_CLIENT_DEFAULT_FBDEV` (asserted), giving `fb0`/`msmdrmfb`
-  and a getty on `tty1`. `fb0: framebuffer is not in virtual address space` is
-  informational: `sys_fillrect()` warns and still calls `fb_fillrect()`.
-- `0011`: the backported `pinctrl-sm8475.c` declared its gpio function with
-  `MSM_PIN_FUNCTION()`, and 7.2.5's pinmux core refuses a GPIO request on a pin
-  whose mux function lacks `PINFUNCTION_FLAG_GPIO`. Without
-  `MSM_GPIO_PIN_FUNCTION()` the panel reset (`gpio0`), the four CS35L41 resets
-  (`gpio1/3/87/92`) and the gpio-keys hall lines (`gpio10/23`) all fail.
-- `0012`: the damage chain (`sys_*` → damage → `damage_work` → `fb_dirty`) ran,
-  but `msm_framebuffer_dirtyfb()` returned early on
-  `refcount_read(&dirtyfb) == 1`, so `drm_atomic_helper_dirtyfb()` never ran and
-  console output stayed invisible until an unrelated commit. The interface is
-  `INTF_MODE_VIDEO` (debugfs `encoder-0/status`, `crtc-0` `intf_mode: 2`).
-  The skip now also requires that nothing has the framebuffer CPU-mapped
-  (`msm_obj->vmap_count == 0`); GPU-written framebuffers are unchanged.
-- `liuqin-screen-refresh` blanks/unblanks once after multi-user; that commit
-  redraws the console scrollback, including what was printed before the DRM
-  fbdev took over, into the framebuffer the panel scans.
-- Touchscreen: the driver downloads firmware on resume, so without the payload
-  above it closes the device on the first blank/unblank. The installer does not
-  ship it (its panel is output-only); the installed system carries the full
-  firmware set.
-- The `-safe` installer profile (blacklisting `arm_smmu_init` and
-  `disp_cc_sm8450_driver_init`) went white and then rebooted on this unit, and
-  was removed. One installer image remains.
-- The kernel's touchscreen firmware parser should validate ranges as
-  `offset <= length && size <= length - offset` before checksums or copies; the
-  7.2.5 adaptation does not do this yet.
+```sh
+cd <liuqin-stock-dump>
+python3 tools/extract-super.py list images/super.img
+python3 tools/extract-super.py extract images/super.img vendor_a /tmp/mipps-keys/vendor_a.img
 
-Not done, in rough order of expected value:
+EROFSS=$(nix build --no-link --print-out-paths nixpkgs#erofs-utils)
+"$EROFSS"/bin/fsck.erofs --path=/bin/batterysecret \
+    --extract=/tmp/mipps-keys/batterysecret /tmp/mipps-keys/vendor_a.img
+sha256sum /tmp/mipps-keys/batterysecret
+# 7a450cdd5c1b65f584f470bb31d4c7a3b4c9cfd6b8cab4473dda6a06e084a1e0
+```
 
-- **Kernel-side display-pipeline stop at probe**, so that U-Boot boots light
-  the panel at the first modeset without the repeated visible dark seconds
-  patch 0015's five-attempt retry loop can cost.
+Then read the tables per `liuqin-stock-dump/re/usb/batterysecret.md` §4.4.
+**Important correction:** that document's "file offset == VMA" is wrong for
+this ELF; `.data` is `p_offset 0x6490` / `p_vaddr 0x7490`, so
+**file offset = VMA − 0x1000**.  Parse the section headers rather than
+trusting a hardcoded delta:
 
-  The hand-off difference behind the loop is known; the exact hardware state
-  that makes the first modeset fail is still unknown. Booted through ABL with
-  a DT that does not name `/reserved-memory/splash_region` (every current flake
-  boot image; patch 0001 renames the node to `linux_splash@b8000000` on
-  purpose) the kernel inherits a
-  **stopped** display: ABL looks that path up in the DT it is about to jump to
-  (`QcomModulePkg/Library/BootLib/UpdateDeviceTree.c`, `UpdateSplashMemInfo`)
-  and, when the lookup fails, calls `DisableDisplay()` -- display power off,
-  display clocks off, TE/RST pin reset.  Measured 2026-09-28: first modeset at
-  ~1.9 s, lit, no cycle.  Booted through U-Boot the kernel
-  inherits a **running** pipeline instead: ABL has to keep the display up for
-  U-Boot's menu, and `sysboot` hands the kernel over with ABL out of the loop.
-  The first in-place modeset then leaves the panel dark and patch 0015 cycles it
-  from a timer.
+| `.data` VMA | file offset | content | output files |
+| --- | --- | --- | --- |
+| 0x7490 | 0x6490 | FG key table (5 × 32 B) | — |
+| 0x7510 | 0x6510 | liuqin's FG key | `fg.key`, `slave-fg.key` |
+| 0x7530 | 0x6530 | 10 × 16 B session seeds | `pd-00.seed` … `pd-09.seed` |
+| 0x75d0 | 0x65d0 | 10 × 32 B PD HMAC keys | `pd-00.key` … `pd-09.key` |
 
-  **Hypothesis, not yet confirmed:** U-Boot leaves the ABL-configured DPU
-  video timing and bonded DSI pipeline running, while the kernel's DRM objects
-  begin with software state that treats them as disabled. Its first enable may
-  therefore reprogram active hardware without first stopping the old timing
-  engine and waiting for the disable to latch. The upstream
-  `dpu_encoder_phys_vid_disable()` path returns early when its software state
-  is already disabled; when it does stop an active encoder, its comment says
-  that re-enabling before the disable reaches vblank can prevent new settings
-  from latching. This fits the ABL/U-Boot comparison, but does not identify
-  whether the decisive state is in DPU/CTL, either DSI host/PHY, or the panel
-  reset sequence. The later success of patch 0015's cycles does not isolate
-  that state either.
+- `hw_id` comes from `ro.product.device`; liuqin is `hw_id=17`, which the
+  `.rodata` jump table maps to `.data 0x7510`.
+- The stock daemon selects the FG key only by device, never by FG index
+  (0=main, 1=slave), so `fg.key` and `slave-fg.key` are byte-identical; no
+  independent slave key exists.
 
-  To test the hypothesis, capture DPU interface/timing and both DSI host
-  status registers immediately before the first modeset on each boot path.
-  Then try an ordered quiesce before the first modeset: stop DPU video timing,
-  wait for idle/vblank, stop both DSI streams, and let the normal panel reset
-  and prepare sequence run. Add a rail power cycle only if that narrower
-  teardown fails. Keep the U-Boot menu visible until the quiesce begins.
+Cross-check the extraction against the two known vectors before deploying:
 
-  The candidate kernel fix belongs before its first modeset (`msm` probe /
-  `dpu_kms_hw_init()`, or the panel driver's first `prepare`), as late as
-  possible so earlycon can keep using the inherited framebuffer. First
-  quiesce the CTL/timing engine and both DSI video streams, then let the
-  panel driver's normal `reset-gpios` pulse and `prepare` sequence run. The
-  exact shutdown order and any required vblank/idle wait need on-device
-  testing. If that is insufficient, test ABL's fuller power/clock teardown.
-  Patch 0001 currently marks the display rails `regulator-always-on` because
-  the bootloader splash scans out until takeover; a rail power cycle would
-  require revisiting that policy and protecting the earlycon window.
-  Register-level references: the vendor tree in `Xiaomi_Kernel_OpenSource/`
-  (DPU/DSI drivers) and the runtime DT in `liuqin-audit/evidence/`.
+```text
+HMAC-SHA256(fg.key, 00 01 .. 1f) =
+  913eaf487f13069effed9a8475a09fbad4d922032791cecf060036fea8daf5c5
+HMAC-SHA256(pd-00.key, BE(112233445566778899aabbccddeeff00) || 00002717)
+  (first 16 B) = c96e6db1b62b95e17ab46847817ae7b2
+```
 
-  Acceptance: with the DT **not** renamed for this path (`splash_region@
-  b8000000`, so ABL keeps the display for the menu) and patch 0015 disabled
-  (`liuqin_panel_cycle_attempts = 0`), a boot through the U-Boot menu must light
-  the panel at the first modeset and leave it lit.  Test through the normal
-  path (U-Boot menu, `sysboot`/extlinux): an ABL `fastboot boot` would take the
-  clean path itself and hide the problem.
+### 2.2 Where the keys go
 
-  Related: patch 0014 (a panel-side "be quiet before prepare", only the panel
-  command, no power/clocks) failed on the unit; patch 0015's comment records the
-  early/late asymmetry (cycles before ~8 s did not take, later ones did).  Once
-  this lands, 0015 can be deleted and `liuqin-screen-refresh` stays retired.
+They must never enter git, a Nix file or the Nix store (the module asserts
+`keyDirectory` is not under `/nix/store`).  Provision them on the tablet:
 
-## Installer
+```sh
+install -d -m 0700 -o root -g root /var/lib/liuqin/mipps
+install -m 0600 -o root -g root fg.key slave-fg.key pd-0*.key pd-0*.seed \
+    /var/lib/liuqin/mipps/
+systemctl restart liuqin-mippsd
+```
 
-- RAM-only live root. `installer-bootimg` is the only image.
-- Channel: USB2 peripheral NCM gadget at `192.168.7.2/24`, DHCP and telnet on
-  `192.168.7.2:2323`, sshd on port 22. Stage 2 recreates the gadget.
-- Toolchain: `sgdisk`, `parted`, `mkfs.ext4`, `e2fsck`, `resize2fs`,
-  `resize.f2fs`, `mkfs.f2fs`, `nmtui`, and upstream `nixos-install`: the
-  operator partitions, formats and mounts the target, and the closure reaches
-  `/mnt/nix/store` either through `--substituters` or through a `nix copy` into
-  the mountpoint followed by `--system <path>`. There is no liuqin wrapper
-  around it; the target's own activation writes the initrd guard's marker.
-- The initrd disables NixOS' generic PC module list: this kernel has UFS, SCSI,
-  ext4, IOMMU and USB built in, and the generic list's absent modules
-  (`ata_piix`) fail before the guard runs.
-- The initrd firmware tree is at `/var/lib/firmware`, matching
-  `firmware_class.path` and avoiding the read-only `/lib` symlink. That
-  parameter takes **exactly one** directory (no `:` splitting — see
-  "Command line"), so it must not be extended with a second path.
+- Directory root:root 0700; each file root:root 0600.  The daemon refuses
+  any other ownership/mode.
+- `fg.key`, `slave-fg.key`: 32 B.  `pd-00.key`…`pd-09.key`: 32 B.
+  `pd-00.seed`…`pd-09.seed`: 16 B.
+- `hardware.liuqin.mipps.keyDirectory` (default `/var/lib/liuqin/mipps`) is
+  the current delivery mechanism; the historical `LoadCredential` idea is
+  **not implemented**.
 
-Five defects fixed to get here, each verified on the unit:
+### 2.3 The daemon
 
-| defect | fix |
-|---|---|
-| `CONFIG_SQUASHFS_CHOICE_DECOMP_BY_MOUNT` unset, so mount's `loop,threads=multi` answered `EINVAL` and `/sysroot/nix/.ro-store` never mounted | set in `kernel/installer.config`, asserted |
-| stage 1's `init=` lookup resolved inside `/sysroot`, and ABL appends its own `init=/init` last | `ExecStartPre` plants the marker, listed in `boot.initrd.systemd.storePaths` |
-| the filtered live toplevel dropped `boot.json`, which stage 1 needs for the etc image and `env`/`modprobe` | keep `boot.json`, with `kernel`/`initrd` repointed |
-| `CONFIG_EROFS_FS` unset, so the `/etc` EROFS image failed and the initrd stopped in emergency mode | enabled in `kernel/liuqin-firstboot.config`, asserted in both check loops |
-| `firmware_class.path` was a `a:b` pair, which the kernel reads as one invalid path, so every runtime `request_firmware()` failed `-2` and the installer's WLAN never came up (`amss.bin` `-2` → MHI `-110`) | point it at `/var/lib/firmware` only |
+`hardware.liuqin.mipps.enable` (default `false`) is the only USB feature
+switch: the kernel and DT carry every board feature at once.  Sub-options:
 
-Measured: gadget up at ~10 s, telnet answering during the initrd, sshd and the
-telnet shell at ~30 s after switch_root, `systemctl is-system-running` =
-`running` with no failed units, `/etc` on the EROFS overlay, three USB units
-active, and WLAN up (`wcn6855 hw2.1` → `wlp1s0`) from the initrd firmware
-subset.
+| option | default | meaning |
+| --- | --- | --- |
+| `mipps.enable` | `false` | run `liuqin-mippsd` (systemd unit, root) |
+| `mipps.keyDirectory` | `/var/lib/liuqin/mipps` | root-only key directory |
+| `mipps.dataRoleSwap` | `true` | do the stock "FG first, then switch to host" order |
+| `mipps.reverseAuth` | `false` | also send UVDM cmd 8 (community 6→8→7), unverified |
 
-## Storage
+The daemon owns no PDO or voltage; it only drives the narrow qcom-battery
+sysfs ABI.  It watches uevents (`POWER_SUPPLY_NAME=usb`, `DATA_ROLE=ufp`),
+re-runs on a 5 s poll, and clears stale verdicts on failure/stop.  Verdict
+attributes live at `/sys/class/qcom-battery/qcom-battery/*` (one level
+deeper than the vendor ABI); writable ones are root-only 0600.
 
-- `hardware.liuqin.storage.layout`: `whole-userdata` (default) or
-  `linux-partition` (Android keeps userdata; NixOS owns a `linux` partition).
-- The root is always `/dev/disk/by-partlabel/<name>` with label `LIUQIN_ROOT`.
-  Partition numbers, starts and sizes differ between the 256 GB and 512 GB GPTs,
-  so no geometry constant exists in the repository.
-- The initrd guard verifies the identity (partlabel, filesystem label, and
-  `/etc/liuqin-nixos-root` content, mode, owner, size and sha256), forces every
-  other `sd*` node read-only, opens only the root rw and then reasserts ro on
-  the siblings; `tmpfiles f+` repairs the marker and `sysroot.mount` depends on
-  the guard.
-- The marker bytes live in `lib/liuqin-root-marker.nix`, shared by the guard and
-  by `config/installer.nix`, which writes the file after `nixos-install`.
-- A oneshot grows the root filesystem with `resize2fs`.
-- `/boot` is a directory on that root partition, not a partition of its own:
-  NixOS' extlinux loader writes the generation list to `/boot/extlinux/
-  extlinux.conf` and copies each generation's kernel, initrd and device tree
-  into `/boot/nixos`. U-Boot's `sysboot` reads that one file; see
-  docs/BOOT-ARCHITECTURE.md for the two device-menu entries and the load
-  addresses.
+### 2.4 FG / PD protocol essentials
 
-## ABL DTB and symbol contract
+**FG digest (both batteries).**
 
-`pkgs/bootimg.nix` applies the ABL metadata overlay, optionally the installer
-USB overlay, then builds the `__symbols__` union from every stock DTBO entry and
-base DTB. Every exported symbol points at the inert `liuqin-abl-overlay-sink`
-node, so ABL cannot mutate a live mainline node when it force-applies stock
-overlays. The sink phandle is not fixed: the build decompiles the merged DTB,
-takes the largest existing `phandle`/`linux,phandle` and emits `max + 1`.
+1. Write `verify_slave_flag` (`"0"`/`"1"`), then a fresh 32-byte random
+   challenge as **65 bytes of hex + NUL** to `verify_digest`.  (Writing only
+   64 bytes yields a different digest — not a bug, but know it when
+   hand-testing.)
+2. The ADSP computes asynchronously.  Reading too early returns the just-
+   written challenge, then a stale intermediate value.  Poll for up to 2 s
+   (50 ms × 40) and compare against `HMAC-SHA256(fg.key, challenge)`;
+   write `authentic=1` / `slave_authentic=1` on match.  Measured: stale at
+   90 ms, correct by 500 ms — the stock 89 ms sleep is too short for the
+   mainline pmic-glink round trip.
 
-The union is applied as one `/plugin/` overlay that carries the sink node plus a
-`__symbols__` entry per label, and `fdtoverlay` merges it in (properties are
-replaced one by one) — pure dtc/fdtoverlay, no text surgery on dtc's output. The
-build then decompiles the result and asserts every union symbol is present and
-pointing at the sink (the previous awk-based splice was
-replaced, and the check was strengthened from "present" to "redirected").
+**PD / UVDM adapter authentication.**
 
-The checked-in stock archive holds 38 DTBO entries and 11 base DTBs, and the
-build asserts a 1744-symbol union. The downstream analysis tree uses 44/14 and
-1781 symbols from another OS build; those counts are not correctness conditions
-for this archive. The kernel's own DTB additionally carries ~395 `__symbols__`
-labels of its own (they are not part of the stock sets and therefore not
-referenced by any stock overlay); they are left pointing at their real nodes.
+1. `process_once()` gates: `real_type ∈ {PD, PD_PPS}`, a reachable USB
+   supply (`usb` or `qcom-battmgr-usb` online), `current_state = SNK_Ready`.
+2. Write `verify_process=1`; read `pdo2` (if `00000000` the partner is a
+   phone — do nothing, matching `usbpd_connect_with_phone()`).
+3. **Data role order matters.** Run the FG digest while in the sink role
+   first, then switch `data_role=host` and wait (≤3 s) for the adapter SVID
+   to appear.  The ADSP publishes the Xiaomi vendor SVID `0x2717` **only in
+   the host role**, so the stock order (FG → host → UVDM) is required; the
+   default `dataRoleSwap = true` implements it.
+4. Pick a random index `rand() % 10` to select `pd-NN.key` / `pd-NN.seed`.
+   Generate a 16-byte challenge.
+5. Send UVDM commands through `request_vdm_cmd` in the stock order
+   `1, 2, 3 (null), 4 (seed hex), 5 (challenge hex), 7, 6, 0`.  A single
+   timed-out command is **not** fatal (record and continue); the verdict
+   comes only from command 5.  Command 8 is never sent by the stock binary.
+6. Compare: the HMAC input is **20 bytes** — the 16-byte challenge followed
+   by the 4-byte `adapter_id` in big-endian byte order (the first 8 hex
+   chars of the displayed value appended as byte pairs).  MAC =
+   `HMAC-SHA256(pd-NN.key, msg)`; only the **first 16 bytes** of the 32-byte
+   response are compared.
+7. Verdict `"01000000"` / `"00000000"` is sent by commands 7 and 6 in that
+   order; on success write `verify_process=0` and `pd_verifed=1`.
 
-## Firmware inputs
+**Wire byte order.** The `request_vdm_cmd` write path parses each 8-hex-char
+group as a big-endian u32 — identical to the vendor driver's BSWAP_32 — so
+the kernel must **not** swap again for commands 4/5/8.  Commands 6/7 keep the
+`swab32` (the vendor reads them with LE semantics).  The read path formats
+four u32 with `%08x`.  Getting this wrong yields a valid-looking MAC compare
+that always fails (`-13`).
 
-`pkgs/firmware.nix` fetches the downstream v0.1.0 release's `boot.img` by hash
-and takes the firmware tree out of its ramdisk (196 files, the count the
-upstream port pins). That tree is byte-identical to the archives this
-repository used to require, so the kernel sees the same files. Two payloads
-are not in it and stay operator inputs, registered with
-`nix-store --add-fixed sha256`: the VPU image (from the official MIUI V14
-extraction) and the SSC sensor config (in the release, but in three ~2 GB
-rootfs volumes rather than the ramdisk). Regulatory databases come from
-nixpkgs' `wireless-regdb`.
+`reverseAuth` (command 8, community 6→8→7, expects a W32 response, uses the
+second half of the MAC) is implemented but **never sent by stock** and
+unverified on hardware.
 
-The initrd subset carries the ath11k tree, its board data and the signed
-regulatory database, and nothing else; the installed system carries the whole
-tree. That subset is what makes the installer's WLAN work: both call sites set
-`firmware_class.path` to exactly `/var/lib/firmware` (one directory — see
-"Command line") and the loader picks the `.zst`-compressed blobs up there,
-exactly like the installed system does (verified on the unit). Nothing proprietary is committed: the release is fetched by hash and
-the operator inputs are `requireFile`. Two archives stay in the tree because the
-release does not carry them (`data/stock-base-dtbs.nix`,
-`data/stock-dtbo-entries.nix`; it ships no `vendor_boot.img`).
+## 3. Debug and deployment methods
 
-The SSC archive used by the first NixOS revision contained the per-device
-`config/` registry but not the `sns_reg.conf`/`sns_reg_version` files that
-`hexagonrpcd` looks up at runtime. The running device logs both paths as
-missing before the SLPI crash. `pkgs/sensors-config.nix` now installs those
-paths, accepts the sibling files when present, and synthesizes the audited
-plain-text contract for older config-only archives. The private per-device
-registry is still provisioned from persist and is never copied into the Nix
-store.
+### 3.1 No UART: the forensic toolbox
 
-## Not enabled by default
+This tablet has no wired serial.  The available channels:
 
-- TM/CSOT automatic selection for other panel batches;
-- WCD938x/SoundWire microphone capture. The four-speaker TDM graph is present
-  in the DTS, but the real device currently registers no ALSA card because the
-  LPASS/WCD probe is deferred; the downstream 6.17 DTS also describes the
-  capture graph;
-- CSI/ISP camera capture (the current Iris support only exposes codec nodes);
-- FPC1020-compatible power-button fingerprint reader;
-- AP-side BMI3x0/TCS3701/TSL2522 direct IIO drivers (the SLPI/SSC path is the
-  implemented contract); gyro/light application acceptance, CCT/RGB, and
-  desktop consumers remain unverified;
-- USB3/OTG role switching and DP Alt Mode: the vendor/upstream logic is now
-  determined (static analysis section above and
-  `docs/TODO/USB-C-USB3-FASTCHARGE.md`); the DT/config changes are not
-  implemented yet, so both DTS overlays still select the validated USB2
-  peripheral role;
-- Xiaomi MiPPS/PPS userspace authentication: the protocol, digest layouts and
-  keys are recovered from `/vendor/bin/batterysecret` (report under
-  `liuqin-stock-dump/re/usb/`); the daemon is not implemented, and `0006` still
-  only exposes the kernel transport and raw attributes;
-- the touchscreen firmware payload in the installer;
-- re-enabling the duplicate ramoops region.
+- **Panel.** The DSI panel is the only local console
+  (`earlycon=simplefb console=tty0`); a photo is often the only evidence of
+  a boot that never reaches userspace.
+- **U-Boot cross-reset stage log.** U-Boot records boot stages in DRAM (the
+  last page of the framebuffer carve-out, `no-map` for Linux) and the log
+  survives a reset, so a run that dies still reports its last stages through
+  the next one.  Read it over fastboot:
+  `fastboot getvar stagecount`, then `fastboot getvar stage`,
+  `fastboot getvar stage1` … (up to 16 older lines; the panel shows only the
+  newest eight).
+- **U-Boot console record.** `fastboot getvar concount`,
+  `fastboot getvar con`, `fastboot getvar con1` … (`liuqin_conlog [n]`
+  in the U-Boot shell dumps/clears more on demand).
+- **One-shot hand-off facts.** `fastboot getvar diag` reports exception
+  level, Gunyah hypervisor presence, control-FDT size/model; `fastboot
+  getvar build` identifies the image tag.  The menu's read-only entries
+  (GPT probe, ABL log scan) cover partition/slot questions.
+- **pstore/ramoops + journald.** The PMIC vWDT resets ~20 s after the kernel
+  stops petting it; the lockup detectors bark earlier and panic, and the
+  panic plus the stuck task's stack land in the ramoops pstore dump across
+  the reset (`ftrace_dump_on_oops=1`).  journald is configured to sync every
+  5 s so the last lines survive a reset.
+- **Wi-Fi SSH** is the normal channel once userspace is up
+  (`hardware.liuqin.debugTransport = "ssh"`, key-only).
+- **USB NCM/ECM gadget** covers the "display is dead" case; today that is
+  the *installed-system* USB shell or the RAM installer (see §3.2).
 
-Each item needs its own kernel profile or device test, not an installer change.
+### 3.2 USB debug network (192.168.7.2) and `nix copy`
 
-## Camera (2026-10-06)
+The tablet presents `192.168.7.2/24` over USB (NCM, ECM fallback), serves
+DHCP to the host, and runs a busybox **telnet root shell on port 2323**
+(sshd on 22 in the installer):
 
-All three camera modules capture on mainline through the CAMSS driver plus
-libcamera's `simple` pipeline with the software ISP, and the GNOME path
-(portal -> pipewire -> libcamera) works; contrast autofocus runs in the
-simple pipeline while streaming.  The kernel side is the camera series
-indexed in `patches/kernel/README.md`; the userspace half is
-`pkgs/libcamera-af/` (patched libcamera, injected into pipewire/wireplumber
-by the camera module); raw captures and graph resets use the upstream tools
-(`cam --stream role=raw`, `media-ctl -r`).
+```sh
+# host: find the interface, then either let DHCP run or assign an address
+ip -4 addr show
+sudo ip address replace 192.168.7.1/24 dev <usb-if>
+telnet 192.168.7.2 2323
+```
 
-Hardware (measured on the vendor stack and from the module blobs):
+On an installed system this channel is opt-in:
+`hardware.liuqin.debugTransport = "usb"` (or `"both"` to keep Wi-Fi SSH).
+The gadget is fixed at `superSpeed = true, requestDeviceRole = false`
+because UCSI owns the Type-C role.  If the cable is unplugged the host-side
+interface simply disappears.
 
-- rear S5KJN1 (wide, csiphy3, 4080x3060, four lanes, 700 MHz menu rate;
-  mounted 180 degrees, hence the driver's VFLIP default), I2C 0x10 on CCI0;
-  its GT9764 VCM (dw9768-compatible) answers at 0x0c while the module is
-  powered; the module EEPROM (GT24P128E) answers at 0x51.
-- front IMX596 (csiphy2, 2592x1952, 678.4 MHz measured, four lanes; streams
-  with the 16-bit write 0x0100 = 0x0103), I2C 0x10.
-- depth SC202CS (csiphy1, 1600x1200, monochrome, one lane, 360 MHz), I2C 0x36.
-- The modules share `csid0 -> vfe0_rdi0`, so exactly one camera can be routed
-  at a time.  Route on demand, never at boot, and leave exactly one enabled
-  phy->csid link: a leftover link makes the CSID resolve two inputs and no
-  camera streams.
-- Power: the module rails are switched by the sensor driver; the VCM's own
-  rail (pm8350c l7) is kept always on at its 3.0 V default and no code writes
-  a rail voltage.  The VCM therefore only answers while the module is powered
-  (i.e. during a stream).
+Deploying a new system over the local binary cache (the full walk-through is
+in `docs/INSTALL.md` §4): serve `/var/tmp/liuqin-cache` from the host, then
+on the device set `NIX_CONFIG` with `require-sigs = false` and a
+`substituters` line pointing at `http://192.168.7.12:8137`, `nix copy`
+the toplevel and loader script, set the system profile, run the loader
+script, and `switch-to-configuration boot`.
 
-Operation:
+### 3.3 Kernel module probe method (dp-dump)
 
-- Raw captures: `cam --stream role=raw --capture=N` (libcamera routes the
-  graph itself); `media-ctl -r -d /dev/media0` clears stale links.  Focus is a
-  stream-time action: `v4l2-ctl -d <dw9768-subdev> --set-ctrl
-  focus_absolute=536`.
-- The sensor module is blacklisted from uDev autoload and loaded late by
-  `liuqin-camera-probe` (three attempts).  A failed probe leaves every camera
-  absent, and touching the stack in that state can wedge the SoC - reboot.
-- One consumer at a time: a camera app and wireplumber's v4l2 monitor
-  exclude each other; mask wireplumber for raw captures.
-- `cam` is the stock libcamera; the autofocus build is injected only into
-  pipewire/wireplumber (`cam-af` runs it).
+The DP Alt Mode bring-up used a purpose-built **read-only probe module**
+that dumps PHY/DP-controller registers and node clock rates, compiled for
+both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
 
-Open items: SC202CS gain-register semantics; the depth flip register (0x06 vs
-0x60) pending an on-device check; the contrast-AF algorithm's limits (FIXME
-block in its patch); the app photo/recording paths (Snapshot writes a
-zero-length JPEG and leaves recordings unfinalized); suspend/resume
-re-capture; probe statistics across reboots; real colour calibration (the CCM
-entries are identity matrices); the UVC gadget (deferred); and the always-on
-bring-up workarounds (patch 0024: titan_top/IFE GDSCs and the GCC camera
-AXIs), which want a minimal-set bisect.  The curated status, open-item and
-operating-notes document is `docs/TODO/CAMERA-MAINLINE.md`.
+- It walked the DT `reg-names` windows and exposed them under
+  `/proc/liuqin_dp_dump`, with a `window=N` module parameter to read one
+  window at a time and `sync` after each, so a window that hangs the bus
+  does not lose the earlier data.  It also printed each node's clock rates.
+- On Android it was built against the vendor 5.10 tree with
+  `.scmversion`/`KERNEL_RELEASE` faked to the running kernel's vermagic and
+  with `__versions` CRCs rewritten from the device's own modules
+  (`extract-stock-crcs.py` + `fix-module-crcs.py`); `dp-dump-adb.sh arm|fetch`
+  pushed and collected it.  Diffs between vendor-live and our registers
+  (`dp-reg-diff.py`) distinguished stable configuration differences from
+  dynamic state, and `dp-gen-vendor-tables.py` generated the C tables that
+  are now in `files/kernel/phy-qcom-qmp-combo.c`.
+- **The probe was removed from this repository during consolidation and is
+  archived under `liuqin-audit/kernel-exp/dp-dump-probe/`** (source,
+  `Makefile`, `default.nix`), together with the build/collect scripts
+  (`build-dp-dump-probe.sh`, `dp-dump-adb.sh`, `dp-reg-diff.py`) and the
+  table generator (`dp-gen-vendor-tables.py`) in `liuqin-audit/kernel-exp/`;
+  the captures and the golden register data are under
+  `liuqin-audit/out/dp-vendor-golden-20261006/`.
+- **Safety rules, measured twice:** never read the dp-GDSC window
+  (`0xaf09000`) while DP is streaming — it hangs the bus and forces a hard
+  reset; and never poll the DP connector's `status`/`modes` (they call
+  `detect()`; a 2 s poll is enough to wedge the display stack).  Use the
+  cached `card0-DP-1/enabled` as the trigger, and per-window `sync`.
+- A failed DP enable can leave the DPU encoder waiting for frame-done and
+  wedge the session into a reboot, so capture with `dmesg -w` redirected to
+  a file under `/var/tmp`.
 
-## Known refactors (TODO)
+## 4. Kernel patch series
 
-- `config/installer.nix`: `usbGadgetSetup` / `usbShellLogin` / `screenRefresh`
-  are **done** — they now live in `pkgs/usb-gadget.nix`, `pkgs/usb-login.nix`
-  and `pkgs/screen-refresh.nix` (the last shared with the installed system's
-  `liuqin-screen-refresh.service`). The install path itself is no longer in
-  this file: upstream `nixos-install` runs against the operator's mounted
-  target.
-- `modules/liuqin/hardware.nix`: **done** — the shell the units ran inline now
-  lives in `pkgs/` (backlight default, persist provisioning, WLAN/BT identity,
-  SLPI lifecycle, screen refresh, sensor-check, sensor-proxy re-announce) and
-  the module only wires units; the device-unique paths travel as arguments, so
-  each command stays runnable by hand.
-- `modules/liuqin/initrd-guard.nix`: still open — the guard script needs the
-  same `pkgs/` + `writeShellApplication` treatment.
+`kernel/default.nix` applies every `patches/kernel/*.patch` to a pristine
+7.2.5 tree in **byte-sorted filename order**, except the patches listed in
+its `dtPatchNames` (`0014-…` today), which are applied last.  The 14 patches
+are grouped by subsystem; they were merged down from a 33-patch bring-up
+series (the provenance is in each patch header), producing a byte-identical
+tree.
+
+### The 14 patches
+
+| # | patch | what |
+| --- | --- | --- |
+| 0001 | `board-dts-bindings` | board DTS, compatibles/bindings, sm8450/sm8475 dtsi fixes, dtb Makefile entry |
+| 0002 | `input-hid-touchscreen` | Nanosic WN8030 keyboard folio + Novatek NT36xxx touchscreen |
+| 0003 | `display-panel-msm` | NT36532 DSI panel, msm dirtyfb fix, first-modeset cycle |
+| 0004 | `audio-audioreach` | audioreach/sc8280xp path, cs35l41, wm_adsp, q6apm |
+| 0005 | `power-pmic-glink-mipps` | PON/pmic-glink + qcom_battmgr MiPPS ABI and CC orientation |
+| 0006 | `media-iris` | IRIS VPU platform for sm8450 |
+| 0007 | `soc-misc-earlycon` | UBWC table, earlycon-simplefb, quiet q6v5 handover |
+| 0008 | `usb-typec-dp` | eUSB2 repeater PHY, sm8450 combo-PHY tables, UCSI PPM reset, vendor SVID altmode, DP link-capacity fix |
+| 0009 | `pinctrl-sm8475` | sm8475 TLMM driver + gpio-function flag |
+| 0010 | `pcie-qmp-phy` | QMP PCIe PHY cape tables (without them the PHY times out and WCN6855 never enumerates) |
+| 0011 | `cpu-topology-thermal` | board CPU capacity/energy model + sm8450 thermal cooling maps |
+| 0012 | `camera-core` | CAMSS sm8475, sensor drivers, board camera DTS |
+| 0013 | `camera-tuning` | s5kjn1 vendor modes/vflip, gt9764 autofocus, camcc/gcc GDSC always-on |
+| 0014 | `board-usb-typec-dp-dt` | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode — **applied last** |
+
+### Why 0014 is applied last
+
+The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
+it, and 0014 adds the USB/Type-C/DP nodes (connector, FSA4480 SBU mux,
+912 mV PLL rail) on top.  `kernel/default.nix` keeps 0014 in `dtPatchNames`
+so it is applied after the sorted series; the earlier USB3/Type-C/DP DT
+patches could not coexist as separate patches because they add the same
+`pm8350_l1` regulator and `&usb_1_qmpphy` node and the Type-C `&usb_1` hunk
+rewrites the node USB3 had changed, so they were merged into this one patch
+generated against the post-common tree (zero fuzz).
+
+### One file is replaced, not patched
+
+`files/kernel/phy-qcom-qmp-combo.c` is copied over the tree in `postPatch`.
+The DP side of the combo PHY is a wholesale replacement whose values are the
+vendor's live register state; upstream shares the same DP block between the
+`sm8350` and `sm8450` cfgs, so a unified diff cannot distinguish them and
+patch fuzz would hit the wrong cfg.  The file is generated by
+`liuqin-audit/kernel-exp/dp-gen-vendor-tables.py` plus the COM/PD_CTL fixes
+(see §3.3).
+
+### Config assertions, not just patches
+
+- `kernel/check-patch-hunks.py` runs in `postPatch` and fails the build if a
+  patch's declared hunk counts do not match its body (GNU patch silently
+  truncates a short hunk — the bug that once dropped `&usb_1`/`&usb_1_hsphy`
+  and left the installed system with no USB debug channel).
+- The three config inputs (`config.nix`, `liuqin-firstboot.config`,
+  `installer.config`) are appended in `postConfigure`, re-resolved with
+  `make olddefconfig`, then asserted: every `CONFIG_X=y` must survive as
+  `=y` and every `CONFIG_X=m` as `=y|=m` (`ZRAM` is an exact-`m` exception).
+  `postBuild` also asserts `fw_path_para` survived into `vmlinux`.
+- The full build asserts the camera config symbols against the final
+  `.config` via `kernel/camera-symbols.txt`.
+
+### Adding or regenerating a patch
+
+Use a scratch git repo of only the files the series touches and let git
+produce the diffs (full recipe in `patches/kernel/README.md`):
+
+```sh
+mkdir /tmp/kfix && cd /tmp/kfix
+grep -h '^+++ b/' patches/kernel/*.patch | sed 's|^+++ b/||' | sort -u > paths.txt
+tar -tJf linux-7.2.5.tar.xz > members.txt
+awk 'NR==FNR{m[$0]=1;next}{if (m["linux-7.2.5/"$0]) print "linux-7.2.5/"$0}' \
+    members.txt paths.txt > extract.txt
+tar -xJf linux-7.2.5.tar.xz -T extract.txt && cd linux-7.2.5
+git init -q && git add -A && git commit -qm pristine
+for p in $(ls <patchdir>/*.patch | sort); do patch -p1 --batch -N < "$p"; done
+git add -A && git commit -qm target
+# regenerate a group as one diff between two commits:
+git diff <before> <after> > 00NN-liuqin-<group>.patch
+```
+
+Verify by replaying the regenerated patches onto a pristine checkout and
+requiring `git diff <target> HEAD` to be **empty**; run
+`python3 kernel/check-patch-hunks.py patches/kernel/*.patch` and
+`nix build .#kernel` before trusting a change.  Keep each patch's prose
+header with it.

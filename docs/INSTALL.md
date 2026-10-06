@@ -1,64 +1,63 @@
 # Installing, updating and operating a liuqin system
 
-Operational companion to `PORTING-NOTES.md` (why the port looks the way it
-does) and `BOOT-ARCHITECTURE.md` (the boot chain in detail).  Everything below
-was exercised on the unit.
+Operational companion to `PORTING-NOTES.md` (what the port does, and its
+limits) and `docs/BOOT-ARCHITECTURE.md` (the boot chain and U-Boot menu in
+detail).  Everything here was exercised on the unit.  Debug transports,
+forensic channels and the deployment cache are described in
+`PORTING-NOTES.md` §3 and are only referenced here.
 
 ## 0. The two ways this board boots an OS
 
 |  | **A. U-Boot** (the installed system's normal path) | **B. ABL direct** |
 |---|---|---|
 | chain | ABL → `boot_b` (U-Boot) → menu → `sysboot`/extlinux → kernel | ABL → `fastboot boot <boot.img>` → kernel |
-| display | ABL keeps the display running for the menu, so the kernel inherits a *running* pipeline; patch 0015 retries the cycle at 6, 10, 14, 18 and 22 s, with the panel measured to light between ~10 and 20 s | ABL finds no `/reserved-memory/splash_region` in the boot.img's DT and calls `DisableDisplay()`; the first modeset lights the panel cleanly (~1.9 s) |
+| display | ABL keeps the display running for the menu, so the kernel inherits a *running* pipeline; patch 0003 retries the cycle at 6, 10, 14, 18 and 22 s, with the panel measured to light between ~10 and 20 s | ABL finds no `/reserved-memory/splash_region` in the boot.img's DT and calls `DisableDisplay()`; the first modeset lights the panel cleanly (~1.9 s) |
 | generation selection | yes — the menu lists them | no — one image, one generation |
 | used for | daily boots | RAM installer, tests, recovery |
 
 Path A is the product.  Path B is what makes the installer and any
-`fastboot boot` test image look good: the flake's kernel DT renames the node to
-`linux_splash@b8000000` (patch 0001) exactly so ABL takes its teardown branch.
-Making path A as clean as B is the "display-pipeline stop at probe" TODO in
-`PORTING-NOTES.md` (Display).
+`fastboot boot` test image look good: the flake's kernel DT renames the node
+to `linux_splash@b8000000` (patch 0001) exactly so ABL takes its teardown
+branch.  Making path A as clean as B is the "display-pipeline stop at probe"
+work item in `PORTING-NOTES.md` (Display).
 
 ## 1. Host side
 
 - **USB network.**  The tablet is `192.168.7.2/24`; the host is
-  `192.168.7.19/24` on the NCM interface (check with `ip -4 addr show`).  An
-  installed system presents that channel when `hardware.liuqin.usbShell` is
-  enabled; the example configuration selects SSH over WLAN instead, so take it
-  with `hardware.liuqin.debugTransport = "usb"`, or keep both with `"both"`.
-  It is the same arrangement the RAM installer brings up from its own units
-  (`config/installer.nix`), not from this module: DHCP server plus a **busybox
-  telnet root shell on port 2323**.  If the USB channel is selected and nothing
-  answers, check the cable first — `enp14s0u3` simply disappears when it is
-  unplugged.
+  `192.168.7.12/24` on the NCM interface (the exact address is whatever
+  DHCP hands out for this host; check with `ip -4 addr show`) or
+  `192.168.7.1/24` if you assign an address by hand.  The RAM installer
+  always brings this channel up; an installed system presents it only when
+  `hardware.liuqin.debugTransport` is `"usb"` or `"both"` (see
+  `PORTING-NOTES.md` §3.2 for the gadget, the telnet shell and the
+  bus/interface details).  If the cable is unplugged, the host-side interface
+  (`enp14s0u3` on the reference host) simply disappears.
 - **Installed-system debug transport.**  `hardware.liuqin.debugTransport`
-  accepts `"ssh"` (default), `"usb"`, `"both"`, or `"none"`.  The selector
-  enables or disables the installed system's OpenSSH service and legacy USB
-  gadget using `mkDefault`, so an explicit `services.openssh.enable` or
-  `hardware.liuqin.usbShell.enable` can still override it.  While SSH is on it
-  also defaults `PasswordAuthentication` off, so the path is key-only unless
-  the machine configuration overrides that; enroll an authorized key before
-  relying on it.
+  accepts `"ssh"` (default), `"usb"`, `"both"` or `"none"`.  The selector
+  enables or disables the installed system's OpenSSH service and USB gadget
+  with `mkDefault`, so an explicit `services.openssh.enable` or
+  `hardware.liuqin.usbShell.enable` can still override it.  SSH defaults
+  `PasswordAuthentication` off, so enroll an authorized key before relying
+  on it.
 - **Binary cache for pushes.**  A plain `python3 -m http.server 8137 --bind
-  192.168.7.19` serving `/var/tmp/liuqin-cache` (`hub` process name
+  192.168.7.12` serving `/var/tmp/liuqin-cache` (reference host process name
   `liuqincache`).  Fill it on the host with `nix copy --to
   file:///var/tmp/liuqin-cache <store paths>`; the device then copies from
-  `http://192.168.7.19:8137`.  It has to keep running while the device copies.
-  This local cache has no signing key.  Before every copy, set the Nix client
-  configuration explicitly (the setting must reach the daemon, so do not rely
-  on `--option require-sigs false` alone):
+  `http://192.168.7.12:8137`.  It has to keep running while the device
+  copies.  This local cache has no signing key, so the client must be told
+  not to require signatures — and the setting has to reach the daemon, so
+  set it explicitly before every copy rather than relying on
+  `--option require-sigs false` alone:
 
   ```sh
   export NIX_CONFIG='experimental-features = nix-command flakes
-  substituters = http://192.168.7.19:8137 https://cache.nixos.org/
+  substituters = http://192.168.7.12:8137 https://cache.nixos.org/
   require-sigs = false'
   ```
 
-  The host cache has no signing key, so the client must be told not to require
-  signatures.  The per-invocation `NIX_CONFIG` above is the supported way to do
-  that: it keeps the exception scoped to the copy, and it carries the
-  transport-specific host cache.  No configuration in this repository sets
-  `nix.settings.require-sigs` any more.
+  No configuration in this repository sets `nix.settings.require-sigs` any
+  more; the per-invocation `NIX_CONFIG` above is the supported way to scope
+  the exception to the copy.
 - **fastboot**: `nix shell nixpkgs#android-tools --command fastboot …`.
 
 ### Installed-system SSH and logs
@@ -86,13 +85,13 @@ journalctl -f
 The installed system keeps a persistent journal in `/var/log/journal`, so
 `journalctl --list-boots` and `journalctl -b -1` can inspect earlier boots.
 `systemctl status sshd` and `systemctl status liuqin-usb-gadget` show which
-debug transport is active.  The intended installed state is `sshd=active` and
-`liuqin-usb-gadget=inactive`; the RAM installer still enables its temporary
-USB root shell independently.
+debug transport is active.  The intended installed state is `sshd=active`
+and `liuqin-usb-gadget=inactive`; the RAM installer still enables its
+temporary USB root shell independently.  (This path was verified on the
+tablet on 2026-09-29.)
 
-This SSH path was verified on the tablet on 2026-09-29 after installing
-system generation `is649gr0212v117j8z1b5s13x28mxf8s`.  The journal recorded
-the SSH daemon startup and successful public-key logins with the `liuqin` key.
+When the display never comes up, work from the U-Boot/fastboot and pstore
+channels instead — `PORTING-NOTES.md` §3.1 is the list.
 
 ## 2. Building
 
@@ -106,8 +105,8 @@ LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBo
 ```
 
 The x86_64 → aarch64 cross set (`pkgsArm`) builds the device packages once on
-the host; the native aarch64 closure comes from cache.nixos.org plus those.  The
-flake comment explains why.
+the host; the native aarch64 closure comes from cache.nixos.org plus those.
+The flake comment explains why.
 
 ## 3. First bring-up (stock Android device)
 
@@ -117,11 +116,13 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
 `set_active`), and `boot_a` is Android's.
 
 1. **Carve the `linux` partition** out of userdata's tail, from a live
-   environment (`sgdisk`/`resize.f2fs` are in the installer).  Measure the live
-   geometry — the 256 GB and 512 GB SKUs differ and no constant may be baked
-   in (the 512 GB example: userdata `2758144..124212216`, split at
+   environment (`sgdisk`/`resize.f2fs` are in the installer).  Measure the
+   live geometry — the 256 GB and 512 GB SKUs differ and no constant may be
+   baked in (the 512 GB example: userdata `2758144..124212216`, split at
    `45570048`, i.e. a 299.99 GiB `linux`).  A GPT backup before the write is
-   mandatory.
+   mandatory.  The stock `userdata` filesystem is f2fs and cannot be shrunk
+   in place, so freeing the space destroys Android's `/data`; that is a
+   deliberate decision, not a command to paste.
 2. **RAM-boot the installer** (path B): cold start into ABL fastboot
    (power + volume-down) and `fastboot boot result-installer/boot.img`.
 3. **Push the closure and install**, from the installer's telnet shell:
@@ -129,12 +130,32 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
    ```sh
    export PATH=/run/current-system/sw/bin:$PATH     # nixos-install needs it
    export NIX_CONFIG='experimental-features = nix-command flakes
-   substituters = http://192.168.7.19:8137 https://cache.nixos.org/
+   substituters = http://192.168.7.12:8137 https://cache.nixos.org/
    require-sigs = false'
    mount /dev/disk/by-partlabel/linux /mnt
-   nix copy --from http://192.168.7.19:8137 --no-check-sigs --to /mnt <toplevel>
+   nix copy --from http://192.168.7.12:8137 --no-check-sigs --to /mnt <toplevel>
    nixos-install --root /mnt --no-channel-copy --no-root-passwd --system <toplevel>
    ```
+
+   The target filesystem must carry the label the configuration expects:
+   `LIUQIN_ROOT` (ext4) always, on a GPT partition labelled `linux`
+   (`storage.layout = "linux-partition"`, the dual-boot/demo layout) or
+   `userdata` (`whole-userdata`, the default minimal layout).  Create it with
+   e.g.
+
+   ```sh
+   sgdisk --change-name=PARTNO:linux /dev/DEVICE     # renames; does not create
+   mkfs.ext4 -O ^orphan_file -L LIUQIN_ROOT /dev/disk/by-partlabel/linux
+   mount /dev/disk/by-partlabel/linux /mnt
+   findmnt -no SOURCE,FSTYPE /mnt
+   findfs LABEL=LIUQIN_ROOT
+   ```
+
+   `-O ^orphan_file` is required: e2fsprogs enables that incompat feature by
+   default and this U-Boot's ext4 does not know it, which risks read errors
+   on the one partition U-Boot must read.  `sgdisk --change-name` only
+   renames an existing entry; creating the partition itself has no recipe in
+   this repository.
 
    `nixos-install` writes the closure, the profile and (through
    `system.build.installBootLoader`) `/boot/extlinux/extlinux.conf` on the
@@ -142,39 +163,43 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
    provisions `/etc/liuqin-nixos-root`, the marker the initrd guard verifies.
 4. **Put U-Boot into `boot_b`** (from ABL fastboot):
    `fastboot flash boot_b result-uboot/boot.img`.  Leave the slot attributes
-   alone; the device already boots `boot_b` when B is active, and the dualboot
-   docs describe how B is made active (`set_active` / `liuqin_setactive`).
+   alone; the device already boots `boot_b` when B is active, and the
+   dualboot docs describe how B is made active (`set_active` /
+   `liuqin_setactive`).
 5. Cold start → the U-Boot menu → **"Boot NixOS"**.
 
 ## 4. Updating an installed system (no installer, no nixos-rebuild)
 
-Measured 2026-09-28.  `nixos-rebuild` does not exist on the device
-(`config/installer.nix` disables it, and the installed system has no channel);
-the update is three commands plus a reboot.
+`nixos-rebuild` does not exist on the device (`config/installer.nix` disables
+it, and the installed system has no channel); the update is three commands
+plus a reboot.
 
-   ```sh
-   # host
-   nix build .#nixosConfigurations.demo.config.system.build.toplevel
-   LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
-   nix copy --to file:///var/tmp/liuqin-cache "$(readlink -f result)" "$LOADER"
+```sh
+# host
+nix build .#nixosConfigurations.demo.config.system.build.toplevel
+LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
+nix copy --to file:///var/tmp/liuqin-cache "$(readlink -f result)" "$LOADER"
 
-   # device (telnet 2323)
-   N=/run/current-system/sw/bin
-   export NIX_CONFIG='experimental-features = nix-command flakes
-   substituters = http://192.168.7.19:8137 https://cache.nixos.org/
-   require-sigs = false'
-   $N/nix copy --from http://192.168.7.19:8137 --no-check-sigs <toplevel> <loader>
-   $N/nix-env --profile /nix/var/nix/profiles/system --set <toplevel>
+# device (telnet 2323 or SSH)
+N=/run/current-system/sw/bin
+export NIX_CONFIG='experimental-features = nix-command flakes
+substituters = http://192.168.7.12:8137 https://cache.nixos.org/
+require-sigs = false'
+$N/nix copy --from http://192.168.7.12:8137 --no-check-sigs <toplevel> <loader>
+$N/nix-env --profile /nix/var/nix/profiles/system --set <toplevel>
 <loader> <toplevel>          # copy kernel/initrd/dtb into /boot, rewrite extlinux.conf
 <toplevel>/bin/switch-to-configuration boot
 systemctl reboot
 ```
 
-Order matters: the profile first, then the loader script (`extlinux-conf-
-builder.sh -g 8 ...` keeps eight generations and needs the new profile link to
-see them).  `switch-to-configuration` does **not** touch the bootloader — the
-loader script above is a separate step.  Rollback is the U-Boot menu's
-"NixOS Generations" entry.
+Order matters: the profile first, then the loader script
+(`extlinux-conf-builder.sh -g 8 ...` keeps eight generations and needs the
+new profile link to see them).  `switch-to-configuration` does **not** touch
+the bootloader — the loader script above is a separate step.  Rollback is the
+U-Boot menu's "NixOS Generations" entry.
+
+If the new kernel changes USB behaviour, reboot rather than
+`switch-to-configuration switch`.
 
 ## 5. Reinstalling
 
@@ -187,17 +212,15 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 - **U-Boot menu**: `Boot Android` (a real slot *selection*: GPT attributes,
   type-GUID roles and UFS `bBootLunEn`, then reset), `Boot NixOS`,
   `NixOS Generations` (rollback), `Enable Fastboot Mode`, `Reset Device`,
-  `Power Off`, `Reboot to ABL`, plus two read-only
-  diagnostics (GPT probe, ABL log scan). The menu counts down 5 s to the first
-  entry, `Boot NixOS`; any button press stops the countdown.
+  `Power Off`, `Reboot to ABL`, plus two read-only diagnostics (GPT probe,
+  ABL log scan).  The menu counts down 5 s to the first entry, `Boot NixOS`;
+  any button press stops the countdown.
 - **Entering ABL fastboot**: cold start with **power + volume-down**.  Coming
   from the menu's `Reboot to ABL` also lands in ABL, but with the restart
   reason set to bootloader, and then `fastboot boot` is refused
-  (`Device Error`) while `fastboot flash` still works — use the cold start for
-  RAM boots.
-- **Reboot** from a running system: `systemctl reboot`. Older images put
-  busybox first on the telnet shell's PATH; their `reboot` applet returns 0
-  under systemd without restarting the device.
+  (`Device Error`) while `fastboot flash` still works — use the cold start
+  for RAM boots.
+- **Reboot** from a running system: `systemctl reboot`.
 - Coming back from Android: `adb reboot bootloader` → ABL's fastboot
   (`set_active b`) → `fastboot reboot`; U-Boot's own fastboot (menu's
   `Enable Fastboot Mode`) accepts `set_active b` too.  Either way ABL clears
@@ -205,10 +228,15 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   re-claims the slot it was handed on every boot (`liuqin_slot_autoclaim`,
   `liuqin_ab_mark=0` disables it), so the retry budget no longer drains
   across reboots.
+- If the installed system cannot bring up Wi-Fi and the USB gadget does not
+  re-bind after a role change, restart it from a local console or SSH
+  (`systemctl restart liuqin-usb-gadget liuqin-usb-shell`), or fall back to
+  the RAM installer.  There is no verified automatic role manager yet
+  (`PORTING-NOTES.md` §1, Type-C host and OTG).
 
 ## 7. Traps (all measured)
 
-- The telnet shell is busybox. On images before the `pkgs/usb-login.nix`
+- The telnet shell is busybox.  On images before the `pkgs/usb-login.nix`
   PATH fix, `reboot` selects the busybox applet (no-op, exit 0), while
   `dmesg`, `nix` and `journalctl` need `/run/current-system/sw/bin` on PATH.
   Use `systemctl reboot` on either version.
@@ -220,17 +248,21 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 - Never leave a self-built image on `boot_a`, and never leave the slot state
   half-switched: the dualboot `docs/SLOT-SWITCH.md` is the authority on both.
   The installer path never writes GPT or slot attributes.
+- The RAM installer is the only installation interface; the former
+  host-side fastboot installer and prebuilt rootfs-image path have been
+  removed.
 
 ## 8. Camera
 
 The camera stack is off unless the configuration enables
 `hardware.liuqin.camera.enable`; `README.md` describes the option set and the
-sub-switch.  The installed demo configuration enables both.
+sub-switch, and `PORTING-NOTES.md` (Camera) plus
+`docs/TODO/CAMERA-MAINLINE.md` carry the hardware facts and open items.  The
+installed demo configuration enables it.
 
 The three sensors share one CSID, so exactly one camera can be streamed at a
-time, and nothing routes at boot (a boot-time route wedged the camera path on
-2026-10-05).  libcamera's simple pipeline routes the graph itself; for a raw
-capture, a link reset or manual focus:
+time, and nothing routes at boot.  libcamera's simple pipeline routes the
+graph itself; for a raw capture, a link reset or manual focus:
 
 ```sh
 cam --stream role=raw --capture=5 --file=/tmp/frame.raw  # routes the graph itself
@@ -239,14 +271,15 @@ v4l2-ctl -d "$(media-ctl -p -d /dev/media0 | grep -A3 dw9768 | grep -o '/dev/v4l
   --set-ctrl focus_absolute=536                       # focus while streaming
 ```
 
-The sensor module is blacklisted from uDev autoload and loaded late by the
+The sensor module is blacklisted from udev autoload and loaded late by the
 `liuqin-camera-probe` oneshot, which retries three times 5 s apart.  If it
 still fails, `systemctl status liuqin-camera-probe` shows the failed unit and
-every camera stays absent until a later success or a reboot - there is no
+every camera stays absent until a later success or a reboot — there is no
 second probe, and the panel is the only console.
 
 Only one consumer can hold the camera, and wireplumber's v4l2 monitor counts
-as one.  In a GNOME session mask wireplumber for the duration of a raw capture:
+as one.  In a GNOME session mask wireplumber for the duration of a raw
+capture:
 
 ```sh
 systemctl --user mask --now wireplumber
@@ -256,6 +289,17 @@ systemctl --user unmask --now wireplumber
 
 The desktop user must be in the `video` group; the camera module grants that
 group the dma-buf heaps libcamera's software ISP opens.  Finally, the `cam`
-found on `PATH` is the stock libcamera - the autofocus-patched build is injected
-only into pipewire/wireplumber (`cam-af` runs it from the command line) - so a
-plain `cam` capture verifies the stock path, not the AF path.
+found on `PATH` is the stock libcamera — the autofocus-patched build is
+injected only into pipewire/wireplumber (`cam-af` runs it from the command
+line) — so a plain `cam` capture verifies the stock path, not the AF path.
+
+## 9. Where to look when something is wrong
+
+| symptom | first stop |
+| --- | --- |
+| no boot output at all | panel photo, then U-Boot `fastboot getvar stage*` / `con*` (`PORTING-NOTES.md` §3.1) |
+| kernel panic / lockup | ramoops pstore + persistent journal (`journalctl -b -1`) |
+| display dark under U-Boot | patch 0003 retry cycle / the display-pipeline work item (`PORTING-NOTES.md` §1) |
+| no USB debug channel | `debugTransport`, gadget re-bind, or the RAM installer (`PORTING-NOTES.md` §3.2) |
+| USB-C role/DP/charging | `PORTING-NOTES.md` §1 (Type-C, DP Alt Mode, MiPPS) and §2 for MiPPS keys |
+| camera missing | `systemctl status liuqin-camera-probe`, then `media-ctl -r` |
