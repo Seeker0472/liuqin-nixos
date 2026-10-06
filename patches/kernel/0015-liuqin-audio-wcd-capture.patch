@@ -1,0 +1,194 @@
+From liuqin audio bring-up: WCD9385 SoundWire capture graph
+
+The vendor runtime tree proves this tablet has WCD938x RX/TX slaves at
+SoundWire addresses 0x0d:0x1170224 and 0x0d:0x1170223, plus LPASS RX/TX/VA
+macros and the GPIO43 codec reset.  Wire those devices into the mainline
+sm8450-sndcard graph.  The existing tertiary TDM CS35L41 speaker link remains
+unchanged and stays protected by its calibration gate.
+
+This adds the WCD playback link and the WCD capture link.  The capture link is
+deliberately separate from the protected speaker backend so microphone
+enumeration does not require CS35L41 Halo firmware.  Micbias is 2.75 V (0xabe)
+for all four biases, matching the vendor runtime DT.
+
+The VA macro is enabled only as the fsgen clock source every other macro
+takes, and no VA capture link or DMIC routing is added: the vendor runtime DT
+leaves all four swr-dmic slaves and the DMIC pinctrls disabled, so liuqin has
+no AP-visible digital microphone.  The vendor audio-routing also names
+"Digital Mic0".."Digital Mic3" widgets that only its own machine driver
+creates; mainline rejects unknown route widgets and would fail the whole card,
+so only the analog AMIC routes and the ADC-to-TX-SWR inputs are wired.
+
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
+@@ -450,6 +450,33 @@
+ 		pinctrl-0 = <&kb_vdd_default>;
+ 		pinctrl-names = "default";
+ 	};
++
++	/* WCD9385 is the RX/TX SoundWire codec used by the built-in mics. */
++	wcd938x: audio-codec {
++		compatible = "qcom,wcd9385-codec";
++		pinctrl-names = "default";
++		pinctrl-0 = <&wcd_reset_default>;
++
++		qcom,micbias1-microvolt = <2750000>;
++		qcom,micbias2-microvolt = <2750000>;
++		qcom,micbias3-microvolt = <2750000>;
++		qcom,micbias4-microvolt = <2750000>;
++		qcom,mbhc-buttons-vthreshold-microvolt =
++			<75000 150000 237000 500000 500000 500000 500000 500000>;
++		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
++		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
++
++		qcom,rx-device = <&wcd_rx>;
++		qcom,tx-device = <&wcd_tx>;
++		reset-gpios = <&tlmm 43 GPIO_ACTIVE_LOW>;
++
++		vdd-buck-supply = <&pm8350_s10>;
++		vdd-rxtx-supply = <&pm8350_s10>;
++		vdd-io-supply = <&pm8350_s10>;
++		vdd-mic-bias-supply = <&pm8350c_bob>;
++
++		#sound-dai-cells = <1>;
++	};
+ };
+ 
+ &apps_rsc {
+@@ -524,6 +551,7 @@
+ 	regulators-1 {
+ 		compatible = "qcom,pm8350c-rpmh-regulators";
+ 		qcom,pmic-id = "c";
++		vdd-bob-supply = <&vph_pwr>;
+ 
+ 		pm8350c_l1: ldo1 {
+ 			regulator-name = "pm8350c_l1";
+@@ -539,6 +567,14 @@
+ 			regulator-always-on;
+ 		};
+ 
++		/* WCD9385 mic-bias rail; the vendor DT uses pm8350c BOB. */
++		pm8350c_bob: bob {
++			regulator-name = "pm8350c_bob";
++			regulator-min-microvolt = <3008000>;
++			regulator-max-microvolt = <3960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
++		};
++
+ 		/*
+ 		 * The panel's iovdd. Range copied from the vendor's own
+ 		 * regulator-pm8350c-l2 (abl-final-fdt.dts:6179-6187,
+@@ -977,6 +1013,23 @@
+ 	compatible = "qcom,sm8450-sndcard";
+ 	model = "Xiaomi-Pad-6-Pro";
+ 
++	/* Routes for the WCD9385 analog microphone widgets. */
++	audio-routing =
++		"AMIC1", "Analog Mic1",
++		"AMIC1", "MIC BIAS1",
++		"AMIC2", "Analog Mic2",
++		"AMIC2", "MIC BIAS2",
++		"AMIC3", "Analog Mic3",
++		"AMIC3", "MIC BIAS3",
++		"AMIC4", "Analog Mic4",
++		"AMIC4", "MIC BIAS3",
++		"AMIC5", "Analog Mic5",
++		"AMIC5", "MIC BIAS4",
++		"TX SWR_INPUT0", "ADC1_OUTPUT",
++		"TX SWR_INPUT1", "ADC2_OUTPUT",
++		"TX SWR_INPUT0", "ADC3_OUTPUT",
++		"TX SWR_INPUT1", "ADC4_OUTPUT";
++
+ 	pinctrl-names = "default", "sleep";
+ 	pinctrl-0 = <&tert_tdm_clk_active>, <&tert_tdm_ws_active>,
+ 		    <&tert_tdm_din_active>, <&tert_tdm_dout_active>;
+@@ -1009,6 +1062,73 @@
+ 				    <&cs35l41_br 0>, <&cs35l41_bl 0>;
+ 		};
+ 	};
++
++	wcd-playback-dai-link {
++		link-name = "WCD Playback";
++
++		cpu {
++			sound-dai = <&q6apmbedai RX_CODEC_DMA_RX_0>;
++		};
++
++		codec {
++			sound-dai = <&wcd938x 0>, <&swr1 0>, <&rxmacro 0>;
++		};
++
++		platform {
++			sound-dai = <&q6apm>;
++		};
++	};
++
++	wcd-capture-dai-link {
++		link-name = "WCD Capture";
++
++		cpu {
++			sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
++		};
++
++		codec {
++			sound-dai = <&wcd938x 1>, <&swr2 0>, <&txmacro 0>;
++		};
++
++		platform {
++			sound-dai = <&q6apm>;
++		};
++	};
++
++};
++
++&rxmacro {
++	status = "okay";
++};
++
++&txmacro {
++	status = "okay";
++};
++
++&vamacro {
++	vdd-micb-supply = <&pm8350_s10>;
++	qcom,dmic-sample-rate = <600000>;
++	status = "okay";
++};
++
++&swr1 {
++	status = "okay";
++
++	wcd_rx: codec@0,4 {
++		compatible = "sdw20217010d00";
++		reg = <0 4>;
++		qcom,rx-port-mapping = <1 2 3 4 5>;
++	};
++};
++
++&swr2 {
++	status = "okay";
++
++	wcd_tx: codec@0,3 {
++		compatible = "sdw20217010d00";
++		reg = <0 3>;
++		qcom,tx-port-mapping = <1 1 2 3>;
++	};
+ };
+ 
+ &wsamacro {
+@@ -1417,6 +1537,15 @@
+ 	 * cirrus_reset_default_* and cirrus_irq_default_* states at
+ 	 * abl-final-fdt.dts:5185-5281.
+ 	 */
++	/* WCD9385 reset is active-low; hold it asserted until the codec probes. */
++	wcd_reset_default: wcd-reset-default-state {
++		pins = "gpio43";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-disable;
++		output-low;
++	};
++
+ 	cirrus_reset_tl: cirrus-reset-tl {
+ 		pins = "gpio1";
+ 		function = "gpio";

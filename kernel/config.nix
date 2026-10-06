@@ -202,8 +202,19 @@ with kernelLib;
   SND = lib.mkForce module;
   SND_SOC = lib.mkForce module;
   SOUNDWIRE = lib.mkForce module;
+  # WCD9385 RX/TX capture path.  These answers record the intent; the
+  # liuqin-firstboot.config fragment appended in postConfigure promotes this
+  # set (and the machine driver's select chain) to built-ins in every image,
+  # so the generated .config ends up =y despite arm64 defconfig.
+  SOUNDWIRE_QCOM = lib.mkForce module;
   SND_SOC_QCOM = lib.mkForce module;
+  SND_SOC_QCOM_SDW = lib.mkForce module;
   SND_SOC_SC8280XP = lib.mkForce module;
+  SND_SOC_WCD938X_SDW = lib.mkForce module;
+  SND_SOC_LPASS_MACRO_COMMON = lib.mkForce module;
+  SND_SOC_LPASS_RX_MACRO = lib.mkForce module;
+  SND_SOC_LPASS_TX_MACRO = lib.mkForce module;
+  SND_SOC_LPASS_VA_MACRO = lib.mkForce module;
   SND_SOC_CS35L41_I2C = lib.mkForce module;
 
   # Media: CAMSS raw capture plus the Iris V4L2 decoder (patch 0007).
