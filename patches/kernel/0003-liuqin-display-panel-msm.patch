@@ -1,44 +1,11 @@
-MSM DSI / DPU / NT36532 panel changes, from the squashed liuqin
-downstream patch.
+Display: the Novatek NT36532 DSI panel (driver plus dsi_host plumbing), the
+msm dirtyfb fix for CPU-written buffers and the first-modeset cycle fix.
 
-Adjustments for v7.2.5:
-- include/drm/drm_mipi_dsi.h, drivers/gpu/drm/msm/dsi/dsi_host.c
-  (dsc_slice_per_pkt plumbing): upstream v7.2.5 already contains the
-  equivalent support; downstream hunks dropped.
-- drivers/gpu/drm/msm/adreno/adreno_gpu.c MSM_PARAM_GMEM_BASE hunk
-  dropped: v7.2.5 uses family >= ADRENO_6XX_GEN3, which already covers
-  the A730 (ADRENO_7XX_GEN1) case the downstream patch added.
-- drivers/gpu/drm/msm/disp/dpu1/dpu_crtc.c and dpu_plane.c hunks
-  dropped: v7.2.5 refactored topology selection; num_stages already
-  falls back to 1 without virtual planes, and the old
-  dsc_count >= num_rt_intf * 2 logic no longer exists, so the downstream
-  workaround has no equivalent site.
-- drivers/gpu/drm/panel/panel-novatek-nt36532.c: file absent upstream;
-  pristine 6.17 sm8450-mainline version plus the downstream pipa fixes
-  applied cleanly. Kconfig/Makefile entries added manually (never part
-  of the squashed diff).
+Merged from: bring-up patches 0004, 0012, 0015
 
---- a/include/drm/drm_mipi_dsi.h
-+++ b/include/drm/drm_mipi_dsi.h
-@@ -181,6 +181,7 @@
-  * be set to the real limits of the hardware, zero is only accepted for
-  * legacy drivers
-  * @dsc: panel/bridge DSC pps payload to be sent
-+ * @dsc_slice_per_pkt: number of DSC slices carried in each DSI packet
-  */
- struct mipi_dsi_device {
- 	struct mipi_dsi_host *host;
-@@ -195,6 +196,7 @@
- 	unsigned long hs_rate;
- 	unsigned long lp_rate;
- 	struct drm_dsc_config *dsc;
-+	unsigned int dsc_slice_per_pkt;
- };
- 
- /**
 --- a/drivers/gpu/drm/msm/dsi/dsi_host.c
 +++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
-@@ -166,6 +166,7 @@
+@@ -166,6 +166,7 @@ struct msm_dsi_host {
  
  	struct drm_display_mode *mode;
  	struct drm_dsc_config *dsc;
@@ -46,7 +13,7 @@ Adjustments for v7.2.5:
  
  	/* connected device info */
  	unsigned int channel;
-@@ -943,6 +944,7 @@
+@@ -943,6 +944,7 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
  	u32 pkt_per_line;
  	u32 eol_byte_num;
  	u32 bytes_per_pkt;
@@ -54,7 +21,7 @@ Adjustments for v7.2.5:
  
  	/* first calculate dsc parameters and then program
  	 * compress mode registers
-@@ -950,17 +952,23 @@
+@@ -950,17 +952,23 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
  	slice_per_intf = dsc->slice_count;
  
  	total_bytes_per_intf = dsc->slice_chunk_size * slice_per_intf;
@@ -84,7 +51,7 @@ Adjustments for v7.2.5:
  
  	if (is_cmd_mode) /* packet data type */
  		reg = DSI_COMMAND_COMPRESSION_MODE_CTRL_STREAM0_DATATYPE(MIPI_DSI_DCS_LONG_WRITE);
-@@ -1114,14 +1122,9 @@
+@@ -1114,14 +1122,9 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
  		if (!msm_host->dsc)
  			wc = hdisplay * mipi_dsi_pixel_format_to_bpp(msm_host->format) / 8 + 1;
  		else
@@ -102,7 +69,7 @@ Adjustments for v7.2.5:
  
  		dsi_write(msm_host, REG_DSI_CMD_MDP_STREAM0_CTRL,
  			DSI_CMD_MDP_STREAM0_CTRL_WORD_COUNT(wc) |
-@@ -1730,8 +1733,10 @@
+@@ -1730,8 +1733,10 @@ static int dsi_host_attach(struct mipi_dsi_host *host,
  	msm_host->lanes = dsi->lanes;
  	msm_host->format = dsi->format;
  	msm_host->mode_flags = dsi->mode_flags;
@@ -114,9 +81,125 @@ Adjustments for v7.2.5:
  
  	if (msm_host->format == MIPI_DSI_FMT_RGB101010) {
  		if (!msm_dsi_host_version_geq(msm_host, MSM_DSI_VER_MAJOR_6G,
+--- a/drivers/gpu/drm/msm/msm_fb.c
++++ b/drivers/gpu/drm/msm/msm_fb.c
+@@ -39,11 +39,21 @@ static int msm_framebuffer_dirtyfb(struct drm_framebuffer *fb,
+ 				   unsigned int num_clips)
+ {
+ 	struct msm_framebuffer *msm_fb = to_msm_framebuffer(fb);
++	struct msm_gem_object *msm_obj = to_msm_bo(fb->obj[0]);
+ 
+ 	/* If this fb is not used on any display requiring pixel data to be
+-	 * flushed, then skip dirtyfb
++	 * flushed, then skip dirtyfb.  That reasoning only holds for buffers
++	 * the display engine already sees, i.e. ones written through the
++	 * GPU: a display that scans out continuously picks GPU writes up by
++	 * itself.  It does not hold for buffers someone has mapped for CPU
++	 * access, because those writes are only published to the display by a
++	 * commit.  Measured on liuqin (SM8475, two video-mode DSI panels):
++	 * the fbdev console draws through the deferred ops and arrives here
++	 * with refcount_read(&dirtyfb) == 1, and with the unconditional skip
++	 * the panel keeps showing stale content until an unrelated commit,
++	 * while committing here makes every batch of drawn lines appear.
+ 	 */
+-	if (refcount_read(&msm_fb->dirtyfb) == 1)
++	if (refcount_read(&msm_fb->dirtyfb) == 1 && !msm_obj->vmap_count)
+ 		return 0;
+ 
+ 	return drm_atomic_helper_dirtyfb(fb, file_priv, flags, color,
+--- a/drivers/gpu/drm/msm/msm_kms.c
++++ b/drivers/gpu/drm/msm/msm_kms.c
+@@ -6,11 +6,13 @@
+  */
+ 
+ #include <linux/aperture.h>
++#include <linux/fb.h>
+ #include <linux/kthread.h>
+ #include <linux/sched/mm.h>
+ #include <uapi/linux/sched/types.h>
+ 
+ #include <drm/drm_drv.h>
++#include <drm/drm_fb_helper.h>
+ #include <drm/drm_mode_config.h>
+ #include <drm/drm_vblank.h>
+ #include <drm/clients/drm_client_setup.h>
+@@ -21,6 +23,61 @@
+ #include "msm_kms.h"
+ #include "msm_mmu.h"
+ 
++/*
++ * Temporary liuqin workaround for a dark first modeset.
++ * The bootloader leaves the display pipeline running (ABL's splash, then
++ * U-Boot's menu), and the first modeset that takes it over does not produce a
++ * picture on this board: the CRTC ends up active, the panel runs its init
++ * sequence, the framebuffer holds the console text and DPMS is on, yet the
++ * panel stays dark.  A stop/start cycle of the pipeline brings it up and it
++ * stays up.
++ *
++ * Measured on liuqin: a single cycle at ~4-7 s after the first modeset did
++ * not take; cycles later in the boot (and any cycle once the system is up)
++ * did.  Which moment the panel starts accepting the cycle is not known, so
++ * retry a few times across the boot instead of betting on one delay -- five
++ * attempts four seconds apart, the first six seconds after the fbdev client's
++ * first modeset, and stopping as soon as userspace owns the display (the DPMS
++ * commits are refused with -EBUSY after that, and drm_fb_helper_blank()
++ * drops that on the floor).
++ *
++ * The schedule is a compromise measured on the unit: with attempts at roughly
++ * 6, 10, 14, 18 and 22 s after the first modeset, the panel lit between 10 and
++ * 20 s.  The first attempt was still too early on the measured boots.  Every
++ * attempt is a visible dark second (the cycle is a real POWERDOWN/UNBLANK), so
++ * early, repeated attempts can make the user see the panel blink after it is
++ * already up.
++ *
++ * fb_blank() is what the userspace cure reaches (the driver's fb_blank plus
++ * the FB_EVENT_BLANK notifier chain, so fbcon blanks and redraws as well).
++ */
++static struct delayed_work liuqin_panel_cycle_work;
++static struct drm_device *liuqin_panel_cycle_dev;
++static int liuqin_panel_cycle_attempts = 5;
++
++static void liuqin_panel_cycle(struct work_struct *work)
++{
++	struct drm_device *ddev = liuqin_panel_cycle_dev;
++	struct fb_info *info;
++
++	if (!ddev || liuqin_panel_cycle_attempts <= 0)
++		return;
++
++	info = ddev->fb_helper ? ddev->fb_helper->info : NULL;
++	if (!info || ddev->master) {
++		liuqin_panel_cycle_attempts = 0;
++		return;
++	}
++
++	pr_info("liuqin: panel cycle #%d\n", 6 - liuqin_panel_cycle_attempts);
++	fb_blank(info, FB_BLANK_POWERDOWN);
++	fb_blank(info, FB_BLANK_UNBLANK);
++
++	if (--liuqin_panel_cycle_attempts)
++		schedule_delayed_work(&liuqin_panel_cycle_work,
++				      msecs_to_jiffies(4000));
++}
++
+ static const struct drm_mode_config_funcs mode_config_funcs = {
+ 	.fb_create = msm_framebuffer_create,
+ 	.atomic_check = msm_atomic_check,
+@@ -385,4 +442,11 @@ void msm_drm_kms_post_init(struct device *dev)
+ 
+ 	drm_kms_helper_poll_init(ddev);
+ 	drm_client_setup(ddev, NULL);
++
++	if (ddev->fb_helper && ddev->fb_helper->info) {
++		liuqin_panel_cycle_dev = ddev;
++		INIT_DELAYED_WORK(&liuqin_panel_cycle_work, liuqin_panel_cycle);
++		schedule_delayed_work(&liuqin_panel_cycle_work,
++				      msecs_to_jiffies(6000));
++	}
+ }
 --- a/drivers/gpu/drm/panel/Kconfig
 +++ b/drivers/gpu/drm/panel/Kconfig
-@@ -622,6 +622,16 @@
+@@ -622,6 +622,16 @@ config DRM_PANEL_NOVATEK_NT36523
  	  around the Novatek NT36523 display controller, such as some
  	  Boe panels used in Xiaomi Mi Pad 5 and 5 Pro tablets.
  
@@ -135,7 +218,7 @@ Adjustments for v7.2.5:
  	depends on GPIOLIB
 --- a/drivers/gpu/drm/panel/Makefile
 +++ b/drivers/gpu/drm/panel/Makefile
-@@ -60,6 +60,7 @@
+@@ -60,6 +60,7 @@ obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35532) += panel-novatek-nt35532.o
  obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35560) += panel-novatek-nt35560.o
  obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35950) += panel-novatek-nt35950.o
  obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36523) += panel-novatek-nt36523.o
@@ -143,7 +226,7 @@ Adjustments for v7.2.5:
  obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36672A) += panel-novatek-nt36672a.o
  obj-$(CONFIG_DRM_PANEL_NOVATEK_NT36672E) += panel-novatek-nt36672e.o
  obj-$(CONFIG_DRM_PANEL_NOVATEK_NT37700F) += panel-novatek-nt37700f.o
---- a/drivers/gpu/drm/panel/panel-novatek-nt36532.c
+--- /dev/null
 +++ b/drivers/gpu/drm/panel/panel-novatek-nt36532.c
 @@ -0,0 +1,781 @@
 +// SPDX-License-Identifier: GPL-2.0-only
@@ -927,3 +1010,21 @@ Adjustments for v7.2.5:
 +MODULE_AUTHOR("Jens Reidel <adrian@travitia.xyz>");
 +MODULE_DESCRIPTION("DRM panel driver for the Novatek NT36532 Driver-IC");
 +MODULE_LICENSE("GPL");
+--- a/include/drm/drm_mipi_dsi.h
++++ b/include/drm/drm_mipi_dsi.h
+@@ -181,6 +181,7 @@ struct mipi_dsi_device_info {
+  * be set to the real limits of the hardware, zero is only accepted for
+  * legacy drivers
+  * @dsc: panel/bridge DSC pps payload to be sent
++ * @dsc_slice_per_pkt: number of DSC slices carried in each DSI packet
+  */
+ struct mipi_dsi_device {
+ 	struct mipi_dsi_host *host;
+@@ -195,6 +196,7 @@ struct mipi_dsi_device {
+ 	unsigned long hs_rate;
+ 	unsigned long lp_rate;
+ 	struct drm_dsc_config *dsc;
++	unsigned int dsc_slice_per_pkt;
+ };
+ 
+ /**

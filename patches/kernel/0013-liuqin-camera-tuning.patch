@@ -1,31 +1,293 @@
-From the vendor sensor-module mode records and the upstream S5KJN1 driver.
+Camera tuning: s5kjn1 vendor modes and vflip, the gt9764 autofocus driver and
+the camcc/gcc GDSC always-on workaround.
 
-This teaches drivers/media/i2c/s5kjn1.c the board's 19.2 MHz MCLK and adds
-the four vendor mode tables for it.  The driver now selects its mode set from
-the MCLK rate the camera clock actually provides, so a mode can never be
-programmed with PLL values computed for another clock: the 24 MHz set is the
-upstream one, the 19.2 MHz set is the vendor's.
+Merged from: bring-up patches 0020-camera-s5kjn1-vendor-modes, 0021-camera-gt9764-autofocus, 0023-camera-camcc-gdsc, 0024-camera-bringup-always-on, 0025-camera-s5kjn1-vflip
 
-The vendor mode tables are generated data.  They are the byte-for-byte
-register writes of com.qti.sensormodule.liuqin_qtech_s5kjn1_wide_i.bin
-(regSetting records 41/904/1767/2630), extracted from the parsed containers
-in liuqin-mainline-blobs/camera/ during bring-up.  Vendor write order is
-preserved; the vendor delay fields, which are all zero in these four records,
-are not representable in struct cci_reg_sequence.
-
-Frame rates at the unchanged 700 MHz link (560 Mpix/s, 4 lanes, 10 bit) are
-10.07/30.06/30.06/60.12 fps for 8160x6120, 4080x3060, 4080x2296 and
-3840x2160.
-
-Bring-up assumptions kept explicit: the mode exposure defaults and exposure
-margins are not part of the vendor records (the driver needs a value and the
-sensor's minimum vertical blanking is unknown), so they are conservative
-one-line-of-black defaults.
-
----
-
-diff --git a/drivers/media/i2c/s5kjn1.c b/drivers/media/i2c/s5kjn1.c
-index a707cb740..4ad502c60 100644
+--- a/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
++++ b/Documentation/devicetree/bindings/media/i2c/dongwoon,dw9768.yaml
+@@ -23,6 +23,7 @@ properties:
+     enum:
+       - dongwoon,dw9768 # for DW9768 VCM
+       - giantec,gt9769  # for GT9769 VCM
++      - giantec,gt9764  # for GT9764 VCM
+ 
+   reg:
+     maxItems: 1
+--- a/drivers/clk/qcom/camcc-sm8450.c
++++ b/drivers/clk/qcom/camcc-sm8450.c
+@@ -2930,91 +2930,120 @@ static struct gdsc titan_top_gdsc;
+ 
+ static struct gdsc bps_gdsc = {
+ 	.gdscr = 0x10004,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "bps_gdsc",
+ 	},
+-	.flags = HW_CTRL | POLL_CFG_GDSCR,
++	.flags = HW_CTRL | POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
+ static struct gdsc ipe_0_gdsc = {
+ 	.gdscr = 0x10078,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "ipe_0_gdsc",
+ 	},
+-	.flags = HW_CTRL | POLL_CFG_GDSCR,
++	.flags = HW_CTRL | POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
+ static struct gdsc sbi_gdsc = {
+ 	.gdscr = 0x100d0,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "sbi_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
+ static struct gdsc ife_0_gdsc = {
+ 	.gdscr = 0x11004,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "ife_0_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+-	.pwrsts = PWRSTS_OFF_ON,
++	.pwrsts = PWRSTS_ON,
+ };
+ 
+ static struct gdsc ife_1_gdsc = {
+ 	.gdscr = 0x12004,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "ife_1_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+-	.pwrsts = PWRSTS_OFF_ON,
++	.pwrsts = PWRSTS_ON,
+ };
+ 
+ static struct gdsc ife_2_gdsc = {
+ 	.gdscr = 0x12050,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "ife_2_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+-	.pwrsts = PWRSTS_OFF_ON,
++	.pwrsts = PWRSTS_ON,
+ };
+ 
+ static struct gdsc sfe_0_gdsc = {
+ 	.gdscr = 0x13050,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "sfe_0_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
+ static struct gdsc sfe_1_gdsc = {
+ 	.gdscr = 0x13098,
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
+ 	.pd = {
+ 		.name = "sfe_1_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+ 	.parent = &titan_top_gdsc.pd,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
+ static struct gdsc titan_top_gdsc = {
++	.en_rest_wait_val = 0x2,
++	.en_few_wait_val = 0x2,
++	.clk_dis_wait_val = 0xf,
++	.needs_icc = true,
++	.icc_path_index = 0,
+ 	.gdscr = 0x131dc,
+ 	.pd = {
+ 		.name = "titan_top_gdsc",
+ 	},
+-	.flags = POLL_CFG_GDSCR,
+-	.pwrsts = PWRSTS_OFF_ON,
++	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
++	.pwrsts = PWRSTS_ON,
+ };
+ 
+ static struct gdsc *cam_cc_sm8450_gdscs[] = {
+--- a/drivers/clk/qcom/gcc-sm8450.c
++++ b/drivers/clk/qcom/gcc-sm8450.c
+@@ -1376,6 +1376,7 @@ static struct clk_branch gcc_camera_hf_axi_clk = {
+ 		.enable_reg = 0x36010,
+ 		.enable_mask = BIT(0),
+ 		.hw.init = &(struct clk_init_data){
++			.flags = CLK_IGNORE_UNUSED,
+ 			.name = "gcc_camera_hf_axi_clk",
+ 			.ops = &clk_branch2_ops,
+ 		},
+@@ -1391,6 +1392,7 @@ static struct clk_branch gcc_camera_sf_axi_clk = {
+ 		.enable_reg = 0x36018,
+ 		.enable_mask = BIT(0),
+ 		.hw.init = &(struct clk_init_data){
++			.flags = CLK_IGNORE_UNUSED,
+ 			.name = "gcc_camera_sf_axi_clk",
+ 			.ops = &clk_branch2_ops,
+ 		},
+@@ -3462,6 +3464,19 @@ static int gcc_sm8450_probe(struct platform_device *pdev)
+ 	/* Keep some clocks always-on */
+ 	qcom_branch_set_clk_en(regmap, 0x36004); /* GCC_CAMERA_AHB_CLK */
+ 	qcom_branch_set_clk_en(regmap, 0x36020); /* GCC_CAMERA_XO_CLK */
++	/*
++	 * Camera data path.  The vendor's cam-cpas clock vote enables these two
++	 * before it touches the CPAS/CAMNOC registers (cam-cpas clock-names start
++	 * with gcc_ahb_clk, gcc_axi_hf_clk, gcc_axi_sf_clk).  They are ordinary
++	 * branch clocks with no mainline consumer, so without this they stay
++	 * gated and every camera write master drains into a closed AXI port -
++	 * which is exactly the "frames arrive at 30 fps with an all-zero payload"
++	 * signature on this board.  Kept on only for bring-up.  CLK_IGNORE_UNUSED
++	 * (set on both clk_branch definitions above) is what makes it stick:
++	 * clk_disable_unused() would otherwise switch them back off.
++	 */
++	qcom_branch_set_clk_en(regmap, 0x36010); /* GCC_CAMERA_HF_AXI_CLK */
++	qcom_branch_set_clk_en(regmap, 0x36018); /* GCC_CAMERA_SF_AXI_CLK */
+ 	qcom_branch_set_clk_en(regmap, 0x37004); /* GCC_DISP_AHB_CLK */
+ 	qcom_branch_set_clk_en(regmap, 0x3701c); /* GCC_DISP_XO_CLK */
+ 	qcom_branch_set_clk_en(regmap, 0x81004); /* GCC_GPU_CFG_AHB_CLK */
+--- a/drivers/media/i2c/dw9768.c
++++ b/drivers/media/i2c/dw9768.c
+@@ -99,6 +99,7 @@ static const char * const dw9768_supply_names[] = {
+ 
+ /* dw9768 device structure */
+ struct dw9768 {
++	bool initialized;
+ 	struct regulator_bulk_data supplies[ARRAY_SIZE(dw9768_supply_names)];
+ 	struct v4l2_ctrl_handler ctrls;
+ 	struct v4l2_ctrl *focus;
+@@ -313,7 +314,24 @@ static int dw9768_runtime_suspend(struct device *dev)
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+ 	struct dw9768 *dw9768 = sd_to_dw9768(sd);
+ 
+-	dw9768_release(dw9768);
++	/*
++	 * liuqin: only run the power-down sequence if the chip actually came
++	 * up.  A resume whose init never reached the chip must not send more
++	 * I2C into an unpowered part (each write would just time out).
++	 *
++	 * FIXME(2026-10-05, system-129): this power-down never runs in a
++	 * desktop session - libcamera (wireplumber) opens this node at
++	 * startup and holds it for the whole session - so dw9768_release()
++	 * never parks the lens: it keeps the last DAC (measured: 639 after
++	 * the camera app was closed) and the coil stays energised at that
++	 * position, on top of the rail the board DTS keeps on anyway
++	 * (regulator-always-on, 0022).  Park on stream-stop instead of on
++	 * suspend - see docs/TODO/CAMERA-MAINLINE.md, open items.
++	 */
++	if (dw9768->initialized)
++		dw9768_release(dw9768);
++	dw9768->initialized = false;
++
+ 	regulator_bulk_disable(ARRAY_SIZE(dw9768_supply_names),
+ 			       dw9768->supplies);
+ 
+@@ -334,22 +352,45 @@ static int dw9768_runtime_resume(struct device *dev)
+ 	}
+ 
+ 	/*
+-	 * The datasheet refers to t_OPR that needs to be waited before sending
+-	 * I2C commands after power-up.
++	 * liuqin: the VCM shares the camera module's power.  This rail itself
++	 * is always on, but the module's other supplies are switched by the
++	 * sensor driver, so a resume may find the part unpowered - the
++	 * datasheet's t_OPR alone measured too short over this path.
+ 	 */
+-	usleep_range(DW9768_T_OPR_US, DW9768_T_OPR_US + 100);
++	usleep_range(20000, 21000);
+ 
++	/*
++	 * liuqin: the VCM sits on the camera module, whose other rails (the
++	 * module's dvdd/avdd and the shared 1.8 V I/O) are switched by the
++	 * sensor driver's runtime PM.  While the module is down this init
++	 * cannot be answered and the CCI times out (-ETIMEDOUT).  Keep that
++	 * failure local: returning it here would set the sticky
++	 * runtime_error and turn every later open of this boot into -EINVAL.
++	 * Report it, stay active, and retry on the next resume - i.e. the
++	 * next open, when the module may be powered (touch the lens while
++	 * the sensor is streaming).
++	 *
++	 * FIXME(2026-10-05, system-129): that next resume never comes while
++	 * the node stays open - an already-active device is not resumed again
++	 * - so the chip stays uninitialized for the whole boot (POR defaults:
++	 * no AAC mode, no PD reset), every suspend skips its park, and only
++	 * direct DAC writes reach the lens once the module is up.  The rail
++	 * is on (always-on by the board DTS) while the module's I/O is down,
++	 * so the powered chip cannot be reached at all: writes time out
++	 * (-ETIMEDOUT) until the sensor streams again.  Retry from the
++	 * sensor's stream-on instead - see docs/TODO/CAMERA-MAINLINE.md,
++	 * open items.
++	 */
+ 	ret = dw9768_init(dw9768);
+-	if (ret < 0)
+-		goto disable_regulator;
+-
+-	return 0;
++	if (ret < 0) {
++		dev_warn(dev, "init failed (%d), retrying on the next resume\n",
++			 ret);
++		return 0;
++	}
+ 
+-disable_regulator:
+-	regulator_bulk_disable(ARRAY_SIZE(dw9768_supply_names),
+-			       dw9768->supplies);
++	dw9768->initialized = true;
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ static int dw9768_set_ctrl(struct v4l2_ctrl *ctrl)
+@@ -530,6 +571,7 @@ static void dw9768_remove(struct i2c_client *client)
+ static const struct of_device_id dw9768_of_table[] = {
+ 	{ .compatible = "dongwoon,dw9768" },
+ 	{ .compatible = "giantec,gt9769" },
++	{ .compatible = "giantec,gt9764" },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, dw9768_of_table);
 --- a/drivers/media/i2c/s5kjn1.c
 +++ b/drivers/media/i2c/s5kjn1.c
 @@ -16,6 +16,7 @@
@@ -1720,6 +1982,15 @@ index a707cb740..4ad502c60 100644
  static int s5kjn1_set_ctrl(struct v4l2_ctrl *ctrl)
  {
  	struct s5kjn1 *s5kjn1 = container_of(ctrl->handler, struct s5kjn1,
+@@ -866,7 +2092,7 @@ static int s5kjn1_init_controls(struct s5kjn1 *s5kjn1)
+ 		s5kjn1->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+ 
+ 	s5kjn1->vflip = v4l2_ctrl_new_std(ctrl_hdlr, &s5kjn1_ctrl_ops,
+-					  V4L2_CID_VFLIP, 0, 1, 1, 0);
++					  V4L2_CID_VFLIP, 0, 1, 1, 1);
+ 	if (s5kjn1->vflip)
+ 		s5kjn1->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+ 
 @@ -992,8 +2218,8 @@ static int s5kjn1_set_pad_format(struct v4l2_subdev *sd,
  	s64 hblank, vblank, exposure_max;
  	const struct s5kjn1_mode *mode;

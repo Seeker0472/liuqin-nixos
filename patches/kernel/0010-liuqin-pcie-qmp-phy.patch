@@ -1,50 +1,10 @@
-The PHY init values mainline ships for sm8550's gen3x2 QMP PCIe PHY differ from
-what this board's own firmware uses.  The vendor kernel has no separate PHY
-device at all: drivers/pci/controller/pci-msm.c replays the DT's
-qcom,phy-sequence (82 offset/value/delay groups, final-runtime.dts:4645) into
-the same 0x1c06000 window, and the ready bit it polls is the same
-(qcom,phy-status-offset = 0x214, qcom,phy-status-bit = 6, i.e. the QMP
-offset-0x14 status register's PHYSTATUS bit - the exact register mainline's
-qmp_pcie_power_on polls after SERDES_START|PCS_START).
+PCIe: QMP PCIe PHY cape tables.
 
-Mapping those 82 groups onto mainline's table layout (qmp_pcie_offsets_v5:
-serdes 0x0 / pcs 0x200 / pcs_misc 0x600 / tx 0xe00 / rx 0x1000) leaves 71
-groups byte-identical and 21 values different - all in the PLL programming
-(SSC periods/step sizes, BG_TIMER, LOCK_CMP[12]_MODE[01] lock comparator
-thresholds, DEC_START_MODE[01], DIV_FRAC_START[123]_MODE[01]) plus one TX and
-one RX register.  With mainline's numbers the PLL never reports lock here, so
-QPHY_PCS_STATUS keeps its PHYSTATUS bit set and every probe fails after
-PHY_INIT_COMPLETE_TIMEOUT (10 ms):
-
-  qcom-qmp-pcie-phy 1c06000.phy: phy initialization timed-out
-  qcom-pcie 1c00000.pcie: probe with driver qcom-pcie failed with error -110
-
-This applies the vendor's values.  For reference, the community port
-(linux-sm8450-liuqin f88eb7add) makes a 26-line edit for the same purpose; it
-matches the vendor in MODE1 but writes 0xff/0x06 for SSC_STEP_SIZE[12]_MODE0
-(vendor 0xde/0x07) and 0xab/0xea/0x02 for DIV_FRAC_START[123]_MODE0 (vendor
-0x55/0x55/0x03), and they report the controller probing but the modem never
-appearing on the bus.
-
-.lanes = 1 matches the single wired lane (the DT's num-lanes = <1>); the vendor
-node has no num-lanes at all and reads LNKCAP from hardware.  With .lanes = 2
-the driver also programs lane 2's TX/RX blocks.
-
-Verified on the device (installed system running the kernel built from this
-patch): the timeouts above are gone, the controller probes, and the chip comes up
-- past what the community port reaches ("still no see"):
-
-  pci 0000:01:00.0: BAR 0 [mem 0x60400000-0x605fffff 64bit]: assigned
-  ath11k_pci 0000:01:00.0: wcn6855 hw2.1
-  ath11k_pci 0000:01:00.0: chip_id 0x12 chip_family 0xb board_id 0xff soc_id 0x400c1211
-  ath11k_pci 0000:01:00.0: fw_version 0x1106196e ... WLAN.HSP.1.1-03125-QCAHSPSWPL_V1_V2_SILICONZ_LITE-3.6510.37
-  ath11k_pci 0000:01:00.0 wlp1s0: renamed from wlan0
-
-and liuqin-wlan-mac.service (it waits for 17cb:1103) goes active.
+Merged from: bring-up patches 0013
 
 --- a/drivers/phy/qualcomm/phy-qcom-qmp-pcie.c
 +++ b/drivers/phy/qualcomm/phy-qcom-qmp-pcie.c
-@@ -2456,12 +2456,12 @@
+@@ -2456,12 +2456,12 @@ static const struct qmp_phy_init_tbl sm8450_qmp_gen4x2_pcie_ep_pcs_misc_tbl[] =
  
  static const struct qmp_phy_init_tbl sm8550_qmp_gen3x2_pcie_serdes_tbl[] = {
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_SSC_EN_CENTER, 0x01),
@@ -63,7 +23,7 @@ and liuqin-wlan-mac.service (it waits for 17cb:1103) goes active.
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_CLK_ENABLE1, 0x90),
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_SYS_CLK_CTRL, 0x82),
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_IVCO, 0x07),
-@@ -2472,20 +2472,20 @@
+@@ -2472,20 +2472,20 @@ static const struct qmp_phy_init_tbl sm8550_qmp_gen3x2_pcie_serdes_tbl[] = {
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_CCTRL_MODE0, 0x36),
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_PLL_CCTRL_MODE1, 0x36),
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_SYSCLK_EN_SEL, 0x08),
@@ -97,7 +57,7 @@ and liuqin-wlan-mac.service (it waits for 17cb:1103) goes active.
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_VCO_TUNE_MAP, 0x14),
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_CLK_SELECT, 0x34),
  	QMP_PHY_INIT_CFG(QSERDES_V6_COM_HSCLK_SEL_1, 0x01),
-@@ -2500,7 +2500,7 @@
+@@ -2500,7 +2500,7 @@ static const struct qmp_phy_init_tbl sm8550_qmp_gen3x2_pcie_tx_tbl[] = {
  	QMP_PHY_INIT_CFG(QSERDES_V6_TX_LANE_MODE_4, 0x3f),
  	QMP_PHY_INIT_CFG(QSERDES_V6_TX_PI_QEC_CTRL, 0x02),
  	QMP_PHY_INIT_CFG(QSERDES_V6_TX_RES_CODE_LANE_OFFSET_RX, 0x06),
@@ -106,7 +66,7 @@ and liuqin-wlan-mac.service (it waits for 17cb:1103) goes active.
  };
  
  static const struct qmp_phy_init_tbl sm8550_qmp_gen3x2_pcie_rx_tbl[] = {
-@@ -2520,7 +2520,7 @@
+@@ -2520,7 +2520,7 @@ static const struct qmp_phy_init_tbl sm8550_qmp_gen3x2_pcie_rx_tbl[] = {
  	QMP_PHY_INIT_CFG(QSERDES_V6_RX_RX_MODE_10_HIGH2, 0x5b),
  	QMP_PHY_INIT_CFG(QSERDES_V6_RX_RX_MODE_10_HIGH3, 0x1a),
  	QMP_PHY_INIT_CFG(QSERDES_V6_RX_RX_MODE_10_HIGH4, 0x89),
@@ -115,7 +75,7 @@ and liuqin-wlan-mac.service (it waits for 17cb:1103) goes active.
  	QMP_PHY_INIT_CFG(QSERDES_V6_RX_UCDR_FO_GAIN, 0x09),
  	QMP_PHY_INIT_CFG(QSERDES_V6_RX_UCDR_SO_GAIN, 0x05),
  	QMP_PHY_INIT_CFG(QSERDES_V6_RX_UCDR_SB2_THRESH1, 0x08),
-@@ -4406,7 +4406,7 @@
+@@ -4406,7 +4406,7 @@ static const struct qmp_phy_cfg sm8450_qmp_gen4x2_pciephy_cfg = {
  };
  
  static const struct qmp_phy_cfg sm8550_qmp_gen3x2_pciephy_cfg = {

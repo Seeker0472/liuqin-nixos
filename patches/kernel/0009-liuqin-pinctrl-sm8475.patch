@@ -1,14 +1,6 @@
-pinctrl: qcom: add SM8475 TLMM pin controller driver for liuqin
+Pinctrl: the sm8475 pinctrl driver and the gpio-function flag fix.
 
-Backported verbatim from the downstream sm8450-mainline tree
-(linux-sm8450-liuqin drivers/pinctrl/qcom/pinctrl-sm8475.c, GPL-2.0),
-with Kconfig.msm/Makefile wiring for the 7.2.5 baseline (downstream has
-no `default ARCH_QCOM`; the 7.2.5 SM8450 entry style is followed so the
-symbol turns on with the arm64 qcom defconfig).
-
-Without this driver nothing claims "qcom,sm8475-tlmm": the TLMM never
-probes and every GPIO consumer (touchscreen irq, panel, PCIe, fuel
-gauge, ...) fails with -EPROBE_DEFER forever.
+Merged from: bring-up patches 0010, 0011
 
 --- a/drivers/pinctrl/qcom/Kconfig.msm
 +++ b/drivers/pinctrl/qcom/Kconfig.msm
@@ -38,7 +30,6 @@ gauge, ...) fails with -EPROBE_DEFER forever.
  obj-$(CONFIG_PINCTRL_SM8450_LPASS_LPI) += pinctrl-sm8450-lpass-lpi.o
  obj-$(CONFIG_PINCTRL_SM8550) += pinctrl-sm8550.o
  obj-$(CONFIG_PINCTRL_SM8550_LPASS_LPI) += pinctrl-sm8550-lpass-lpi.o
-new file mode 100644
 --- /dev/null
 +++ b/drivers/pinctrl/qcom/pinctrl-sm8475.c
 @@ -0,0 +1,1706 @@
@@ -1319,7 +1310,7 @@ new file mode 100644
 +};
 +
 +static const struct pinfunction sm8475_functions[] = {
-+	MSM_PIN_FUNCTION(gpio),
++	MSM_GPIO_PIN_FUNCTION(gpio),
 +	MSM_PIN_FUNCTION(aon_cam),
 +	MSM_PIN_FUNCTION(atest_char),
 +	MSM_PIN_FUNCTION(atest_usb),

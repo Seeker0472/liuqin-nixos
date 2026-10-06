@@ -1,0 +1,113 @@
+The board DTS additions for USB3 device, Type-C host/OTG (connector, fsa4480
+SBU mux, 912 mV PLL rail) and DP Alt Mode.  Applied last: it layers on the
+base, CPU and camera DTS changes.
+
+Merged from: bring-up patches 0031-liuqin-usb-typec-dp-dt
+
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
+@@ -206,6 +206,29 @@
+ 			     "qcom,pmic-glink";
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
++
++		connector@0 {
++			compatible = "usb-c-connector";
++			reg = <0>;
++			power-role = "dual";
++			data-role = "dual";
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++				port@0 {
++					reg = <0>;
++					pmic_glink_hs_in: endpoint { remote-endpoint = <&usb_1_dwc3_hs>; };
++				};
++				port@1 {
++					reg = <1>;
++					pmic_glink_ss_in: endpoint { remote-endpoint = <&usb_1_qmpphy_out>; };
++				};
++				port@2 {
++					reg = <2>;
++					pmic_glink_sbu: endpoint { remote-endpoint = <&fsa4480_sbu_mux>; };
++				};
++			};
++		};
+ 	};
+ 
+ 	reserved-memory {
+@@ -434,6 +457,17 @@
+ 		compatible = "qcom,pm8350-rpmh-regulators";
+ 		qcom,pmic-id = "b";
+ 
++		/* 0.912 V combo-PHY PLL rail (vendor qcom,vdd-voltage-level =
++		 * 0xdea80).  The regulator core applies the constraint minimum,
++		 * so min must be 912000 or the SS PLL runs at 832 mV and the
++		 * SuperSpeed link never comes up. */
++		pm8350_l1: ldo1 {
++			regulator-name = "pm8350_l1";
++			regulator-min-microvolt = <912000>;
++			regulator-max-microvolt = <920000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
+ 		pm8350_s10: smps10 {
+ 			regulator-name = "pm8350_s10";
+ 			regulator-min-microvolt = <1800000>;
+@@ -729,6 +763,14 @@
+ 		qcom,param-override-seq-host = <0x40 0x06 0x21 0x07
+ 						  0x64 0x08 0x03 0x0a>;
+ 	};
++
++	typec-mux@42 {
++		compatible = "fcs,fsa4480";
++		reg = <0x42>;
++		mode-switch;
++		orientation-switch;
++		port { fsa4480_sbu_mux: endpoint { remote-endpoint = <&pmic_glink_sbu>; }; };
++	};
+ };
+ 
+ /*
+@@ -1595,11 +1637,11 @@
+ };
+ 
+ &usb_1 {
+-	qcom,select-utmi-as-pipe-clk;
+-	dr_mode = "peripheral";
+-	maximum-speed = "high-speed";
+-	phys = <&usb_1_hsphy>;
+-	phy-names = "usb2-phy";
++	dr_mode = "otg";
++	maximum-speed = "super-speed";
++	role-switch-default-mode = "peripheral";
++	phys = <&usb_1_hsphy>, <&usb_1_qmpphy QMP_USB43DP_USB3_PHY>;
++	phy-names = "usb2-phy", "usb3-phy";
+ 
+ 	status = "okay";
+ };
+@@ -2101,3 +2143,24 @@
+ 		status = "disabled";
+ 	};
+ };
++
++/* Combo PHY: SuperSpeed lanes plus the DP Alt Mode mode-switch. */
++&usb_1_qmpphy {
++	status = "okay";
++	vdda-phy-supply = <&pm8350c_l10>;
++	vdda-pll-supply = <&pm8350_l1>;
++	mode-switch;
++};
++&usb_1_qmpphy_out { remote-endpoint = <&pmic_glink_ss_in>; };
++&usb_1_dwc3_hs { remote-endpoint = <&pmic_glink_hs_in>; };
++
++/* Liuqin DisplayPort controller.  The Type-C connector, the SBU mux, the
++ * combo-PHY mode-switch and the 912 mV PLL rail are declared above. */
++&mdss_dp0 {
++	status = "okay";
++};
++
++&mdss_dp0_out {
++	data-lanes = <0 1>;
++};
++

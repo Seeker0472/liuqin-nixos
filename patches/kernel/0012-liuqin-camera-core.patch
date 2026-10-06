@@ -1,28 +1,8 @@
-media: i2c: add the liuqin IMX596/SC202CS sensor driver
+Camera core: CAMSS for sm8475, the board's camera sensors and the board-DTS
+camera wiring.
 
-One driver for the two auxiliary modules (front IMX596 on csiphy2, depth
-SC202CS on csiphy1), with its DT binding and the Kconfig/Makefile entries,
-including the findings from bring-up:
+Merged from: bring-up patches 0018-camera-camss-sm8475, 0019-camera-sensors, 0022-camera-board-dts
 
-- the IMX596 streams with the 16-bit write 0x0100 = 0x0103 (the byte write
-  never actually started it);
-- chip-id retries with a reset pulse between attempts: the module I2C comes
-  up marginal and one failed probe leaves the whole async notifier incomplete
-  (every camera disappears);
-- measured link rates: 678.4 MHz front, 360 MHz depth (the old values were
-  off by ~60% / 2x and left the PHY mistuned);
-- the depth link is a single lane;
-- the IMX596 analogue gain takes the vendor's Sony-style code, and the depth
-  sensor's 20-bit exposure layout is handled;
-- subdevices are named after their model so the per-sensor tuning files load.
-
-The register/mode tables are machine-generated from the MIUI sensor-module
-containers (the generator lived in the bring-up branch).  Both modules capture
-through the shared csid0/vfe0_rdi0 modelled in 0022.
-
-diff --git a/Documentation/devicetree/bindings/media/i2c/qcom,liuqin-camera-sensors.yaml b/Documentation/devicetree/bindings/media/i2c/qcom,liuqin-camera-sensors.yaml
-new file mode 100644
-index 000000000..a6bff3846
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/media/i2c/qcom,liuqin-camera-sensors.yaml
 @@ -0,0 +1,76 @@
@@ -102,8 +82,794 @@ index 000000000..a6bff3846
 +  - port
 +
 +unevaluatedProperties: false
-diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
-index 5d173e0ec..3341ed585 100644
+--- /dev/null
++++ b/Documentation/devicetree/bindings/media/qcom,sm8475-camss.yaml
+@@ -0,0 +1,163 @@
++# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/media/qcom,sm8475-camss.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Qualcomm SM8475 Camera Subsystem (CAMSS)
++
++maintainers:
++  - Linux Media maintainers <linux-media@vger.kernel.org>
++
++description:
++  Qualcomm SM8475 CSI decoder, CSIPHY and IFE camera subsystem.
++  The first board integration uses three full CSID/IFE instances, two
++  lite instances and six CSIPHY blocks.
++
++properties:
++  compatible:
++    const: qcom,sm8475-camss
++
++  reg:
++    minItems: 17
++    maxItems: 17
++
++  reg-names:
++    minItems: 17
++    maxItems: 17
++    items:
++      - const: csid0
++      - const: csid1
++      - const: csid2
++      - const: csid_lite0
++      - const: csid_lite1
++      - const: csid_wrapper
++      - const: csiphy0
++      - const: csiphy1
++      - const: csiphy2
++      - const: csiphy3
++      - const: csiphy4
++      - const: csiphy5
++      - const: vfe0
++      - const: vfe1
++      - const: vfe2
++      - const: vfe_lite0
++      - const: vfe_lite1
++
++  clocks:
++    minItems: 32
++    maxItems: 32
++
++  clock-names:
++    minItems: 32
++    maxItems: 32
++    items:
++      - const: camnoc_rt_axi
++      - const: camnoc_nrt_axi
++      - const: cpas_ahb
++      - const: cpas_fast_ahb
++      - const: cpas_vfe0
++      - const: cpas_vfe1
++      - const: cpas_vfe2
++      - const: cpas_ife_lite
++      - const: csid
++      - const: csiphy_rx
++      - const: csiphy0
++      - const: csiphy0_timer
++      - const: csiphy1
++      - const: csiphy1_timer
++      - const: csiphy2
++      - const: csiphy2_timer
++      - const: csiphy3
++      - const: csiphy3_timer
++      - const: csiphy4
++      - const: csiphy4_timer
++      - const: csiphy5
++      - const: csiphy5_timer
++      - const: vfe0_fast_ahb
++      - const: vfe0
++      - const: vfe1_fast_ahb
++      - const: vfe1
++      - const: vfe2_fast_ahb
++      - const: vfe2
++      - const: vfe_lite_ahb
++      - const: vfe_lite
++      - const: vfe_lite_csid
++      - const: vfe_lite_cphy_rx
++
++  interrupts:
++    minItems: 16
++    maxItems: 16
++
++  interrupt-names:
++    minItems: 16
++    maxItems: 16
++    items:
++      - const: csid0
++      - const: csid1
++      - const: csid2
++      - const: csid_lite0
++      - const: csid_lite1
++      - const: csiphy0
++      - const: csiphy1
++      - const: csiphy2
++      - const: csiphy3
++      - const: csiphy4
++      - const: csiphy5
++      - const: vfe0
++      - const: vfe1
++      - const: vfe2
++      - const: vfe_lite0
++      - const: vfe_lite1
++
++  interconnects:
++    minItems: 2
++    maxItems: 2
++
++  interconnect-names:
++    minItems: 2
++    maxItems: 2
++    items:
++      - const: cam_ahb
++      - const: cam_hf_mnoc
++
++  iommus:
++    maxItems: 2
++
++  power-domains:
++    minItems: 4
++    maxItems: 4
++
++  power-domain-names:
++    minItems: 4
++    maxItems: 4
++    items:
++      - const: ife0
++      - const: ife1
++      - const: ife2
++      - const: top
++
++  vdda-phy-supply: {}
++  vdda-pll-supply: {}
++
++  ports:
++    $ref: /schemas/graph.yaml#/properties/ports
++    description: CSI input ports.
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - clocks
++  - clock-names
++  - interrupts
++  - interrupt-names
++  - interconnects
++  - interconnect-names
++  - iommus
++  - power-domains
++  - power-domain-names
++  - vdda-phy-supply
++  - vdda-pll-supply
++
++additionalProperties: false
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
+@@ -3,6 +3,7 @@
+ 
+ #include <dt-bindings/input/input.h>
+ #include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/leds/common.h>
+ #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+ #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+ 
+@@ -490,6 +491,13 @@
+ 		compatible = "qcom,pm8350c-rpmh-regulators";
+ 		qcom,pmic-id = "c";
+ 
++		pm8350c_l1: ldo1 {
++			regulator-name = "pm8350c_l1";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
+ 		pm8350c_s1: smps1 {
+ 			regulator-name = "pm8350c_s1";
+ 			regulator-min-microvolt = <1800000>;
+@@ -510,6 +518,37 @@
+ 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 		};
+ 
++		/*
++		 * The depth camera's I/O rail.  The vendor's own l4 range is
++		 * 1.62-3.3 V with a 1.8 V default (phandle 0x305); 1.8 V is
++		 * pinned here because nothing else on this board uses l4.
++		 */
++		pm8350c_l4: ldo4 {
++			regulator-name = "pm8350c_l4";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		/*
++		 * The wide camera's autofocus rail (the dw9768's vdd/vin).
++		 * Kept always on: the VCM only answers while the sensor
++		 * module is powered anyway (the sensor driver owns the
++		 * module supplies), so gating this rail too would add a
++		 * second power state without buying anything.  The cost is
++		 * the actuator's quiescent draw while the system runs.
++		 *
++		 * Stays at its 3.0 V default: nothing writes the vendor's
++		 * 3.1 V any more, and focus works at 3.0 V.
++		 */
++		pm8350c_l7: ldo7 {
++			regulator-name = "pm8350c_l7";
++			regulator-min-microvolt = <3000000>;
++			regulator-max-microvolt = <3544000>;
++			regulator-always-on;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
+ 		pm8350c_l10: ldo10 {
+ 			regulator-name = "pm8350c_l10";
+ 			regulator-min-microvolt = <1200000>;
+@@ -1572,3 +1611,493 @@
+ 
+ 	status = "okay";
+ };
++
++/*
++ * Mainline CAMSS bring-up.  This exposes the public CAMSS media graph and
++ * leaves Spectra CPAS/ICP/JPEG outside the first raw-RDI milestone.  The
++ * CSIPHY driver currently uses its upstream 2.1.2 programming table for the
++ * vendor's 2.1.3 PHY; the resulting link must be checked on hardware.
++ */
++/* CAMSS_TOP_GDSC needs the CAMNOC high frequency path before power-on. */
++&camcc {
++	interconnects = <&mmss_noc MASTER_CAMNOC_HF QCOM_ICC_TAG_ALWAYS
++			 &mmss_noc SLAVE_MNOC_HF_MEM_NOC QCOM_ICC_TAG_ALWAYS>;
++};
++
++&soc {
++	camss: isp@acb7000 {
++		compatible = "qcom,sm8475-camss";
++
++		reg = <0x0 0x0acb7000 0x0 0x0d00>,
++		      <0x0 0x0acb9000 0x0 0x0d00>,
++		      <0x0 0x0acbb000 0x0 0x0d00>,
++		      <0x0 0x0acc6000 0x0 0x0a00>,
++		      <0x0 0x0acca000 0x0 0x0a00>,
++		      <0x0 0x0acb6000 0x0 0x1000>,
++		      <0x0 0x0ace4000 0x0 0x2000>,
++		      <0x0 0x0ace6000 0x0 0x2000>,
++		      <0x0 0x0ace8000 0x0 0x2000>,
++		      <0x0 0x0acea000 0x0 0x2000>,
++		      <0x0 0x0acec000 0x0 0x2000>,
++		      <0x0 0x0acee000 0x0 0x2000>,
++		      <0x0 0x0ac62000 0x0 0xf000>,
++		      <0x0 0x0ac71000 0x0 0xf000>,
++		      <0x0 0x0ac80000 0x0 0xf000>,
++		      <0x0 0x0acc6000 0x0 0x2800>,
++		      <0x0 0x0acca000 0x0 0x2800>;
++		reg-names = "csid0", "csid1", "csid2", "csid_lite0", "csid_lite1",
++			    "csid_wrapper", "csiphy0", "csiphy1", "csiphy2", "csiphy3",
++			    "csiphy4", "csiphy5", "vfe0", "vfe1", "vfe2",
++			    "vfe_lite0", "vfe_lite1";
++
++		clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK>,
++			 <&camcc CAM_CC_CAMNOC_AXI_CLK>,
++			 <&camcc CAM_CC_CPAS_AHB_CLK>,
++			 <&camcc CAM_CC_CPAS_FAST_AHB_CLK>,
++			 <&camcc CAM_CC_CPAS_IFE_0_CLK>,
++			 <&camcc CAM_CC_CPAS_IFE_1_CLK>,
++			 <&camcc CAM_CC_CPAS_IFE_2_CLK>,
++			 <&camcc CAM_CC_CPAS_IFE_LITE_CLK>,
++			 <&camcc CAM_CC_CSID_CLK>,
++			 <&camcc CAM_CC_CSID_CSIPHY_RX_CLK>,
++			 <&camcc CAM_CC_CSIPHY0_CLK>, <&camcc CAM_CC_CSI0PHYTIMER_CLK>,
++			 <&camcc CAM_CC_CSIPHY1_CLK>, <&camcc CAM_CC_CSI1PHYTIMER_CLK>,
++			 <&camcc CAM_CC_CSIPHY2_CLK>, <&camcc CAM_CC_CSI2PHYTIMER_CLK>,
++			 <&camcc CAM_CC_CSIPHY3_CLK>, <&camcc CAM_CC_CSI3PHYTIMER_CLK>,
++			 <&camcc CAM_CC_CSIPHY4_CLK>, <&camcc CAM_CC_CSI4PHYTIMER_CLK>,
++			 <&camcc CAM_CC_CSIPHY5_CLK>, <&camcc CAM_CC_CSI5PHYTIMER_CLK>,
++			 <&camcc CAM_CC_IFE_0_FAST_AHB_CLK>, <&camcc CAM_CC_IFE_0_CLK>,
++			 <&camcc CAM_CC_IFE_1_FAST_AHB_CLK>, <&camcc CAM_CC_IFE_1_CLK>,
++			 <&camcc CAM_CC_IFE_2_FAST_AHB_CLK>, <&camcc CAM_CC_IFE_2_CLK>,
++			 <&camcc CAM_CC_IFE_LITE_AHB_CLK>, <&camcc CAM_CC_IFE_LITE_CLK>,
++			 <&camcc CAM_CC_IFE_LITE_CSID_CLK>,
++			 <&camcc CAM_CC_IFE_LITE_CPHY_RX_CLK>;
++		clock-names = "camnoc_rt_axi", "camnoc_nrt_axi", "cpas_ahb",
++			      "cpas_fast_ahb", "cpas_vfe0", "cpas_vfe1", "cpas_vfe2",
++			      "cpas_ife_lite", "csid", "csiphy_rx",
++			      "csiphy0", "csiphy0_timer", "csiphy1", "csiphy1_timer",
++			      "csiphy2", "csiphy2_timer", "csiphy3", "csiphy3_timer",
++			      "csiphy4", "csiphy4_timer", "csiphy5", "csiphy5_timer",
++			      "vfe0_fast_ahb", "vfe0", "vfe1_fast_ahb", "vfe1",
++			      "vfe2_fast_ahb", "vfe2", "vfe_lite_ahb", "vfe_lite",
++			      "vfe_lite_csid", "vfe_lite_cphy_rx";
++
++		interrupts = <GIC_SPI 464 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 466 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 640 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 468 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 359 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 477 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 478 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 479 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 448 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 122 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 89 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 465 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 467 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 641 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 469 IRQ_TYPE_EDGE_RISING>,
++			     <GIC_SPI 360 IRQ_TYPE_EDGE_RISING>;
++		interrupt-names = "csid0", "csid1", "csid2", "csid_lite0", "csid_lite1",
++				  "csiphy0", "csiphy1", "csiphy2", "csiphy3", "csiphy4",
++				  "csiphy5", "vfe0", "vfe1", "vfe2", "vfe_lite0", "vfe_lite1";
++
++		interconnects = <&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ACTIVE_ONLY
++				 &config_noc SLAVE_CAMERA_CFG QCOM_ICC_TAG_ACTIVE_ONLY>,
++				<&mmss_noc MASTER_CAMNOC_HF QCOM_ICC_TAG_ALWAYS
++				 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
++		interconnect-names = "cam_ahb", "cam_hf_mnoc";
++		/*
++		 * The ife/sfe write masters use SIDs {0x800,0x820,0x840,0x860,
++		 * 0xc00,0xc20,0xc40,0xc60} (vendor DT lists all eight with mask
++		 * 0x460; the arm-smmu mask field is only 8 bits [23:16], so the
++		 * vendor's 0x400 is a flag and the real mask is 0x60).  One entry
++		 * cannot span bit 10, hence two entries.  With the upstream
++		 * (0x800 0x20) the WM writes from 0x840/0x860/0xc0x are silently
++		 * dropped by the SMMU (no fault) and no frame data reaches DRAM.
++		 */
++		iommus = <&apps_smmu 0x800 0x60>, <&apps_smmu 0xc00 0x60>;
++
++		power-domains = <&camcc IFE_0_GDSC>,
++				<&camcc IFE_1_GDSC>,
++				<&camcc IFE_2_GDSC>,
++				<&camcc TITAN_TOP_GDSC>;
++		power-domain-names = "ife0", "ife1", "ife2", "top";
++		vdda-phy-supply = <&pm8350_l5>;
++		vdda-pll-supply = <&pm8350c_l10>;
++		status = "okay";
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			port@0 { reg = <0>; };
++			port@1 { reg = <1>; };
++			port@2 { reg = <2>; };
++			port@3 { reg = <3>; };
++			port@4 { reg = <4>; };
++			port@5 { reg = <5>; };
++		};
++	};
++};
++
++/* Camera sensor rails copied from the vendor board wiring. */
++/ {
++	/*
++	 * Camera module rails, from the vendor runtime DT: the wide and front
++	 * modules each have their own DVDD/AVDD switches on TLMM GPIOs, and
++	 * the depth module has one AVDD switch.  The vendor's 100 us enable
++	 * ramp delay is kept.
++	 */
++	camera_wide_dvdd_ldo: camera-wide-dvdd-ldo {
++		compatible = "regulator-fixed";
++		regulator-name = "camera_wide_dvdd_ldo";
++		regulator-min-microvolt = <1100000>;
++		regulator-max-microvolt = <1100000>;
++		regulator-enable-ramp-delay = <100>;
++		gpio = <&tlmm 85 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	camera_wide_avdd_ldo: camera-wide-avdd-ldo {
++		compatible = "regulator-fixed";
++		regulator-name = "camera_wide_avdd_ldo";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		regulator-enable-ramp-delay = <100>;
++		gpio = <&tlmm 52 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	camera_front_vdig_ldo: camera-front-vdig-ldo {
++		compatible = "regulator-fixed";
++		regulator-name = "camera_front_vdig_ldo";
++		regulator-min-microvolt = <1100000>;
++		regulator-max-microvolt = <1100000>;
++		regulator-enable-ramp-delay = <100>;
++		gpio = <&tlmm 74 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	camera_front_avdd_ldo: camera-front-avdd-ldo {
++		compatible = "regulator-fixed";
++		regulator-name = "camera_front_avdd_ldo";
++		regulator-min-microvolt = <2900000>;
++		regulator-max-microvolt = <2900000>;
++		regulator-enable-ramp-delay = <100>;
++		gpio = <&tlmm 119 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	camera_deep_avdd: camera-deep-avdd {
++		compatible = "regulator-fixed";
++		regulator-name = "camera_deep_avdd";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		regulator-enable-ramp-delay = <100>;
++		gpio = <&tlmm 118 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++};
++
++&tlmm {
++	/* The vendor camera graph muxes MCLK2 onto GPIO102. */
++	cam_sensor_mclk2_active: cam-sensor-mclk2-active {
++		pins = "gpio102";
++		function = "cam_mclk";
++		drive-strength = <4>;
++		bias-disable;
++	};
++
++	cam_sensor_mclk2_suspend: cam-sensor-mclk2-suspend {
++		pins = "gpio102";
++		function = "cam_mclk";
++		drive-strength = <4>;
++		bias-pull-down;
++	};
++
++	cam_sensor_active_rst0: cam-sensor-active-rst0 {
++		pins = "gpio126";
++		function = "gpio";
++		drive-strength = <4>;
++		bias-disable;
++	};
++
++	cam_sensor_suspend_rst0: cam-sensor-suspend-rst0 {
++		pins = "gpio126";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++	/* IMX596 (front): MCLK5 on gpio105, RESET5 on gpio127 (vendor runtime DT). */
++	cam_sensor_mclk5_active: cam-sensor-mclk5-active {
++		pins = "gpio105";
++		function = "cam_mclk";
++		drive-strength = <4>;
++		bias-disable;
++	};
++
++	cam_sensor_mclk5_suspend: cam-sensor-mclk5-suspend {
++		pins = "gpio105";
++		function = "cam_mclk";
++		drive-strength = <4>;
++		bias-pull-down;
++	};
++
++	cam_sensor_active_rst5: cam-sensor-active-rst5 {
++		pins = "gpio127";
++		function = "gpio";
++		drive-strength = <4>;
++		bias-disable;
++	};
++
++	cam_sensor_suspend_rst5: cam-sensor-suspend-rst5 {
++		pins = "gpio127";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++
++	/* SC202CS (depth): MCLK1 on gpio101, RESET1 on gpio24 (vendor runtime DT). */
++	cam_sensor_mclk1_active: cam-sensor-mclk1-active {
++		pins = "gpio101";
++		function = "cam_mclk";
++		drive-strength = <4>;
++		bias-disable;
++	};
++
++	cam_sensor_mclk1_suspend: cam-sensor-mclk1-suspend {
++		pins = "gpio101";
++		function = "cam_mclk";
++		drive-strength = <4>;
++		bias-pull-down;
++	};
++
++	cam_sensor_active_rst1: cam-sensor-active-rst1 {
++		pins = "gpio24";
++		function = "gpio";
++		drive-strength = <4>;
++		bias-disable;
++	};
++
++	cam_sensor_suspend_rst1: cam-sensor-suspend-rst1 {
++		pins = "gpio24";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++};
++
++/* First milestone: main rear S5KJN1 on CCI0 / CSIPHY3. */
++&cci0 {
++	status = "okay";
++};
++
++&cci0_i2c1 {
++	status = "okay";
++
++	camera@10 {
++		compatible = "samsung,s5kjn1";
++		reg = <0x10>;
++		clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		/*
++		 * 24 MHz selects the upstream mode tables.  The vendor's four
++		 * 19.2 MHz tables (patch 0020) are selected by changing this
++		 * rate; this node runs at 19200000 (the vendor tables), and the
++		 * driver rejects any MCLK it has no mode table for.
++		 */
++		assigned-clock-rates = <19200000>;
++		reset-gpios = <&tlmm 126 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default", "sleep";
++		pinctrl-0 = <&cam_sensor_mclk2_active &cam_sensor_active_rst0>;
++		pinctrl-1 = <&cam_sensor_mclk2_suspend &cam_sensor_suspend_rst0>;
++		vddd-supply = <&camera_wide_dvdd_ldo>;
++		vdda-supply = <&camera_wide_avdd_ldo>;
++		vddio-supply = <&pm8350c_l1>;
++		/* Vendor autofocus rail (l6 on this board is not the VCM). */
++		afvdd-supply = <&pm8350c_l7>;
++		status = "okay";
++		lens-focus = <&camera_vcm>;
++
++		port {
++			camera_out: endpoint {
++				clock-lanes = <0>;
++				/* Sensor lane numbering follows samsung,s5kjn1.yaml. */
++				data-lanes = <1 2 3 4>;
++				link-frequencies = /bits/ 64 <700000000>;
++				remote-endpoint = <&camss_in3>;
++			};
++		};
++	};
++
++	/*
++	 * Rear module autofocus: GT9764, which uses the DW9768 register map
++	 * (AAC control at 0x02, 10-bit DAC split over 0x03/0x04, AAC
++	 * mode/prescale at 0x06 and the AAC period at 0x07).
++	 *
++	 * The vendor module data drives it with AAC enabled, AC[2:0] = 2 and
++	 * AACT[5:0] = 0x2a, i.e. exactly the values below; patch 0024 records
++	 * that evidence.  The I2C address is the family default 0x0c and has
++	 * not been read back on this board yet - if the node fails to probe,
++	 * check it with an i2ctransfer before suspecting anything else.
++	 */
++	camera_vcm: camera-lens@0c {
++		compatible = "giantec,gt9764";
++		/* The DW9768-family default, confirmed on the always-on
++		 * bus: 0x0c ACKs (DAC reads 512), 0x11/0x16/0x26/0x28 NACK. */
++		reg = <0x0c>;
++		vin-supply = <&pm8350c_l7>;
++		vdd-supply = <&pm8350c_l7>;
++		dongwoon,aac-mode = <2>;
++		dongwoon,clock-presc = <0>;
++		dongwoon,aac-timing = <0x2a>;
++		status = "okay";
++	};
++};
++
++&camss {
++	ports {
++		port@1 {
++			reg = <1>;
++			camss_in1: endpoint {
++				clock-lanes = <4>;
++				/* The SC202CS PLL rate equals its internal pixel rate: one lane. */
++				data-lanes = <0>;
++				remote-endpoint = <&sc202cs_out>;
++			};
++		};
++
++		port@2 {
++			reg = <2>;
++			camss_in2: endpoint {
++				clock-lanes = <4>;
++				data-lanes = <0 1 2 3>;
++				remote-endpoint = <&imx596_out>;
++			};
++		};
++
++		port@3 {
++			reg = <3>;
++			camss_in3: endpoint {
++				clock-lanes = <4>;
++				data-lanes = <0 1 2 3>;
++				remote-endpoint = <&camera_out>;
++			};
++		};
++	};
++};
++
++/*
++ * Additional modules from the vendor runtime graph.  Both nodes are enabled:
++ * the CCI buses, rails, Bayer order and lane wiring were checked on hardware
++ * (the front needs its measured 678.4 MHz rate; the depth a 360 MHz
++ * single-lane link), and both capture through csid0.
++ */
++&cci0_i2c0 {
++	camera@10 {
++		compatible = "sony,imx596";
++		reg = <0x10>; /* vendor 8-bit write address 0x20 */
++		clocks = <&camcc CAM_CC_MCLK5_CLK>;
++		clock-names = "xvclk";
++		assigned-clocks = <&camcc CAM_CC_MCLK5_CLK>;
++		assigned-clock-rates = <19200000>;
++		reset-gpios = <&tlmm 127 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default", "sleep";
++		pinctrl-0 = <&cam_sensor_mclk5_active &cam_sensor_active_rst5>;
++		pinctrl-1 = <&cam_sensor_mclk5_suspend &cam_sensor_suspend_rst5>;
++		vddd-supply = <&camera_front_vdig_ldo>;
++		vdda-supply = <&camera_front_avdd_ldo>;
++		vddio-supply = <&pm8350c_l1>;
++		status = "okay";
++
++		port {
++			imx596_out: endpoint {
++				clock-lanes = <0>;
++				data-lanes = <1 2 3 4>;
++				/* 678.4 MHz, measured on the vendor stack (CAM_START_PHYDEV). */
++				link-frequencies = /bits/ 64 <678400000>;
++				remote-endpoint = <&camss_in2>;
++			};
++		};
++	};
++};
++
++/* CCI1 carries the depth sensor; upstream keeps the whole controller off. */
++&cci1 {
++	status = "okay";
++};
++
++&cci1_i2c0 {
++	camera@36 {
++		compatible = "smartsens,sc202cs";
++		reg = <0x36>; /* vendor 8-bit write address 0x6c */
++		clocks = <&camcc CAM_CC_MCLK1_CLK>;
++		clock-names = "xvclk";
++		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
++		assigned-clock-rates = <19200000>;
++		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default", "sleep";
++		pinctrl-0 = <&cam_sensor_mclk1_active &cam_sensor_active_rst1>;
++		pinctrl-1 = <&cam_sensor_mclk1_suspend &cam_sensor_suspend_rst1>;
++		vdda-supply = <&camera_deep_avdd>;
++		vddio-supply = <&pm8350c_l4>;
++		status = "okay";
++
++		port {
++			sc202cs_out: endpoint {
++				clock-lanes = <0>;
++				/* One lane: the PLL rate equals the internal pixel rate. */
++				data-lanes = <1>;
++				/* 720 Mbps on the vendor stack (CAM_START_PHYDEV csiphy1). */
++				link-frequencies = /bits/ 64 <360000000>;
++				remote-endpoint = <&camss_in1>;
++			};
++		};
++	};
++};
++
++/*
++ * Rear camera flash: PM8350C LED controller channel 1, which is what the
++ * vendor's qcom,camera-flash@0 drives (flash_0/torch_0/switch_0).  The
++ * currents and the timeout are the vendor's values: 500 mA torch, 1500 mA
++ * flash, 1280 ms.  Torch works on its own through /sys/class/leds; flash
++ * strobing still needs the sensor-side V4L2 flash linkage.
++ */
++&pm8350c_flash {
++	status = "okay";
++
++	led-0 {
++		function = LED_FUNCTION_FLASH;
++		color = <LED_COLOR_ID_WHITE>;
++		led-sources = <1>;
++		led-max-microamp = <500000>;
++		flash-max-microamp = <1500000>;
++		flash-max-timeout-us = <1280000>;
++	};
++};
++
++/*
++ * Module EEPROMs on the camera CCI buses.  The chip types come from the
++ * module blobs (gt24p128e on the wide, gt24p64e on the front).  The wide
++ * module's part was measured at 0x51 on this board and its node is enabled
++ * there; the front module's address is unconfirmed and its node stays
++ * disabled.  Read one with `i2ctransfer -y <bus> w2@0x51 0x00 0x00 r8`
++ * (the CCI adapter refuses longer reads) and take the bytes from the nvmem
++ * device under /sys/bus/nvmem/devices/.
++ * The depth module's EEPROM type is not named anywhere in its blob.
++ */
++&cci0_i2c1 {
++	eeprom@51 {
++		compatible = "atmel,24c128";
++		reg = <0x51>;
++		status = "okay";
++	};
++};
++
++&cci0_i2c0 {
++	eeprom@50 {
++		compatible = "atmel,24c64";
++		reg = <0x50>;
++		status = "disabled";
++	};
++};
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts.orig
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts.orig
+@@ -549,6 +549,63 @@
+ 	};
+ };
+ 
++/*
++ * CPU capacity and energy model: the four A510s, three A710s and the X2 are
++ * three different cores at three different maximum frequencies (2.016 /
++ * 2.7456 / 3.1872 GHz, the EPSS LUT table qcom-cpufreq-hw reads), and none of
++ * the upstream device trees says so.  arch_topology's fallback is cpu_capacity
++ * 1024 everywhere, SD_ASYM_CPUCAPACITY is then never set (no misfit handling,
++ * no capacity-aware placement) and EAS stays off twice over, because
++ * cpufreq_register_em_with_opp() also wants dynamic-power-coefficient before
++ * it will build a perf domain.
++ *
++ * The numbers are the vendor's own, from the stock runtime device tree's
++ * qcom,kryo nodes (liuqin-audit/evidence/final-runtime.dts): per-MHz DMIPS
++ * ratings and capacitance coefficients.  arch_topology multiplies
++ * capacity-dmips-mhz by each policy's cpuinfo.max_freq, so these values yield
++ * cpu_capacity 278 / 833 / 1024 - the same relative performance the vendor
++ * kernel schedules with.
++ */
++&cpu0 {
++	capacity-dmips-mhz = <1024>;
++	dynamic-power-coefficient = <100>;
++};
++
++&cpu1 {
++	capacity-dmips-mhz = <1024>;
++	dynamic-power-coefficient = <100>;
++};
++
++&cpu2 {
++	capacity-dmips-mhz = <1024>;
++	dynamic-power-coefficient = <100>;
++};
++
++&cpu3 {
++	capacity-dmips-mhz = <1024>;
++	dynamic-power-coefficient = <100>;
++};
++
++&cpu4 {
++	capacity-dmips-mhz = <2253>;
++	dynamic-power-coefficient = <257>;
++};
++
++&cpu5 {
++	capacity-dmips-mhz = <2253>;
++	dynamic-power-coefficient = <257>;
++};
++
++&cpu6 {
++	capacity-dmips-mhz = <2253>;
++	dynamic-power-coefficient = <257>;
++};
++
++&cpu7 {
++	capacity-dmips-mhz = <2386>;
++	dynamic-power-coefficient = <509>;
++};
++
+ &gpi_dma0 {
+ 	status = "okay";
+ };
 --- a/drivers/media/i2c/Kconfig
 +++ b/drivers/media/i2c/Kconfig
 @@ -793,6 +793,17 @@ config VIDEO_S5K6A3
@@ -124,8 +890,6 @@ index 5d173e0ec..3341ed585 100644
  config VIDEO_S5KJN1
  	tristate "Samsung S5KJN1 sensor support"
  	select V4L2_CCI_I2C
-diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
-index e45359efe..1f51018cd 100644
 --- a/drivers/media/i2c/Makefile
 +++ b/drivers/media/i2c/Makefile
 @@ -130,6 +130,7 @@ obj-$(CONFIG_VIDEO_S5C73M3) += s5c73m3/
@@ -136,9 +900,6 @@ index e45359efe..1f51018cd 100644
  obj-$(CONFIG_VIDEO_S5KJN1) += s5kjn1.o
  obj-$(CONFIG_VIDEO_SAA6588) += saa6588.o
  obj-$(CONFIG_VIDEO_SAA6752HS) += saa6752hs.o
-diff --git a/drivers/media/i2c/qcom-liuqin-sensors.c b/drivers/media/i2c/qcom-liuqin-sensors.c
-new file mode 100644
-index 000000000..1ecfd6629
 --- /dev/null
 +++ b/drivers/media/i2c/qcom-liuqin-sensors.c
 @@ -0,0 +1,1629 @@
@@ -1771,3 +2532,302 @@ index 000000000..1ecfd6629
 +MODULE_AUTHOR("Liuqin mainline bring-up");
 +MODULE_DESCRIPTION("IMX596 and SC202CS sensors used by Xiaomi Liuqin");
 +MODULE_LICENSE("GPL");
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+@@ -603,6 +603,141 @@ csiphy_lane_regs lane_regs_qcm2290[] = {
+ 	{0x0664, 0x3f, 0x00, CSIPHY_DEFAULT_PARAMS},
+ };
+ 
++/*
++ * GEN2 2.1.3 2PH DPHY mode, SM8475.
++ *
++ * Generated from the vendor module's csiphy_2ph_v2_1_3_reg symbol (the plain
++ * "qcom,csiphy-v2.1.3" compatible this board's DT uses) with
++ *   (the extractor lived in the bring-up branch; see the patch header)
++ * Keep it generated.  The symbol is five 23-record sequences -- the register
++ * blocks 0x0000/0x0e00/0x0400/0x0800/0x0c00, i.e. the four data lanes and the
++ * clock lane -- and the records are the vendor bytes 1:1.  Do-not-program
++ * records are omitted, which is also how the tables above are written, so 103
++ * of the 115 records remain.  Dropping those and x1e80100's three leading
++ * global-register records, this table is identical to lane_regs_x1e80100
++ * except for four CSIPHY_SKEW_CAL records where the vendor writes 0x04 to
++ * 0x005c and upstream writes 0x00; the driver skips skew calibration, so the
++ * choice does not change what is programmed today.  The vendor's combo-mode
++ * and three-phase tables are separate symbols and are not translated.
++ */
++static const struct
++csiphy_lane_regs lane_regs_sm8475[] = {
++/* csiphy_2ph_v2_1_3_reg: 250 records, 5 sequences */
++
++/* sequence 0: 23 records */
++	{0x0094, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x00a0, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0090, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0098, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0094, 0x07, 0x01, CSIPHY_DEFAULT_PARAMS},
++	{0x0030, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0000, 0x8e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0038, 0xfe, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x002c, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0034, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x001c, 0x0a, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0014, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x003c, 0xb8, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0004, 0x0c, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0020, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0008, 0x10, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++	{0x0010, 0x52, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0094, 0xd7, 0x00, CSIPHY_SKEW_CAL},
++	{0x005c, 0x04, 0x00, CSIPHY_SKEW_CAL},
++	{0x0060, 0xbd, 0x00, CSIPHY_SKEW_CAL},
++	{0x0064, 0x7f, 0x00, CSIPHY_SKEW_CAL},
++
++/* sequence 1: 23 records */
++	{0x0e94, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0ea0, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e90, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e98, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e94, 0x07, 0x01, CSIPHY_DEFAULT_PARAMS},
++	{0x0e30, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e28, 0x04, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e00, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e0c, 0xff, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e38, 0x1f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e2c, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e34, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e1c, 0x0a, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e14, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e3c, 0xb8, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e04, 0x0c, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e20, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0e08, 0x10, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++	{0x0e10, 0x52, 0x00, CSIPHY_DEFAULT_PARAMS},
++
++/* sequence 2: 23 records */
++	{0x0494, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x04a0, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0490, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0498, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0494, 0x07, 0x01, CSIPHY_DEFAULT_PARAMS},
++	{0x0430, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0400, 0x8e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0438, 0xfe, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x042c, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0434, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x041c, 0x0a, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0414, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x043c, 0xb8, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0404, 0x0c, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0420, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0408, 0x10, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++	{0x0410, 0x52, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0494, 0xd7, 0x00, CSIPHY_SKEW_CAL},
++	{0x045c, 0x04, 0x00, CSIPHY_SKEW_CAL},
++	{0x0460, 0xbd, 0x00, CSIPHY_SKEW_CAL},
++	{0x0464, 0x7f, 0x00, CSIPHY_SKEW_CAL},
++
++/* sequence 3: 23 records */
++	{0x0894, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x08a0, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0890, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0898, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0894, 0x07, 0x01, CSIPHY_DEFAULT_PARAMS},
++	{0x0830, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0800, 0x8e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0838, 0xfe, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x082c, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0834, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x081c, 0x0a, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0814, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x083c, 0xb8, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0804, 0x0c, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0820, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0808, 0x10, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++	{0x0810, 0x52, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0894, 0xd7, 0x00, CSIPHY_SKEW_CAL},
++	{0x085c, 0x04, 0x00, CSIPHY_SKEW_CAL},
++	{0x0860, 0xbd, 0x00, CSIPHY_SKEW_CAL},
++	{0x0864, 0x7f, 0x00, CSIPHY_SKEW_CAL},
++
++/* sequence 4: 23 records */
++	{0x0c94, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0ca0, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c90, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c98, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c94, 0x07, 0x01, CSIPHY_DEFAULT_PARAMS},
++	{0x0c30, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c00, 0x8e, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c38, 0xfe, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c2c, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c34, 0x0f, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c1c, 0x0a, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c14, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c3c, 0xb8, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c04, 0x0c, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c20, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c08, 0x10, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
++	{0x0c10, 0x52, 0x00, CSIPHY_DEFAULT_PARAMS},
++	{0x0c94, 0xd7, 0x00, CSIPHY_SKEW_CAL},
++	{0x0c5c, 0x04, 0x00, CSIPHY_SKEW_CAL},
++	{0x0c60, 0xbd, 0x00, CSIPHY_SKEW_CAL},
++	{0x0c64, 0x7f, 0x00, CSIPHY_SKEW_CAL},
++};
++
+ /* GEN2 2.1.2 2PH DPHY mode */
+ static const struct
+ csiphy_lane_regs lane_regs_sm8550[] = {
+@@ -1138,6 +1273,7 @@ static bool csiphy_is_gen2(u32 version)
+ 	case CAMSS_8300:
+ 	case CAMSS_845:
+ 	case CAMSS_8550:
++	case CAMSS_SM8475:
+ 	case CAMSS_8650:
+ 	case CAMSS_8775P:
+ 	case CAMSS_X1E80100:
+@@ -1244,6 +1380,11 @@ static int csiphy_init(struct csiphy_device *csiphy)
+ 		regs->lane_array_size = ARRAY_SIZE(lane_regs_x1e80100);
+ 		regs->offset = 0x1000;
+ 		break;
++	case CAMSS_SM8475:
++		regs->lane_regs = &lane_regs_sm8475[0];
++		regs->lane_array_size = ARRAY_SIZE(lane_regs_sm8475);
++		regs->offset = 0x1000;
++		break;
+ 	case CAMSS_8550:
+ 		regs->lane_regs = &lane_regs_sm8550[0];
+ 		regs->lane_array_size = ARRAY_SIZE(lane_regs_sm8550);
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -351,6 +351,7 @@ static u32 vfe_src_pad_code(struct vfe_line *line, u32 sink_code,
+ 	case CAMSS_8300:
+ 	case CAMSS_845:
+ 	case CAMSS_8550:
++	case CAMSS_SM8475:
+ 	case CAMSS_8650:
+ 	case CAMSS_8775P:
+ 	case CAMSS_X1E80100:
+@@ -2011,6 +2012,7 @@ static int vfe_bpl_align_rdi(struct vfe_device *vfe)
+ 	case CAMSS_8300:
+ 	case CAMSS_845:
+ 	case CAMSS_8550:
++	case CAMSS_SM8475:
+ 	case CAMSS_8650:
+ 	case CAMSS_8775P:
+ 	case CAMSS_X1E80100:
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -5695,6 +5695,96 @@ static const struct camss_resources sc7280_resources = {
+ 	.vfe_num = ARRAY_SIZE(vfe_res_7280),
+ };
+ 
++
++/*
++ * SM8475 (Waipio) camera subsystem.  The CSID/VFE blocks are the 680
++ * generation also used by X1E.  Keep this table separate from X1E: the
++ * instance count, register layout and clock names are board-visible and
++ * must not be inferred from a different SoC.
++ *
++ * The CSIPHY lane programming is the vendor's own 2.1.3 table, recovered from
++ * the shipped camera.ko (csiphy_2ph_v2_1_3_reg) and stored as
++ * lane_regs_sm8475 in camss-csiphy-3ph-1-0.c.  It replaces an earlier bring-up
++ * assumption that reused the 2.1.2 table: the vendor sequences in fact match
++ * upstream x1e80100's table, whose skew-calibration records the driver skips.
++ */
++#define SM8475_CSIPHY(_n) { \
++	.regulators = { \
++		{ .supply = "vdda-phy", .init_load_uA = 88000 }, \
++		{ .supply = "vdda-pll", .init_load_uA = 17800 }, \
++	}, \
++	.clock = { "csiphy" #_n, "csiphy" #_n "_timer" }, \
++	.clock_rate = { { 400000000, 480000000 }, { 400000000 } }, \
++	.reg = { "csiphy" #_n }, .interrupt = { "csiphy" #_n }, \
++	.csiphy = { .id = _n, .hw_ops = &csiphy_ops_3ph_1_0, \
++		.formats = &csiphy_formats_sdm845 }, \
++}
++
++static const struct camss_subdev_resources csiphy_res_sm8475[] = {
++	SM8475_CSIPHY(0), SM8475_CSIPHY(1), SM8475_CSIPHY(2),
++	SM8475_CSIPHY(3), SM8475_CSIPHY(4), SM8475_CSIPHY(5),
++};
++
++#define SM8475_CSID(_n) { \
++	.clock = { "csid", "csiphy_rx" }, \
++	.clock_rate = { { 400000000, 480000000 }, \
++			{ 400000000, 480000000 } }, \
++	.reg = { "csid" #_n }, .interrupt = { "csid" #_n }, \
++	.csid = { .parent_dev_ops = &vfe_parent_dev_ops, \
++		.hw_ops = &csid_ops_680, .formats = &csid_formats_gen2 }, \
++}
++
++static const struct camss_subdev_resources csid_res_sm8475[] = {
++	SM8475_CSID(0), SM8475_CSID(1), SM8475_CSID(2),
++};
++
++#define SM8475_VFE(_n, _lite) { \
++	.clock = { "camnoc_rt_axi", "camnoc_nrt_axi", "cpas_ahb", \
++			   "cpas_fast_ahb", _lite ? "cpas_ife_lite" : "cpas_vfe" #_n, \
++			   _lite ? "vfe_lite_ahb" : "vfe" #_n "_fast_ahb", \
++			   _lite ? "vfe_lite" : "vfe" #_n }, \
++	.clock_rate = { { 400000000 }, { 0 }, { 0 }, { 0 }, { 0 }, \
++			{ 266666667, 400000000, 480000000 }, \
++			{ 266666667, 400000000, 480000000 } }, \
++	.reg = { _lite ? "vfe_lite" #_n : "vfe" #_n }, \
++	.interrupt = { _lite ? "vfe_lite" #_n : "vfe" #_n }, \
++	.vfe = { .line_num = 4, .is_lite = _lite, \
++		.has_pd = !_lite, .pd_name = _lite ? NULL : "ife" #_n, \
++		.hw_ops = &vfe_ops_680, .formats_rdi = &vfe_formats_rdi_845, \
++		.formats_pix = &vfe_formats_pix_845 }, \
++}
++
++static const struct camss_subdev_resources vfe_res_sm8475[] = {
++	SM8475_VFE(0, false), SM8475_VFE(1, false), SM8475_VFE(2, false),
++};
++
++static const struct resources_icc icc_res_sm8475[] = {
++	{ .name = "cam_ahb", .icc_bw_tbl = { .avg = 150000, .peak = 300000 } },
++	{ .name = "cam_hf_mnoc", .icc_bw_tbl = { .avg = 2097152, .peak = 2097152 } },
++};
++
++static const struct resources_wrapper csid_wrapper_res_sm8475 = {
++	.reg = "csid_wrapper",
++};
++
++static const struct camss_resources sm8475_resources = {
++	.version = CAMSS_SM8475,
++	.pd_name = "top",
++	.csiphy_res = csiphy_res_sm8475,
++	.csid_res = csid_res_sm8475,
++	.vfe_res = vfe_res_sm8475,
++	.csid_wrapper_res = &csid_wrapper_res_sm8475,
++	.icc_res = icc_res_sm8475,
++	.icc_path_num = ARRAY_SIZE(icc_res_sm8475),
++	.csiphy_num = ARRAY_SIZE(csiphy_res_sm8475),
++	.csid_num = ARRAY_SIZE(csid_res_sm8475),
++	.vfe_num = ARRAY_SIZE(vfe_res_sm8475),
++};
++
++#undef SM8475_VFE
++#undef SM8475_CSID
++#undef SM8475_CSIPHY
++
+ static const struct camss_resources sm8550_resources = {
+ 	.version = CAMSS_8550,
+ 	.pd_name = "top",
+@@ -5756,6 +5846,7 @@ static const struct of_device_id camss_dt_match[] = {
+ 	{ .compatible = "qcom,sm6350-camss", .data = &sm6350_resources },
+ 	{ .compatible = "qcom,sm8250-camss", .data = &sm8250_resources },
+ 	{ .compatible = "qcom,sm8550-camss", .data = &sm8550_resources },
++	{ .compatible = "qcom,sm8475-camss", .data = &sm8475_resources },
+ 	{ .compatible = "qcom,sm8650-camss", .data = &sm8650_resources },
+ 	{ .compatible = "qcom,x1e80100-camss", .data = &x1e80100_resources },
+ 	{ }
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -94,6 +94,7 @@ enum camss_version {
+ 	CAMSS_8300,
+ 	CAMSS_845,
+ 	CAMSS_8550,
++	CAMSS_SM8475,
+ 	CAMSS_8650,
+ 	CAMSS_8775P,
+ 	CAMSS_X1E80100,

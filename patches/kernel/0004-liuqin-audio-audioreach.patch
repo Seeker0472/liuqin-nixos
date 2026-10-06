@@ -1,33 +1,8 @@
-AudioReach / TDM / CS35L41 / sc8280xp sound support, from the squashed
-liuqin downstream patch.
+Audio: the audioreach/sc8280xp path with cs35l41 amplifiers, wm_adsp, the
+q6apm LPASS DAIs and the qdsp6 topology updates the board needs.
 
-Adjustments for v7.2.5:
-- sound/soc/codecs/wm_adsp.c: both hunks dropped - v7.2.5 upstream
-  reworked wm_adsp_request_firmware_files() to support component
-  prefixes/suffixes for DT systems natively.
-- sound/soc/qcom/qdsp6/q6apm.c: dropped - v7.2.5 already propagates
-  audioreach_set_media_format() errors.
-- sound/soc/qcom/qdsp6/audioreach.h: re-added MODULE_ID_TDM_SINK /
-  MODULE_ID_AUDIO_IF_{SINK,SOURCE} at their v7.2.5 positions. Duplicated
-  blocks from the squashed patch were dropped (param_id_tdm_intf_cfg /
-  param_id_tdm_lane_cfg / param_id_hw_intf_clk_cfg /
-  param_id_audio_if_intf_cfg / param_id_hw_ep_frame_duration and the
-  Audio IF fields of struct audioreach_module each appeared twice).
-- sound/soc/qcom/qdsp6/q6apm-dai.c: rewritten onto the v7.2.5 code -
-  ack() guard on Q6APM_STREAM_RUNNING and trigger() state set kept;
-  prepare() return-value fix already upstream.
-- sound/soc/qcom/sc8280xp.c: rewritten onto v7.2.5, which already has
-  sc8280xp_is_tdm_dai()/sc8280xp_tdm_hw_params(); added the
-  sm8450-sndcard TERTIARY_TDM_RX_0 4ch/S24_LE fixup, TDM guards in
-  startup/shutdown/hw_params/prepare/hw_free, sound/cs35l41.h include.
-- drivers/firmware/cirrus/cs_dsp.c, sound/soc/codecs/cs35l41.*,
-  wm_adsp.h, common.*, audioreach.c, snd_ar_tokens.h: applied cleanly,
-  no changes.
-- sound/soc/qcom/qdsp6/topology.c and q6apm-lpass-dais.c: duplicated
-  blocks from the squashed patch dropped (a second copy of
-  audioreach_widget_audio_if_module_load(), of the MODULE_ID_TDM_SINK /
-  MODULE_ID_AUDIO_IF_{SINK,SOURCE} switch cases, of q6tdm_set_tdm_slot()
-  and of q6tdm_ops).
+Merged from: bring-up patches 0005
+
 --- a/drivers/firmware/cirrus/cs_dsp.c
 +++ b/drivers/firmware/cirrus/cs_dsp.c
 @@ -900,6 +900,7 @@ static int cs_dsp_coeff_read_ctrl_raw(struct cs_dsp_coeff_ctl *ctl,
@@ -38,7 +13,7 @@ Adjustments for v7.2.5:
  /**
   * cs_dsp_coeff_read_ctrl() - Reads the given coefficient control into the given buffer
   * @ctl: pointer to coefficient control
-@@ -2964,6 +2965,7 @@ int cs_dsp_run(struct cs_dsp *dsp)
+@@ -2964,6 +2965,7 @@ err:
  		dsp->ops->stop_core(dsp);
  	if (dsp->ops->disable_core)
  		dsp->ops->disable_core(dsp);

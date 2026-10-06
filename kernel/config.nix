@@ -35,6 +35,9 @@ with kernelLib;
   PINCTRL_SM8475 = lib.mkForce yes;
   SCSI_UFS_QCOM = lib.mkForce yes;
   PHY_QCOM_QMP = lib.mkForce yes;
+  # SM8450/V6 USB3 + DP combo PHY; patch 0018 supplies the liuqin register
+  # table and the DT profile decides when it is connected.
+  PHY_QCOM_QMP_COMBO = lib.mkForce module;
   PHY_QCOM_QMP_UFS = lib.mkForce yes;
   PHY_QCOM_QMP_PCIE = lib.mkForce yes;
   PHY_SNPS_EUSB2 = lib.mkForce yes;
@@ -77,6 +80,12 @@ with kernelLib;
   TYPEC = lib.mkForce module;
   TYPEC_UCSI = lib.mkForce module;
   UCSI_PMIC_GLINK = lib.mkForce module;
+  TYPEC_MUX_FSA4480 = lib.mkForce module;
+  USB_DWC3_DUAL_ROLE = lib.mkForce yes;
+  USB_XHCI_HCD = lib.mkForce yes;
+  USB_XHCI_PLATFORM = lib.mkForce yes;
+  USB_STORAGE = lib.mkForce module;
+  USB_UAS = lib.mkForce module;
   POWER_SEQUENCING = lib.mkForce yes;
   POWER_SEQUENCING_QCOM_WCN = lib.mkForce module;
 
@@ -97,6 +106,7 @@ with kernelLib;
   DRM_MSM_DPU = lib.mkForce yes;
   DRM_MSM_DSI = lib.mkForce yes;
   DRM_MSM_DSI_7NM_PHY = lib.mkForce yes;
+  DRM_MSM_DP = lib.mkForce yes;
   DRM_MIPI_DSI = lib.mkForce yes;
   DRM_PANEL = lib.mkForce yes;
   DRM_PANEL_NOVATEK_NT36532 = lib.mkForce module; # from patch 0004
@@ -137,10 +147,8 @@ with kernelLib;
   HID_GENERIC = lib.mkForce yes;
 
   USB = lib.mkForce yes;
-  # The tablet's DWC3 controller is dual-role; the live installer needs its
-  # peripheral gadget engine selected in the kernel because there is no module
-  # loader before the control channel comes up.
-  USB_DWC3_GADGET = lib.mkForce yes;
+  # The installed kernel supports both gadget and host. The installer fragment
+  # below intentionally selects gadget-only for its USB2 rescue image.
 
   # BT_RFCOMM_TTY is asked as a bool under BT_RFCOMM=m; answering y makes
   # kconfig re-ask the parent tree and generate-config.pl dies. Keep it off.
