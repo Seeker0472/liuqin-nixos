@@ -104,6 +104,22 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   # payloads (see the cs35l41 requireFile above).
   tar --zstd -xf ${cs35l41} -C $fw
 
+  # Bluetooth: mainline's QCA UART driver asks for the "wcn"-prefixed
+  # rampatch/NVM names first for the WCN6855 and falls back to the plain ones
+  # only when those are missing (drivers/bluetooth/btqca.c: "the mapping
+  # between the chip and its corresponding firmware has now been corrected";
+  # the unit's dmesg showed qca/wcnhpbtfw21.tlv failing with -2 before
+  # qca/hpbtfw21.tlv was taken).
+  # Upstream linux-firmware ships the prefixed set, so without these copies the
+  # linux-firmware build wins in every loader view that sees both trees and the
+  # stock payloads pinned here never run - measured on the unit: the controller
+  # reported BTFW.HSP.2.1.0-00660-USB_UART_PATCHZ-6 (linux-firmware) after
+  # switch_root while this tree and the unit's bluetooth_a partition carry
+  # BTFW.HSP.2.1.0-00570-PATCHZ-1.  Hard links, so no payload is duplicated.
+  for f in "$fw"/qca/hp*; do
+    ln "$f" "$fw/qca/wcn$(basename "$f")"
+  done
+
   # regulatory.db is packaged separately from linux-firmware in current
   # nixpkgs; it is redistributable, so prefer nixpkgs' copy over the one in
   # the release's tree.
@@ -128,6 +144,8 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
     cirrus/cs35l41-dsp1-spk-prot.wmfw \
     cirrus/cs35l41-dsp1-spk-prot-10251826.wmfw \
     cirrus/cs35l41-dsp1-spk-prot-10251826.bin \
+    qca/wcnhpbtfw21.tlv \
+    qca/wcnhpnv21g.bin \
     regulatory.db \
     regulatory.db.p7s; do
     test -r "$fw/$required" || { echo "firmware missing: $required" >&2; exit 1; }

@@ -174,6 +174,20 @@ in
       description = "liuqin QCA6490 public Bluetooth address";
       # When bluetooth.service stops, this helper stops with it.
       partOf = [ "bluetooth.service" ];
+      # The controller is unconfigured on every boot (its address is volatile)
+      # and this unit's "Set Public Address" is what drives the kernel's
+      # unconfigured -> configured transition; that transition re-runs the
+      # whole QCA setup (hci_qca sets HCI_QUIRK_NON_PERSISTENT_SETUP whenever
+      # it owns the chip's power lines, as the wcn6855-pmu pwrseq path does),
+      # re-downloading rampatch/NVM through firmware_class.path.  That path is
+      # only usable once liuqin-firmware-path has mounted the union: the
+      # stage-2 root's /var/lib/firmware carries calibration only and there is
+      # no /lib/firmware, so a setup that runs first finds no qca file at all,
+      # this unit fails and bluetooth.service (which Requires= it) never
+      # starts.  Measured on the unit: the union finished at 12.795 s and the
+      # re-download began at 12.820 s, a margin nothing guarantees.
+      wants = [ "liuqin-firmware-path.service" ];
+      after = [ "liuqin-firmware-path.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
