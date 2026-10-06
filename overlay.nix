@@ -6,6 +6,10 @@ final: prev:
 
 {
   # --- Kernel (linuxManualConfig, aarch64 defconfig + liuqin answers) ---
+  # One kernel with every board feature: USB3 peripheral data path, Type-C
+  # host/OTG, DP Alt Mode and the MiPPS ABI.  The per-feature bring-up
+  # profiles are gone - they existed to bisect the bring-up, and every one of
+  # them has been validated on hardware.
   liuqinKernel = final.callPackage ./kernel { };
   # RAM installer kernel: same display/earlycon fixes, with the input and USB
   # host paths promoted to built-in because the installer has no module tree.
@@ -103,6 +107,11 @@ final: prev:
     SH
     chmod +x $out/bin/cam-af
   '';
+
+  # AP-side Xiaomi MiPPS authentication coordinator.  It is intentionally
+  # separate from qcom-battmgr: the ADSP owns PD and the daemon only consumes
+  # the narrow qcom-battery ABI.  Runtime key files are never part of Nix.
+  liuqinMippsd = final.callPackage ./pkgs/mipps-daemon.nix { };
 
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc.nix { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };

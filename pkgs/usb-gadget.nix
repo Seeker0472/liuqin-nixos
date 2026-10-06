@@ -20,6 +20,8 @@
 , configuration
 , logToConsole ? false
 , assignAddress ? false
+, requestDeviceRole ? true
+, superSpeed ? false
 }:
 
 let
@@ -76,7 +78,7 @@ writeShellApplication {
     printf '0x1d6b\n' >"$gadget/idVendor" 2>/dev/null || true
     printf '0x1040\n' >"$gadget/idProduct" 2>/dev/null || true
     printf '0x0100\n' >"$gadget/bcdDevice" 2>/dev/null || true
-    printf '0x0200\n' >"$gadget/bcdUSB" 2>/dev/null || true
+    printf '%s\n' ${lib.escapeShellArg (if superSpeed then "0x0300" else "0x0200")} >"$gadget/bcdUSB" 2>/dev/null || true
 
     mkdir -p "$gadget/strings/0x409" || fail "could not create USB string descriptors"
     printf '000000000001\n' >"$gadget/strings/0x409/serialnumber" 2>/dev/null || true
@@ -121,10 +123,32 @@ writeShellApplication {
     if [ -z "$udc_name" ]; then
       # No UCSI userspace helper on this device: if the role switch has not
       # selected device mode yet, ask it before looking for a controller.
+      # A UCSI-controlled port may already be DFP/host or DP.  The old
+      # fallback unconditionally wrote "device" and stole a host role after
+      # every notification.  The debug service is an explicit device request,
+      # but it must still leave an active host/DP role alone; retrying the unit
+      # after the partner is removed lets UCSI select device again.
+      active_host=0
+      saw_typec=0
       for role_path in /sys/class/usb_role/*/role; do
-        [ -w "$role_path" ] || continue
-        printf 'device\n' >"$role_path" 2>/dev/null || true
+        [ -r "$role_path" ] || continue
+        saw_typec=1
+        role=$(cat "$role_path" 2>/dev/null || true)
+        case "$role" in
+          host|[[]host[]]*|source|[[]source[]]*) active_host=1 ;;
+        esac
       done
+      if [ "$active_host" -eq 0 ] && ${if requestDeviceRole then "true" else "false"}; then
+        for role_path in /sys/class/usb_role/*/role; do
+          [ -w "$role_path" ] || continue
+          printf 'device\n' >"$role_path" 2>/dev/null || true
+        done
+      elif [ "$saw_typec" -eq 1 ]; then
+        log "UCSI owns the Type-C role; leaving it unchanged"
+      fi
+      if [ "$active_host" -eq 1 ]; then
+        fail "Type-C is in host role; USB debug gadget cannot bind"
+      fi
       tries=0
       while [ -z "$udc_name" ] && [ "$tries" -lt 10 ]; do
         for udc_path in /sys/class/udc/*; do

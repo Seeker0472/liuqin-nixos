@@ -39,6 +39,9 @@ _final: _prev:
 {
   inherit (pkgsArm)
     liuqinKernel
+    # The installed system's kernel comes from hardware.liuqin.package ->
+    # liuqinKernel; without this entry it would silently resolve to the native
+    # package set while liuqinKernel stays cross-built.
     liuqinInstallerKernel
     liuqinKernelDtb
     liuqinInstallerKernelDtb
@@ -46,6 +49,7 @@ _final: _prev:
     liuqinBootimg
     liuqinUboot
     liuqinHexagonrpc
+    liuqinMippsd
     liuqinSensorsConfig
     liuqinLibssc
     liuqinIioSensorProxy

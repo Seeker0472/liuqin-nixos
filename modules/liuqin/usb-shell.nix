@@ -28,7 +28,19 @@ let
   gadget = pkgs.mkLiuqinUsbGadget {
     product = "liuqin NixOS debug shell";
     configuration = "USB debug network";
+    # UCSI owns the Type-C role in this build (connector@0 with the role
+    # switch), so the debug gadget must never ask for device itself: it binds
+    # only when UCSI has already selected device mode, and steps aside for an
+    # active host/DP role.  SuperSpeed descriptors are always enabled, with
+    # the USB2 NCM/ECM functions kept as the fallback.
+    requestDeviceRole = false;
+    superSpeed = true;
   };
+  unbindGadget = pkgs.writeShellScript "liuqin-usb-gadget-unbind" ''
+    if [ -w /sys/kernel/config/usb_gadget/liuqin/UDC ]; then
+      echo "" > /sys/kernel/config/usb_gadget/liuqin/UDC
+    fi
+  '';
 in
 {
   options.hardware.liuqin.usbShell.enable = lib.mkEnableOption ''
@@ -51,6 +63,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        ExecStop = unbindGadget;
       };
       script = "${gadget}/bin/liuqin-usb-gadget";
     };

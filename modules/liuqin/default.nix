@@ -15,6 +15,7 @@ in
     ./gnome.nix
     ./initrd-guard.nix
     ./usb-shell.nix
+    ./usb.nix
     ./camera.nix
   ];
 
@@ -24,7 +25,11 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.liuqinKernel;
-      description = "Kernel package (linuxManualConfig with liuqin patches).";
+      description = ''
+        The liuqin kernel: one build carrying every board feature (USB3
+        peripheral, Type-C host/OTG, DP Alt Mode, MiPPS). Override this only
+        when testing a custom kernel.
+      '';
     };
 
     boot.loader = lib.mkOption {

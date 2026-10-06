@@ -175,6 +175,7 @@
             gawk = pkgsHost.gawk;
           };
           power-keyd = pkgsArm.liuqinPowerKeyd;
+          mippsd = pkgsArm.liuqinMippsd;
           # Boot image for the EXAMPLE configuration (config/example.nix).
           # Your own configuration: use lib.mkLiuqinBootImages instead.
           bootimg-nixos = exampleImages.bootimg;
