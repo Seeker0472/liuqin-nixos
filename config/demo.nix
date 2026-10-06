@@ -19,4 +19,9 @@
   # exposing the NCM/ECM gadget for the USB deploy/test link.
   hardware.liuqin.mipps.enable = true;
   hardware.liuqin.debugTransport = lib.mkForce "both";
+
+  # Audio tools on the device: alsaucm/arecord/amixer/aplay.  The system
+  # already carries alsa-lib and the liuqin UCM2 tree; see PORTING-NOTES.md
+  # (Audio) for the verified state and the remaining limits.
+  environment.systemPackages = [ pkgs.alsa-utils ];
 }
