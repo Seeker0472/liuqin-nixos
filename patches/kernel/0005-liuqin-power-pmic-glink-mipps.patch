@@ -2,6 +2,11 @@ Power: Qualcomm PON/reset and pmic-glink plumbing, plus the qcom_battmgr
 MiPPS ABI - the sysfs contract (verify_digest, request_vdm_cmd, ...), the VDM
 payload byte order and the CC-orientation reporting.
 
+The PD-mapper machine table needs this board's own compatible: the liuqin DTB
+identifies as "qcom,sm8475", and without a table entry qcom_pd_mapper stops
+with -ENODEV, so the ADSP's avs/audio (msm/adsp/audio_pd) protection domain is
+never resolved and the q6apm/q6prm GPR services never register.
+
 Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-fixes, 0027
 
 --- a/drivers/power/reset/msm-poweroff.c
@@ -1376,12 +1381,13 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  		if (pg->pdr_state == SERVREG_SERVICE_STATE_DOWN || !pg->ept)
 --- a/drivers/soc/qcom/qcom_pd_mapper.c
 +++ b/drivers/soc/qcom/qcom_pd_mapper.c
-@@ -621,6 +621,7 @@ static const struct of_device_id qcom_pdm_domains[] __maybe_unused = {
+@@ -621,6 +621,8 @@ static const struct of_device_id qcom_pdm_domains[] __maybe_unused = {
  	{ .compatible = "qcom,sm8150", .data = sm8150_domains, },
  	{ .compatible = "qcom,sm8250", .data = sm8250_domains, },
  	{ .compatible = "qcom,sm8350", .data = sm8350_domains, },
 +	{ .compatible = "qcom,cape", .data = sm8350_domains, },
  	{ .compatible = "qcom,sm8450", .data = sm8350_domains, },
++	{ .compatible = "qcom,sm8475", .data = sm8350_domains, },
  	{ .compatible = "qcom,sm8550", .data = sm8550_domains, },
  	{ .compatible = "qcom,sm8650", .data = sm8550_domains, },
 @@ -665,7 +666,7 @@ static struct qcom_pdm_data *qcom_pdm_start(void)
