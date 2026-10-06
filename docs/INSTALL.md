@@ -38,7 +38,8 @@ work item in `PORTING-NOTES.md` (Display).
   with `mkDefault`, so an explicit `services.openssh.enable` or
   `hardware.liuqin.usbShell.enable` can still override it.  SSH defaults
   `PasswordAuthentication` off, so enroll an authorized key before relying
-  on it.
+  on it.  This workspace's demo target forces `"both"` (`config/demo.nix`),
+  keeping Wi-Fi SSH while exposing the USB deploy link.
 - **Binary cache for pushes.**  A plain `python3 -m http.server 8137 --bind
   192.168.7.12` serving `/var/tmp/liuqin-cache` (reference host process name
   `liuqincache`).  Fill it on the host with `nix copy --to
@@ -62,11 +63,15 @@ work item in `PORTING-NOTES.md` (Display).
 
 ### Installed-system SSH and logs
 
-The installed example configuration uses `hardware.liuqin.debugTransport =
-"ssh"`.  The deployment key is `~/.ssh/id_liuqin`; the matching public key is
-declared in the example configuration.  The tablet's WLAN address comes from
-DHCP, so discover it from the router or the host's neighbor table rather than
-assuming the address used during bring-up.
+The example configuration uses `hardware.liuqin.debugTransport = "ssh"`; the
+demo target forces `"both"`.  The deployment key is `~/.ssh/id_liuqin`; its
+public half is embedded in the `openssh.authorizedKeys.keys` lists of
+`config/example.nix` and `examples/demo/configuration.nix`.  To use your own
+key, generate one (`ssh-keygen -t ed25519 -f ~/.ssh/id_liuqin`) or extract
+the public half of an existing private key (`ssh-keygen -y -f
+~/.ssh/id_liuqin`) and replace that string.  The tablet's WLAN address comes
+from DHCP, so discover it from the router or the host's neighbor table rather
+than assuming the address used during bring-up.
 
 ```sh
 ssh -o IdentitiesOnly=yes -i ~/.ssh/id_liuqin demo@<tablet-ip>
@@ -85,10 +90,14 @@ journalctl -f
 The installed system keeps a persistent journal in `/var/log/journal`, so
 `journalctl --list-boots` and `journalctl -b -1` can inspect earlier boots.
 `systemctl status sshd` and `systemctl status liuqin-usb-gadget` show which
-debug transport is active.  The intended installed state is `sshd=active`
-and `liuqin-usb-gadget=inactive`; the RAM installer still enables its
-temporary USB root shell independently.  (This path was verified on the
-tablet on 2026-09-29.)
+debug transport is active: `"ssh"` runs `sshd` with the gadget off, `"both"`
+(the demo target) runs both; the RAM installer enables its own temporary USB
+root shell independently.  (The SSH path was verified on the tablet on
+2026-09-29; the USB link is what the 2026-10-06 audio deploys used.)
+
+Other operator-supplied keys: the MiPPS HMAC keys are extracted offline from
+the stock `batterysecret` binary and installed root-only on the tablet —
+`PORTING-NOTES.md` §2.1 (extraction) and §2.2 (installation).
 
 When the display never comes up, work from the U-Boot/fastboot and pstore
 channels instead — `PORTING-NOTES.md` §3.1 is the list.
@@ -171,21 +180,60 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
 ## 4. Updating an installed system (no installer, no nixos-rebuild)
 
 `nixos-rebuild` does not exist on the device (`config/installer.nix` disables
-it, and the installed system has no channel); the update is three commands
-plus a reboot.
+it, and the installed system has no channel); an update is: get the closure
+onto the device, set the profile, run the loader, reboot.  Every step works
+over the USB gadget link (`192.168.7.2`, `debugTransport = "usb"`/`"both"`)
+or over Wi-Fi (the tablet's DHCP address).
 
 ```sh
-# host
+# host: build the system and the loader script once
 nix build .#nixosConfigurations.demo.config.system.build.toplevel
 LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
-nix copy --to file:///var/tmp/liuqin-cache "$(readlink -f result)" "$LOADER"
+```
 
-# device (telnet 2323 or SSH)
+### a. Binary cache (small HTTP server)
+
+```sh
+# host: fill the cache and serve it on an address the tablet can reach
+# (192.168.7.12 is the USB link; use the LAN address for Wi-Fi)
+nix copy --to file:///var/tmp/liuqin-cache "$(readlink -f result)" "$LOADER"
+(cd /var/tmp/liuqin-cache && python3 -m http.server 8137 --bind 192.168.7.12)
+```
+
+```sh
+# device (telnet 2323 or SSH): fetch from the cache
 N=/run/current-system/sw/bin
 export NIX_CONFIG='experimental-features = nix-command flakes
 substituters = http://192.168.7.12:8137 https://cache.nixos.org/
 require-sigs = false'
 $N/nix copy --from http://192.168.7.12:8137 --no-check-sigs <toplevel> <loader>
+```
+
+### b. Delta import over SSH (no cache server)
+
+Only the paths the device is missing are exported on the host and imported as
+root on the device.  Measured 2026-10-06: 360 MB in ~10 s over the USB link.
+
+```sh
+# host
+comm -13 \
+  <(ssh demo@192.168.7.2 'nix-store -qR /run/current-system' | sort -u) \
+  <(nix-store -qR "$(readlink -f result)" "$LOADER" | sort -u) \
+  > /var/tmp/liuqin-delta.txt
+nix-store --export $(cat /var/tmp/liuqin-delta.txt) > /var/tmp/liuqin-delta.nar
+scp /var/tmp/liuqin-delta.nar demo@192.168.7.2:/var/tmp/
+```
+
+```sh
+# device, as root (the USB telnet shell, or `sudo sh -c`)
+nix-store --import < /var/tmp/liuqin-delta.nar
+```
+
+### c. Activate (either transport)
+
+```sh
+# device (telnet 2323 or SSH)
+N=/run/current-system/sw/bin
 $N/nix-env --profile /nix/var/nix/profiles/system --set <toplevel>
 <loader> <toplevel>          # copy kernel/initrd/dtb into /boot, rewrite extlinux.conf
 <toplevel>/bin/switch-to-configuration boot
@@ -221,13 +269,16 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   (`Device Error`) while `fastboot flash` still works — use the cold start
   for RAM boots.
 - **Reboot** from a running system: `systemctl reboot`.
-- Coming back from Android: `adb reboot bootloader` → ABL's fastboot
-  (`set_active b`) → `fastboot reboot`; U-Boot's own fastboot (menu's
-  `Enable Fastboot Mode`) accepts `set_active b` too.  Either way ABL clears
-  the target's *successful* flag and refills its seven retries; U-Boot
-  re-claims the slot it was handed on every boot (`liuqin_slot_autoclaim`,
-  `liuqin_ab_mark=0` disables it), so the retry budget no longer drains
-  across reboots.
+- Coming back from Android: `adb reboot bootloader` → ABL's fastboot →
+  `fastboot reboot`.  The stock fastboot client refuses `set_active` there
+  (`Device does not support slots`: its `has-slot` probe fails against this
+  ABL's narrow getvar surface), so send the raw command — the dualboot
+  repo's `liuqin-stock-dump/tools/fb_raw.py raw "set_active:b"` — or do it
+  from U-Boot's own fastboot (menu's `Enable Fastboot Mode`), where
+  `fastboot set_active b` works.  Either way ABL clears the target's
+  *successful* flag and refills its seven retries; U-Boot re-claims the slot
+  it was handed on every boot (`liuqin_slot_autoclaim`, `liuqin_ab_mark=0`
+  disables it), so the retry budget no longer drains across reboots.
 - If the installed system cannot bring up Wi-Fi and the USB gadget does not
   re-bind after a role change, restart it from a local console or SSH
   (`systemctl restart liuqin-usb-gadget liuqin-usb-shell`), or fall back to

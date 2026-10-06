@@ -2,12 +2,16 @@
 
 `kernel/default.nix` applies every `*.patch` in this directory to a pristine
 7.2.5 tree in **byte-sorted filename order**, except the patches listed in its
-`dtPatchNames` (currently only `0014-…`), which are applied last.  Each patch
-carries a prose header above its diff; keep that header when editing one.
+`dtPatchNames` (`0014-…`, `0015-…` and `0016-…` today), which are applied
+last.  Each patch carries a prose header above its diff; keep that header
+when editing one.
 
-The 14 patches are grouped by subsystem.  They were merged down from a
-33-patch bring-up series (the merge provenance is in each patch header); the
-merged set produces a byte-identical tree, so this is a pure re-grouping.
+The 16 patches are grouped by subsystem.  The first 14 were merged down from
+a 33-patch bring-up series (the merge provenance is in each patch header);
+the merged set produces a byte-identical tree, so that part is a pure
+re-grouping.  0015 adds the WCD9385 SoundWire capture graph on top of the
+board DTS the other patches build, and 0016 names the four CS35L41
+amplifiers so the driver selects this board's firmware.
 
 ## The series
 
@@ -26,13 +30,17 @@ merged set produces a byte-identical tree, so this is a pure re-grouping.
 | 0011 | cpu-topology-thermal | board CPU capacity/energy model + sm8450 thermal cooling maps |
 | 0012 | camera-core | CAMSS sm8475, sensor drivers, board camera DTS |
 | 0013 | camera-tuning | s5kjn1 vendor modes/vflip, gt9764 autofocus, camcc/gcc GDSC always-on |
-| 0014 | board-usb-typec-dp-dt | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode (applied last) |
+| 0014 | board-usb-typec-dp-dt | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode |
+| 0015 | audio-wcd-capture | WCD9385 RX/TX SoundWire capture graph, guarded UCM `Mic`, 2.75 V micbias (applied after 0014) |
+| 0016 | cs35l41-subsystem-id | name the four CS35L41 amplifiers so the driver picks linux-firmware's Halo build keyed by 10251826 (applied after 0015) |
 
-## Why 0014 is applied last
+## Why 0014, 0015 and 0016 are applied last
 
-The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend it,
-and 0014 adds the USB/Type-C/DP nodes on top.  `kernel/default.nix` keeps that
-patch in `dtPatchNames` so it is applied after the sorted series.
+The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
+it, and 0014 adds the USB/Type-C/DP nodes on top.  0015 extends the same file
+with the WCD9385 capture graph, and 0016 appends the amplifier
+`cirrus,subsystem-id` overrides.  `kernel/default.nix` keeps all three in
+`dtPatchNames` so they are applied after the sorted series, in that order.
 
 ## Adding or regenerating a patch
 

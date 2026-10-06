@@ -27,7 +27,7 @@ Companion documents: `README.md` (build outputs and configuration model),
 | DSI display / DRM / backlight | verified | one fixed 120 Hz mode; U-Boot boots need the first-modeset cycle workaround |
 | Touch, pen, keyboard folio, touchpad, keys | verified | touch drifts when an external DP monitor is bound (Mutter heuristic); touch resume retries firmware |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
-| Audio | **not working** (patch present) | no ALSA card registers; LPASS/WCD probe deferred |
+| Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
 | USB3 device (peripheral) | verified | 10-hotplug stability record still open |
 | Type-C host + OTG power | verified | 10-hotplug record and automatic gadget re-bind still open |
 | DP Alt Mode | verified | single-link-rate tables (HBR2 capture); 2-lane DT only; repeated hotplug unverified |
@@ -39,7 +39,7 @@ Companion documents: `README.md` (build outputs and configuration model),
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones vs 81 on Android; no IPA |
 | Fingerprint | not implemented | FPC1020-compatible power-button sensor |
-| Microphone capture | not implemented | WCD938x/SoundWire graph not enabled |
+| Microphone capture (WCD9385) | verified | AMIC1 -> ADC1 -> TX macro -> `TX_CODEC_DMA_TX_3`; the vendor has no AP-visible DMIC |
 | U-Boot SuperSpeed | not implemented | U-Boot is USB2 fastboot |
 
 ### Display
@@ -134,13 +134,38 @@ Operating facts (full detail in `docs/TODO/CAMERA-MAINLINE.md`):
 
 ### Audio
 
-Patch 0004 carries the AudioReach/sc8280xp path with CS35L41 amplifiers,
-`wm_adsp` and the q6apm LPASS DAIs, and the module installs UCM2 for the
-card.  **Not working** on this branch: `/proc/asound/cards` reports no
-soundcard, because the LPASS/WCD machine driver is deferred (RX/TX macro
-clocks and CPU DAI unresolved).  Microphone capture (WCD938x/SoundWire) is
-**not implemented**/not enabled.  The separate `audio/mainline` branch is not
-part of this tree.
+The card is `XiaomiPad6Pro` (`sm8450-sndcard`); the DSP topology exposes
+`MultiMedia1 Playback` (pcm 0) and `MultiMedia2 Capture` (pcm 1), and the
+DAI links below them are internal DPCM backends.  Patch 0004 carries the
+AudioReach/`sc8280xp` path with the CS35L41 amplifiers and `wm_adsp`; patch
+0015 adds the WCD9385 RX/TX SoundWire capture graph (2.75 V micbias, guarded
+UCM `Mic` device); patch 0016 names the four amplifiers so the driver selects
+this board's Halo payloads.
+
+- **Loudspeaker playback: verified** (2026-10-06).  `aplay -D plughw:0,0`
+  and `pw-play` both run to completion and the four speakers are audible.
+  The stall seen before was the tertiary-TDM backend graph never being
+  started: the ported `q6tdm_ops` DAI table had no `.trigger`, so
+  `GRAPH_START` was never sent for it and the DSP never consumed the write
+  endpoint (`pcm0p/sub0/status` stuck in SETUP).  Patch 0004 carries the fix.
+- **WCD9385 analog capture: verified** (2026-10-06).  `arecord -D hw:0,1`
+  records live signal on ch0; ch1 is silent by design (only DEC0/ADC1 is
+  routed).  Two channels, 48 kHz.
+- **Not implemented:** the USB-C/FSA4480 headset path (the WCD playback link
+  is wired but inert), the VA/digital microphones (the vendor DT disables
+  every `swr-dmic` slave and no DMIC pinctrl exists), WSA883x backends, and
+  the rest of the vendor PCM endpoints.
+- The amplifiers load the vendor's Halo payloads
+  (`cirrus/cs35l41-dsp1-spk-prot-10251826.*`, extracted from the stock vendor
+  partition and registered as a `requireFile` payload), and
+  `pkgs/firmware-path.nix` mounts an overlay of the vendor payloads, the
+  system firmware tree and the per-device calibration records under
+  `/var/lib/firmware` and points the loader at it - without the calibration
+  the CS35L41 protection gate stays closed.  The overlay reads its lower
+  layers once at mount, so `liuqin-firmware-path` is `PartOf=` the
+  provisioner and a `systemctl restart liuqin-persist-provision` rebuilds
+  the union.  `POST_PMU: * Main AMP event failed: -13` can still print at
+  probe; playback is audible regardless.
 
 ### USB3 device (peripheral data path)
 
@@ -478,6 +503,13 @@ on the device set `NIX_CONFIG` with `require-sigs = false` and a
 the toplevel and loader script, set the system profile, run the loader
 script, and `switch-to-configuration boot`.
 
+The same update works over Wi-Fi: substitute the tablet's DHCP address for
+192.168.7.2, and either serve the binary cache on an address the tablet can
+reach or use the delta transfer (`nix-store --export`/`--import`, measured
+2026-10-06: 360 MB in ~10 s over the USB link) instead; `docs/INSTALL.md` §4
+lays both out.  `config/demo.nix` marks the demo user a trusted user, which
+is what direct `nix copy --to ssh-ng://demo@<tablet-ip>` deployments rely on.
+
 ### 3.3 Kernel module probe method (dp-dump)
 
 The DP Alt Mode bring-up used a purpose-built **read-only probe module**
@@ -516,12 +548,13 @@ both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
 
 `kernel/default.nix` applies every `patches/kernel/*.patch` to a pristine
 7.2.5 tree in **byte-sorted filename order**, except the patches listed in
-its `dtPatchNames` (`0014-…` today), which are applied last.  The 14 patches
-are grouped by subsystem; they were merged down from a 33-patch bring-up
-series (the provenance is in each patch header), producing a byte-identical
-tree.
+its `dtPatchNames` (`0014-…`/`0015-…`/`0016-…` today), which are applied
+last.  The 16 patches are grouped by subsystem; the first 14 were merged down
+from a 33-patch bring-up series (the provenance is in each patch header),
+producing a byte-identical tree, and 0015/0016 add the WCD9385 capture graph
+and the CS35L41 amplifier naming.
 
-### The 14 patches
+### The 16 patches
 
 | # | patch | what |
 | --- | --- | --- |
@@ -538,9 +571,11 @@ tree.
 | 0011 | `cpu-topology-thermal` | board CPU capacity/energy model + sm8450 thermal cooling maps |
 | 0012 | `camera-core` | CAMSS sm8475, sensor drivers, board camera DTS |
 | 0013 | `camera-tuning` | s5kjn1 vendor modes/vflip, gt9764 autofocus, camcc/gcc GDSC always-on |
-| 0014 | `board-usb-typec-dp-dt` | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode — **applied last** |
+| 0014 | `board-usb-typec-dp-dt` | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode |
+| 0015 | `audio-wcd-capture` | WCD9385 RX/TX SoundWire capture graph, guarded UCM `Mic`, 2.75 V micbias — **applied after 0014** |
+| 0016 | `cs35l41-subsystem-id` | name the four CS35L41 amplifiers so the driver picks linux-firmware's Halo build keyed by 10251826 — **applied after 0015** |
 
-### Why 0014 is applied last
+### Why 0014, 0015 and 0016 are applied last
 
 The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
 it, and 0014 adds the USB/Type-C/DP nodes (connector, FSA4480 SBU mux,
@@ -549,7 +584,10 @@ so it is applied after the sorted series; the earlier USB3/Type-C/DP DT
 patches could not coexist as separate patches because they add the same
 `pm8350_l1` regulator and `&usb_1_qmpphy` node and the Type-C `&usb_1` hunk
 rewrites the node USB3 had changed, so they were merged into this one patch
-generated against the post-common tree (zero fuzz).
+generated against the post-common tree (zero fuzz).  0015 and 0016 are in
+the same list because they extend the same board DTS (the WCD9385 codec with
+its capture links and audio routing, and the amplifier `cirrus,subsystem-id`
+overrides), so they are applied after 0014 as well.
 
 ### One file is replaced, not patched
 
