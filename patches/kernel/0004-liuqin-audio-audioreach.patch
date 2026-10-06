@@ -1120,15 +1120,15 @@ Merged from: bring-up patches 0005
  static const struct snd_soc_dai_ops q6dma_ops = {
  	.prepare	= q6apm_lpass_dai_prepare,
  	.startup	= q6apm_lpass_dai_startup,
-@@ -289,6 +337,21 @@ static const struct snd_soc_dai_ops q6hdmi_ops = {
+@@ -289,6 +337,22 @@ static const struct snd_soc_dai_ops q6hdmi_ops = {
  	.trigger	= q6apm_lpass_dai_trigger,
  };
  
 +/*
-+ * product/6.17-liuqin predates the upstream trigger/child-clock lifecycle.
-+ * Preserve its prepare-start/shutdown-stop graph ownership while adding the
-+ * new TDM configuration callbacks; importing half of the newer lifecycle
-+ * would double-start or leak an AudioReach graph.
++ * The TDM dais need the same graph lifecycle as the other BE classes here:
++ * .trigger starts the AudioReach graph. Without it the TDM graph stays
++ * prepared-but-never-started, so the DSP never consumes the front-end
++ * buffer and playback blocks in ppoll() forever.
 + */
 +static const struct snd_soc_dai_ops q6tdm_ops = {
 +	.prepare	= q6apm_lpass_dai_prepare,
@@ -1137,12 +1137,13 @@ Merged from: bring-up patches 0005
 +	.set_tdm_slot	= q6tdm_set_tdm_slot,
 +	.hw_params	= q6dma_hw_params,
 +	.set_fmt	= q6i2s_set_fmt,
++	.trigger	= q6apm_lpass_dai_trigger,
 +};
 +
  static const struct snd_soc_component_driver q6apm_lpass_dai_component = {
  	.name = "q6apm-be-dai-component",
  	.of_xlate_dai_name = q6dsp_audio_ports_of_xlate_dai_name,
-@@ -315,6 +378,7 @@ static int q6apm_lpass_dai_dev_probe(struct platform_device *pdev)
+@@ -315,6 +379,7 @@ static int q6apm_lpass_dai_dev_probe(struct platform_device *pdev)
  	cfg.q6i2s_ops = &q6i2s_ops;
  	cfg.q6dma_ops = &q6dma_ops;
  	cfg.q6hdmi_ops = &q6hdmi_ops;
