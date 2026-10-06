@@ -285,7 +285,112 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   the RAM installer.  There is no verified automatic role manager yet
   (`PORTING-NOTES.md` §1, Type-C host and OTG).
 
-## 7. Traps (all measured)
+## 7. Fingerprint (FPC1264)
+
+The sensor sits in the power button and the vendor trustlet does the matching;
+Linux only drives power/reset/IRQ and the QSEECOM TEE transport, and fprintd
+talks to a libfprint TOD driver that keeps one template per account.  The
+whole software stack is in this tree; the firmware images and the per-device
+Gatekeeper/RPMB state are operator-supplied data.
+
+### What is verified, what is not
+
+- Verified (2026-10-06): enrolment from Settings, lock-screen unlock through
+  `gdm-fingerprint`, and the adaptive template update.  Details and the limits
+  are in `docs/PORTING-NOTES.md` ("Fingerprint (FPC1264)").
+- Not implemented: more than one finger per account, credential sync after a
+  password change from the desktop (the CLI entry below exists), the OEM
+  acceptance-record flow, and fingerprint authentication for `su`/SSH.
+
+### Operator material
+
+The only binary you have to extract is the OEM firmware; everything else is
+built from this tree and from the pinned public revisions in
+`pkgs/fingerprint/` (the OEM component's own sources, QCBOR and
+qsee-supplicant; no key has to be extracted - the per-account credential is
+created on the device).
+
+- **OEM firmware.**  `fpcliu.mdt` plus its `b00`-`b08` segments come from the
+  stock ROM (the MIUI V14 extraction in
+  `liuqin-mainline-blobs/extracted/NON-HLOS/image/` is the copy used here).
+  Install it where the runtime points the kernel's firmware loader:
+
+  ```sh
+  # device, as root
+  install -d -m 0700 /var/lib/liuqin-fpc-oem/firmware
+  install -m 0600 fpcliu.mdt fpcliu.b0* /var/lib/liuqin-fpc-oem/firmware/
+  # the runtime verifies every file against this manifest (name -> sha256)
+  cd /var/lib/liuqin-fpc-oem/firmware
+  { printf '{'; sep=''; for f in fpcliu.*; do
+      printf '%s"%s": "%s"' "$sep" "$f" "$(sha256sum "$f" | cut -d' ' -f1)"; sep=', '
+    done; printf '}\n'; } > SHA256.json
+  ```
+
+- **Account credential (once per account).**  `sudo liuqin-fpc-credential
+  --create <user>`: root, a local terminal (not SSH), and it authenticates the
+  account password through its own PAM service.  It creates the Gatekeeper
+  credential and the authenticated RPMB state under
+  `/var/lib/liuqin-fingerprint/native/`.  Run it once and never repeat it (the
+  tool refuses to re-create an existing identity).
+
+### Enrol and use
+
+1. Settings -> System -> Users -> pick the account -> **Fingerprint Login** ->
+   **Add**.  A polkit prompt asks for the password - that prompt is also what
+   authorises the trustlet, so use the account password.  Then press the sensor
+   firmly about 20 times, lifting between presses; the dialog shows progress and
+   "lift and reposition" hints.
+2. The row then reads Enabled, and the template lives in fprintd's store under
+   `/var/lib/fprint/<user>/fpc1264_oem/liuqin-fpc1264-oem/<finger>`.
+3. Lock the screen and unlock with the same finger (press ~1 s).  A tap is
+   rejected and retried automatically; a different finger reports a real
+   mismatch.  One finger per account: delete the existing finger in Settings
+   before enrolling another.
+
+Command-line equivalents (the operator acceptance path used during the port):
+
+```sh
+sudo liuqin-fpc-enrol --enrol <user> <finger>       # or --enrol-prepared
+fprintd-verify <user>                               # in a session terminal
+sudo liuqin-fpc-credential --sync-password <user>   # after a password change
+```
+
+### Testing the kernel side without the daemon
+
+The first check after a kernel change; it exercises the modules, the device
+nodes and the trustlet on their own:
+
+```sh
+modprobe qseecomtee fpc1020
+ls -l /dev/fpc1020 /dev/tee0 /dev/teepriv0 /dev/bsg/0:0:0:49476
+liuqin-fpc-oem-runtime --ufs-rpmb-read-only --hw-auth-probe
+```
+
+(The last one needs the firmware from above; it loads `fpcliu` into the TEE and
+reports the RPMB metadata.)
+
+### Deploying an update
+
+A fingerprint change is an ordinary system-closure update: build on the host and
+copy the closure over (section 4 - the HTTP cache or the SSH delta import, over
+USB at 192.168.7.2 or the tablet's Wi-Fi address).  `/var/lib/liuqin-fingerprint`
+(the credential) and `/var/lib/fprint` (the templates) live in `/var` and
+survive updates and reboots; a reinstall that keeps the `linux` partition keeps
+them too.
+
+### Debugging
+
+- `journalctl -b | grep -E 'OEM (verify|enrolment)|liuqin-fpc'` shows what the
+  TOD driver and the PAM module did, including the trustlet's per-sample
+  progress (`remaining=`) and its rejection reasons.
+- `busctl monitor --system --augment-creds=yes net.reactivated.Fprint` shows
+  who talks to fprintd and which `VerifyStatus` comes back: the fastest way to
+  tell a sensor problem (no match) from a session problem (no client).
+- fprintd reports a stored template it cannot rewrite as `verify-unknown-error`
+  without a journal line of its own; that is the 0600 constraint described in
+  `docs/PORTING-NOTES.md`, not a sensor fault.
+
+## 8. Traps (all measured)
 
 - The telnet shell is busybox.  On images before the `pkgs/usb-login.nix`
   PATH fix, `reboot` selects the busybox applet (no-op, exit 0), while

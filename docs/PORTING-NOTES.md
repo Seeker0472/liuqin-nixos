@@ -38,7 +38,7 @@ Companion documents: `README.md` (build outputs and configuration model),
 | Storage (UFS, root guard) | verified | — |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones vs 81 on Android; no IPA |
-| Fingerprint | not implemented | FPC1020-compatible power-button sensor |
+| Fingerprint (FPC1264) | verified | one finger per account; enrolment needs a password login (or the polkit prompt) to authorise it; press firmly |
 | Microphone capture (WCD9385) | verified | AMIC1 -> ADC1 -> TX macro -> `TX_CODEC_DMA_TX_3`; the vendor has no AP-visible DMIC |
 | U-Boot SuperSpeed | not implemented | U-Boot is USB2 fastboot |
 
@@ -166,6 +166,54 @@ this board's Halo payloads.
   provisioner and a `systemctl restart liuqin-persist-provision` rebuilds
   the union.  `POST_PMU: * Main AMP event failed: -13` can still print at
   probe; playback is audible regardless.
+
+### Fingerprint (FPC1264)
+
+The sensor sits in the power button and the vendor's secure-world application
+(the `fpcliu` trustlet) owns it: the kernel side is only a power/reset/IRQ
+control interface (`fpc1020`, patch 0018) plus the QSEECOM TEE transport that
+lets the runtime talk to the trustlet (patch 0017).  Matching happens inside the
+trustlet, never in Linux.
+
+- **Enrolment and unlock: verified** (2026-10-06).  Settings -> System -> Users
+  -> Fingerprint Login -> Add walks the trustlet through 20 accepted samples
+  (the dialog shows progress plus "lift and reposition" hints), fprintd stores
+  the template in its file store, and the Users row reads Enabled afterwards.
+  The lock screen verifies through `gdm-fingerprint` (nixpkgs' stock
+  `pam_fprintd`) and unlocks on a match; the same run committed an adaptive
+  template update, which is how the matcher improves with use.
+- The trustlet authorises a template with the account credential input
+  (PBKDF2-HMAC-SHA256 over the Linux password, 32 bytes, schema 1).  fprintd's
+  Enroll API cannot carry a secret, so `pam_liuqin_fpc` derives it while the
+  account password is being authenticated (login/`gdm-password`, `sudo`,
+  `polkit-1`) and caches it exactly like the OEM bundle's `acceptance_input`:
+  root UID keyring, 18 h, one use, boot-local, nothing on disk.  The very first
+  enrolment additionally needs the one-time Gatekeeper credential
+  (`liuqin-fpc-credential --create <user>`, root plus a local terminal).
+- **One finger per account.** The TOD driver refuses a second print because
+  fprintd selects a single print for a device without 1:N identification;
+  delete the existing finger in Settings before enrolling another.
+- The TOD driver implements verify and enroll but no identification: a rejected
+  capture (a tap instead of a firm press) becomes a retry, and a
+  `match_result=not_matched` is a real mismatch - use the enrolled finger.
+- Two constraints that later bumps must keep: the adaptive-template commit
+  (`oem-update.inc`) only accepts a stored template that is 0600, so the daemon
+  runs with `UMask=0077`; and the driver's `nr_enroll_stages` must match the
+  trustlet's sample count (20), because fprintd stops forwarding progress and
+  retry hints once completed_stages reaches it.
+- Not implemented: more than one finger per account (above), syncing the
+  credential after a password change from the desktop (the CLI entry
+  `liuqin-fpc-credential --sync-password <user>` exists for it), the OEM
+  acceptance/acceptance-record flow, and fingerprint authentication for the
+  `su`/SSH PAM stacks.
+- The OEM userspace (the component's own sources: the static QSEE clients, the
+  python entry points and the TOD driver) comes from the single revision pinned
+  in `pkgs/fingerprint/liuqin-fpc-oem-src.nix`; QCBOR and qsee-supplicant are
+  pinned from their own upstream tags, and the port's adaptations are the patch
+  files next to them.
+- The firmware images (`fpcliu.mdt` plus its segments) and the Gatekeeper/RPMB
+  state are per-device data and are not in this tree; "Fingerprint" in
+  `docs/INSTALL.md` documents the extraction, placement and operator steps.
 
 ### USB3 device (peripheral data path)
 
@@ -313,8 +361,10 @@ synthesized when absent) or the build fails.
 - Thermal is partial: 38 zones (battery, TSENS CPU/GPU, video, memory,
   camera, CDSP, PMIC); Android had 81 including vendor charger/wifi/xo/ddr/
   flash/connector zones that do not exist under those names here.
-- Fingerprint: **not implemented** (Android has an FPC1020-compatible
-  power-button sensor and `fpc1552.ko`).
+- Fingerprint: **verified** (2026-10-06) for the desktop flow - enrolment from
+  Settings and lock-screen unlock, with one finger per account.  Operation is in
+  `docs/INSTALL.md` (Fingerprint) and the limits are in "Fingerprint (FPC1264)"
+  above.
 
 ### Kernel command line and config inputs
 
