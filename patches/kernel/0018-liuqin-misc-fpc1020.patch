@@ -1,0 +1,473 @@
+misc: FPC1264 power/reset/IRQ control (secure-world SPI)
+
+The sensor's SPI bus belongs to the secure world.  The OEM fpcliu trusted
+application drives it over QSEE's SPI service: the trustlet image contains
+qsee_spi_open/full_duplex/write and fpc_pal_spi_* (strings in
+fpcliu.mdt/b* from the stock firmware), the vendor Android DT keeps
+spi@a88000 disabled, and the stock fpc1552.ko contains no SPI code at all
+-- it only powers the sensor, pulses reset and reports the finger IRQ,
+with a comment that the TEE side must soft-reset the sensor because the AP
+cannot control chip select.
+
+Do the same here: a platform driver on /dev/fpc1020 that powers the
+sensor (PM8350C LDO9, 100 mA), reproduces the vendor reset pulse
+(release, 100 us, assert, 5 ms, release, 5 ms), reports the GPIO40 rising
+edge through poll() and enables the interrupt as a wakeup source.  It
+performs no SPI transfers and does not touch the QUP serial engine, so the
+normal world cannot race the trustlet's SPI master.
+
+This replaces the earlier port of the community SPI-passthrough driver
+(their own userspace never used its SPI path -- it only opens /dev/fpc1020
+to power the sensor and polls for the interrupt -- while enabling spi10
+contended with the secure world for QUP1 SE3, the mechanism behind the
+"GENI/pinctrl corruption" that community bring-up left unexplained).
+
+Provenance: electrical sequence and pinctrl configuration reproduced from
+the stock 5.10 tree (drivers/input/fingerprint/fpc_ta/fpc1020_tee.c) and
+the vendor runtime DT (fingerprint_fpc node).
+
+The driver also exposes a read-only power_state attribute (the community
+driver had one on its SPI device); the OEM runtime verifies the sensor
+powered down after an operation through it.
+
+--- /dev/null
++++ b/Documentation/devicetree/bindings/input/fpc,fpc1020.yaml
+@@ -0,0 +1,56 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++__omp_magic("YAML", "1.2")
++---
++$id: http://devicetree.org/schemas/input/fpc,fpc1020.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: FPC1020-compatible fingerprint sensor control interface
++
++maintainers:
++  - liuqin mainline port <noreply@localhost>
++
++description:
++  Power, reset and interrupt control for an FPC1020-compatible fingerprint
++  sensor.  On the Xiaomi Pad 6 Pro the sensor's SPI bus belongs to the secure
++  world (the OEM trusted application drives it over QSEE's SPI service), so
++  the normal world only controls the supply, the reset line and the finger
++  interrupt; the Linux driver performs no SPI transfers.
++
++properties:
++  compatible:
++    const: fpc,fpc1020
++
++  interrupts:
++    maxItems: 1
++
++  reset-gpios:
++    maxItems: 1
++    description: Active-low sensor reset line.
++
++  fp_vdd_vreg-supply:
++    description: Sensor supply (PM8350C LDO9 on the Xiaomi Pad 6 Pro).
++
++  pinctrl-0: true
++  pinctrl-names: true
++
++required:
++  - compatible
++  - interrupts
++  - reset-gpios
++  - fp_vdd_vreg-supply
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/gpio/gpio.h>
++    #include <dt-bindings/interrupt-controller/irq.h>
++
++    fingerprint {
++        compatible = "fpc,fpc1020";
++        interrupt-parent = <&tlmm>;
++        interrupts = <40 IRQ_TYPE_EDGE_RISING>;
++        reset-gpios = <&tlmm 41 GPIO_ACTIVE_LOW>;
++        fp_vdd_vreg-supply = <&pm8350c_l9>;
++    };
++...
+--- a/Documentation/devicetree/bindings/vendor-prefixes.yaml
++++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+@@ -610,6 +610,9 @@ patternProperties:
+     description: Shanghai FourSemi Semiconductor Co.,Ltd.
+   "^foxlink,.*":
+     description: Foxlink Group
++  "^fpc,.*":
++    description: Fingerprint Cards AB
++
+   "^freebox,.*":
+     description: Freebox SAS
+   "^freecom,.*":
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -648,6 +648,17 @@ source "drivers/misc/cardreader/Kconfig"
+ source "drivers/misc/uacce/Kconfig"
+ source "drivers/misc/pvpanic/Kconfig"
+ source "drivers/misc/mchp_pci1xxxx/Kconfig"
++config SENSORS_FPC1020
++	tristate "Fingerprint Cards FPC1264 power/reset control"
++	depends on GPIOLIB
++	help
++	  Power, reset and interrupt control for the FPC1264 fingerprint
++	  sensor behind the power button on the Xiaomi Pad 6 Pro (liuqin).
++	  The sensor's SPI bus belongs to the secure world and is driven by
++	  the OEM trusted application over QSEE's SPI service; this driver
++	  deliberately performs no SPI transfers and only provides the
++	  /dev/fpc1020 power/interrupt interface the OEM userspace expects.
++
+ source "drivers/misc/keba/Kconfig"
+ source "drivers/misc/amd-sbi/Kconfig"
+ source "drivers/misc/rp1/Kconfig"
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -71,6 +71,7 @@ obj-$(CONFIG_MARVELL_CN10K_DPI)	+= mrvl_cn10k_dpi.o
+ lan966x-pci-objs		:= lan966x_pci.o
+ lan966x-pci-objs		+= lan966x_pci.dtbo.o
+ obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
++obj-$(CONFIG_SENSORS_FPC1020)	+= fpc1020.o
+ obj-y				+= keba/
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
+--- /dev/null
++++ b/drivers/misc/fpc1020.c
+@@ -0,0 +1,337 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * FPC1264 fingerprint sensor power/reset/IRQ control for the Xiaomi Pad 6
++ * Pro (liuqin).
++ *
++ * The sensor's SPI bus belongs to the secure world: the OEM fpcliu trusted
++ * application drives it over QSEE's SPI service (qsee_spi_*), and the stock
++ * kernel keeps spi@a88000 disabled for that reason.  The normal world only
++ * has to power the sensor, pulse its reset line and report the finger
++ * interrupt, which is what this driver does; it deliberately performs no
++ * SPI transfers.
++ *
++ * Userspace contract: /dev/fpc1020.  The first open powers the sensor, poll()
++ * reports the finger interrupt, the last close powers it down.  The
++ * electrical sequence (PM8350C LDO9 at 100 mA, GPIO41 reset pulse, GPIO40
++ * rising-edge interrupt) follows the vendor driver in the stock 5.10 tree,
++ * drivers/input/fingerprint/fpc_ta/fpc1020_tee.c.
++ */
++
++#include <linux/atomic.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/gpio/consumer.h>
++#include <linux/interrupt.h>
++#include <linux/ioctl.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm.h>
++#include <linux/pm_wakeup.h>
++#include <linux/poll.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++#include <linux/wait.h>
++
++#define FPC1020_NAME			"fpc1020"
++#define FPC1020_TTW_HOLD_MS		2000
++#define FPC1020_PWR_ON_SLEEP_US		1000
++
++#define FPC1020_IOC_MAGIC		'f'
++#define FPC1020_IOC_RESET		_IO(FPC1020_IOC_MAGIC, 1)
++
++struct fpc1020 {
++	struct device *dev;
++	struct miscdevice miscdev;
++	struct regulator *vreg;
++	struct gpio_desc *reset_gpio;
++	int irq;
++	struct mutex lock;		/* serialises power transitions and ioctls */
++	unsigned int users;
++	bool prepared;
++	atomic_t irq_count;		/* consumed by poll() */
++	wait_queue_head_t irq_wait;
++};
++
++static irqreturn_t fpc1020_irq_handler(int irq, void *data)
++{
++	struct fpc1020 *fpc = data;
++
++	atomic_inc(&fpc->irq_count);
++	wake_up_interruptible(&fpc->irq_wait);
++	pm_wakeup_event(fpc->dev, FPC1020_TTW_HOLD_MS);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * Vendor sequence (fpc1020_tee.c, hw_reset()): release, 100 us, assert,
++ * 5 ms, release, 5 ms.  The secure world performs the sensor's own soft
++ * reset afterwards, once it starts talking over SPI.
++ */
++static void fpc1020_reset_pulse(struct fpc1020 *fpc)
++{
++	gpiod_set_value_cansleep(fpc->reset_gpio, 0);
++	usleep_range(100, 200);
++	gpiod_set_value_cansleep(fpc->reset_gpio, 1);
++	usleep_range(5000, 5100);
++	gpiod_set_value_cansleep(fpc->reset_gpio, 0);
++	usleep_range(5000, 5100);
++}
++
++static int fpc1020_power_on(struct fpc1020 *fpc)
++{
++	int ret;
++
++	/* Hold the sensor in reset while its rail comes up. */
++	gpiod_set_value_cansleep(fpc->reset_gpio, 1);
++
++	ret = regulator_set_load(fpc->vreg, 100000);
++	if (ret)
++		dev_warn(fpc->dev, "regulator_set_load failed: %d\n", ret);
++
++	ret = regulator_enable(fpc->vreg);
++	if (ret) {
++		dev_err(fpc->dev, "could not enable fp_vdd_vreg: %d\n", ret);
++		return ret;
++	}
++
++	usleep_range(FPC1020_PWR_ON_SLEEP_US, FPC1020_PWR_ON_SLEEP_US + 900);
++	fpc1020_reset_pulse(fpc);
++
++	if (device_may_wakeup(fpc->dev))
++		enable_irq_wake(fpc->irq);
++	enable_irq(fpc->irq);
++	fpc->prepared = true;
++
++	return 0;
++}
++
++static void fpc1020_power_off(struct fpc1020 *fpc)
++{
++	if (!fpc->prepared)
++		return;
++
++	disable_irq(fpc->irq);
++	if (device_may_wakeup(fpc->dev))
++		disable_irq_wake(fpc->irq);
++
++	gpiod_set_value_cansleep(fpc->reset_gpio, 1);	/* hold in reset */
++	regulator_disable(fpc->vreg);
++	fpc->prepared = false;
++}
++
++static int fpc1020_open(struct inode *inode, struct file *file)
++{
++	struct fpc1020 *fpc = container_of(file->private_data, struct fpc1020,
++					   miscdev);
++	int ret = 0;
++
++	mutex_lock(&fpc->lock);
++	if (fpc->users++ == 0)
++		ret = fpc1020_power_on(fpc);
++	if (ret) {
++		fpc->users--;
++	} else {
++		atomic_set(&fpc->irq_count, 0);
++	}
++	mutex_unlock(&fpc->lock);
++
++	return ret;
++}
++
++static int fpc1020_release(struct inode *inode, struct file *file)
++{
++	struct fpc1020 *fpc = container_of(file->private_data, struct fpc1020,
++					   miscdev);
++
++	mutex_lock(&fpc->lock);
++	if (--fpc->users == 0)
++		fpc1020_power_off(fpc);
++	mutex_unlock(&fpc->lock);
++
++	return 0;
++}
++
++static __poll_t fpc1020_poll(struct file *file, poll_table *wait)
++{
++	struct fpc1020 *fpc = container_of(file->private_data, struct fpc1020,
++					   miscdev);
++
++	poll_wait(file, &fpc->irq_wait, wait);
++
++	if (!READ_ONCE(fpc->prepared))
++		return EPOLLERR;
++
++	if (atomic_xchg(&fpc->irq_count, 0))
++		return EPOLLIN | EPOLLRDNORM;
++
++	return 0;
++}
++
++static long fpc1020_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct fpc1020 *fpc = container_of(file->private_data, struct fpc1020,
++					   miscdev);
++	int ret = 0;
++
++	switch (cmd) {
++	case FPC1020_IOC_RESET:
++		mutex_lock(&fpc->lock);
++		if (fpc->prepared)
++			fpc1020_reset_pulse(fpc);
++		else
++			ret = -ENODEV;
++		mutex_unlock(&fpc->lock);
++		break;
++	default:
++		ret = -ENOTTY;
++	}
++
++	return ret;
++}
++
++static const struct file_operations fpc1020_fops = {
++	.owner		= THIS_MODULE,
++	.open		= fpc1020_open,
++	.release	= fpc1020_release,
++	.poll		= fpc1020_poll,
++	.unlocked_ioctl	= fpc1020_ioctl,
++};
++
++static ssize_t power_state_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct fpc1020 *fpc = dev_get_drvdata(dev);
++	bool on;
++
++	mutex_lock(&fpc->lock);
++	on = fpc->prepared;
++	mutex_unlock(&fpc->lock);
++
++	return sysfs_emit(buf, "%s\n", on ? "on" : "off");
++}
++static DEVICE_ATTR_RO(power_state);
++
++static struct attribute *fpc1020_attrs[] = {
++	&dev_attr_power_state.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(fpc1020);
++
++static int fpc1020_suspend(struct device *dev)
++{
++	struct fpc1020 *fpc = dev_get_drvdata(dev);
++
++	mutex_lock(&fpc->lock);
++	if (fpc->prepared)
++		fpc1020_power_off(fpc);
++	mutex_unlock(&fpc->lock);
++
++	return 0;
++}
++
++static int fpc1020_resume(struct device *dev)
++{
++	struct fpc1020 *fpc = dev_get_drvdata(dev);
++	int ret = 0;
++
++	mutex_lock(&fpc->lock);
++	if (fpc->users && !fpc->prepared)
++		ret = fpc1020_power_on(fpc);
++	mutex_unlock(&fpc->lock);
++
++	return ret;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(fpc1020_pm_ops, fpc1020_suspend, fpc1020_resume);
++
++static int fpc1020_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct fpc1020 *fpc;
++	int ret;
++
++	fpc = devm_kzalloc(dev, sizeof(*fpc), GFP_KERNEL);
++	if (!fpc)
++		return -ENOMEM;
++
++	fpc->dev = dev;
++	mutex_init(&fpc->lock);
++	init_waitqueue_head(&fpc->irq_wait);
++	atomic_set(&fpc->irq_count, 0);
++	platform_set_drvdata(pdev, fpc);
++
++	fpc->vreg = devm_regulator_get(dev, "fp_vdd_vreg");
++	if (IS_ERR(fpc->vreg))
++		return dev_err_probe(dev, PTR_ERR(fpc->vreg),
++				     "no fp_vdd_vreg supply\n");
++
++	fpc->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(fpc->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(fpc->reset_gpio),
++				     "no reset GPIO\n");
++
++	fpc->irq = platform_get_irq(pdev, 0);
++	if (fpc->irq < 0)
++		return fpc->irq;
++
++	fpc->miscdev.minor = MISC_DYNAMIC_MINOR;
++	fpc->miscdev.name = FPC1020_NAME;
++	fpc->miscdev.fops = &fpc1020_fops;
++	fpc->miscdev.parent = dev;
++
++	ret = misc_register(&fpc->miscdev);
++	if (ret)
++		return dev_err_probe(dev, ret, "could not register /dev/%s\n",
++				     FPC1020_NAME);
++
++	ret = devm_request_threaded_irq(dev, fpc->irq, NULL,
++					fpc1020_irq_handler,
++					IRQF_TRIGGER_RISING | IRQF_ONESHOT |
++					IRQF_NO_AUTOEN,
++					dev_name(dev), fpc);
++	if (ret) {
++		misc_deregister(&fpc->miscdev);
++		return dev_err_probe(dev, ret, "could not request IRQ %d\n",
++				     fpc->irq);
++	}
++
++	device_init_wakeup(dev, true);
++	dev_info(dev, "FPC1020 control interface ready (secure-world SPI)\n");
++
++	return 0;
++}
++
++static void fpc1020_remove(struct platform_device *pdev)
++{
++	struct fpc1020 *fpc = platform_get_drvdata(pdev);
++
++	fpc1020_power_off(fpc);
++	misc_deregister(&fpc->miscdev);
++}
++
++static const struct of_device_id fpc1020_of_match[] = {
++	{ .compatible = "fpc,fpc1020" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, fpc1020_of_match);
++
++static struct platform_driver fpc1020_driver = {
++	.probe	= fpc1020_probe,
++	.remove	= fpc1020_remove,
++	.driver	= {
++		.name		= FPC1020_NAME,
++		.of_match_table	= fpc1020_of_match,
++		.pm		= pm_ptr(&fpc1020_pm_ops),
++		.dev_groups	= fpc1020_groups,
++	},
++};
++module_platform_driver(fpc1020_driver);
++
++MODULE_AUTHOR("liuqin mainline port");
++MODULE_DESCRIPTION("FPC1264 power/reset/IRQ control (secure-world SPI)");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" FPC1020_NAME);

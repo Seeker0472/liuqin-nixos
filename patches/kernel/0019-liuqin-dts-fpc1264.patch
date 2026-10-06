@@ -1,0 +1,85 @@
+arm64: dts: qcom: liuqin: wire the FPC1264 control interface
+
+Vendor wiring, from the stock runtime DT's fingerprint_fpc node: GPIO40
+rising-edge finger interrupt, GPIO41 active-low reset, PM8350C LDO9
+supply.  The sensor's SPI pins (GPIO36-39, QUPv3 SE10 at 0xa88000) stay
+reserved and spi10 stays disabled, because the trustlet owns that serial
+engine; the normal world gets only the power/reset/IRQ interface.
+
+The LDO9 window is the community bring-up's 2960000-3008000 uV; the
+vendor Android DT constrains the same rail to a fixed 3.3 V.  Both are
+safe (the sensor shipped at 3.3 V); keep the community window that the
+ported userspace stack was validated with and revisit on hardware.
+
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
+@@ -543,6 +543,20 @@ pm8350c_l7: ldo7 {
+ 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 		};
+ 
++		/*
++		 * FPC1264 supply.  The community bring-up locked this rail to
++		 * 2960000-3008000 uV; the vendor Android DT constrains the same
++		 * PM8350C LDO9 to a fixed 3.3 V.  Keep the community window (the
++		 * tested userspace stack was validated with it); revisit on
++		 * hardware.
++		 */
++		pm8350c_l9: ldo9 {
++			regulator-name = "pm8350c_l9";
++			regulator-min-microvolt = <2960000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
+ 		pm8350c_l10: ldo10 {
+ 			regulator-name = "pm8350c_l10";
+ 			regulator-min-microvolt = <1200000>;
+@@ -1281,6 +1295,22 @@ &tlmm {
+ 	gpio-reserved-ranges = <28 4>, <36 4>;
+ 	status = "okay";
+ 
++	/* Vendor configuration: gpio40 pull-down input, gpio41 released high. */
++	fingerprint_irq: fingerprint-irq-state {
++		pins = "gpio40";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++
++	fingerprint_rst: fingerprint-rst-state {
++		pins = "gpio41";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		output-high;
++	};
++
+ 	/*
+ 	 * The QCA6490 enable lines come up deasserted and are raised by the
+ 	 * power sequencer when a radio is actually claimed. Levels, direction
+@@ -1793,6 +1823,25 @@ camera_deep_avdd: camera-deep-avdd {
+ 	};
+ };
+ 
++/*
++ * Fingerprint sensor (FPC1264) behind the power button.  Vendor wiring:
++ * GPIO40 finger interrupt, GPIO41 active-low reset, PM8350C LDO9 supply.
++ * The sensor's SPI bus belongs to the secure world and is driven by the
++ * fpcliu trusted application; this node describes only the normal-world
++ * control interface.  See docs/TODO/FINGERPRINT-MAINLINE.md.
++ */
++/ {
++	fingerprint {
++		compatible = "fpc,fpc1020";
++		interrupt-parent = <&tlmm>;
++		interrupts = <40 IRQ_TYPE_EDGE_RISING>;
++		reset-gpios = <&tlmm 41 GPIO_ACTIVE_LOW>;
++		fp_vdd_vreg-supply = <&pm8350c_l9>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&fingerprint_irq>, <&fingerprint_rst>;
++	};
++};
++
+ &tlmm {
+ 	/* The vendor camera graph muxes MCLK2 onto GPIO102. */
+ 	cam_sensor_mclk2_active: cam-sensor-mclk2-active {

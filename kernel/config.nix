@@ -61,6 +61,15 @@ with kernelLib;
   # Remote processors / DSP / RPMsg (ADSP, CDSP, SLPI for sensors).
   QCOM_Q6V5_PAS = lib.mkForce module;
   QCOM_MDT_LOADER = lib.mkForce module;
+
+  # Fingerprint (FPC1264 over QSEECOM): the QSEECOM SCM core is built in
+  # (QCOM_QSEECOM is bool and registers the qcom_qseecom_tee platform
+  # device), the TEE front-end and the SPI transport stay modules for the
+  # existing late-load userspace integration.
+  QCOM_QSEECOM = lib.mkForce yes;
+  TEE = lib.mkForce module;
+  TEE_QSEECOM = lib.mkForce module;
+  SENSORS_FPC1020 = lib.mkForce module;
   QCOM_PDR_HELPERS = lib.mkForce module;
   QCOM_PD_MAPPER = lib.mkForce yes;
   QCOM_APR = lib.mkForce module;
