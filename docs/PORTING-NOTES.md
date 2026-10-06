@@ -264,6 +264,45 @@ synthesized when absent) or the build fails.
   2026-09-29), with repeated `msdu_done` errors and occasional carrier
   reconnects.  WLAN MAC and BT public address are per-device values
   provisioned from persist.
+- Bluetooth runs the stock QCA6490 payloads.  The mainline driver asks for the
+  `wcn`-prefixed rampatch/NVM names first, and only linux-firmware ships those,
+  so `pkgs/firmware.nix` installs the stock `qca/hp*` files under both names;
+  before that the controller silently ran linux-firmware's build
+  (`BTFW.HSP.2.1.0-00660-USB_UART_PATCHZ-6`) instead of the stock
+  `00570-PATCHZ-1` the unit's own `bluetooth_a` partition carries (**measured**
+  2026-10-06).  The controller is unconfigured on every boot (volatile
+  address), so `liuqin-bt-preconfigure`'s Set Public Address re-runs the whole
+  QCA setup and its firmware download; the unit is therefore ordered after
+  `liuqin-firmware-path`, without which that download finds no `qca` file
+  (the stage-2 root has calibration only) and Bluetooth never starts.
+- The WCN6855 RF rails are pinned to the stock DTB's `qcom,init-voltage`
+  values (`pm8350_s11` 952 mV, `pm8350_s12` 1256 mV, `pm8350c_s1` 1880 mV).
+  The RPMh driver has no `qcom,init-voltage`, and the core's `apply_uV`
+  programs the **low** end of the DT range, so the board DTS previously left
+  `pm8350_s11` - the BT/WLAN PMU's 0.8/0.95 V domain, per the vendor's
+  `bt-vdd-rfa-0p8/rfacmn/aon` supplies - at 384 mV.  **Measured** 2026-10-06
+  with the same stationary speakers: mainline -70..-78 dBm vs -56..-60 dBm on
+  stock Android, and BT only linked with the device touching the tablet.
+  The vendor's `btpower` driver sets these rails explicitly at BT power-on
+  (`regulator_set_voltage(vreg, min, max)`), which is what the stock DT's
+  init voltages encode.
+- The stock BT HAL additionally writes a per-chip NV/RF table to the
+  controller at every Bluetooth enable (154 vendor commands, captured from
+  the unit's own HCI traffic into `data/bt-nv/`).  Mainline's driver only
+  downloads the rampatch/NVM files, and without the table - with identical
+  rampatch/NVM, board file and rail voltages - the ATK mouse only linked while
+  touching the tablet, while the same mouse worked 1 m away on stock Android
+  (**measured** 2026-10-06).  `liuqin-bt-nv` (`pkgs/bt-nv.nix`, installed on
+  PATH) is a manual operator tool that replays the table.  It is deliberately
+  not a service, and that is also the honest state of the fix: the table lives
+  in controller RAM, the writes are what made the difference in the A/B
+  against stock Android, and the tool re-runs in a couple of seconds.  Re-run
+  it after any Bluetooth power toggle - the kernel re-downloads the
+  rampatch/NVM on every controller open (`HCI_QUIRK_NON_PERSISTENT_SETUP`) and
+  that reset wipes the table, including the asynchronous reconfigure setup
+  `liuqin-bt-preconfigure`'s Set Public Address triggers (**measured**: table
+  at 11.5 s, setup still running until 12.3 s, so a table written at boot is
+  wiped again).
 - UFS, GPU, PCIe/WCN6855 (needs patch 0010's cape tables) and the initrd
   storage guard work (**verified**).
 - CPU: cluster capacities 277/832/1024 (expected 278/833/1024), EAS active,

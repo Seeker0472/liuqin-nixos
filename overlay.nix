@@ -79,6 +79,7 @@ final: prev:
   liuqinFirmwarePath = final.callPackage ./pkgs/firmware-path.nix { };
   liuqinWlanMac = final.callPackage ./pkgs/wlan-mac.nix { };
   liuqinBtPublicAddr = final.callPackage ./pkgs/bt-public-addr.nix { };
+  liuqinBtNv = final.callPackage ./pkgs/bt-nv.nix { };
   liuqinSlpi = final.callPackage ./pkgs/slpi.nix { };
   liuqinSensorProxyRefresh = final.callPackage ./pkgs/sensor-proxy-refresh.nix { };
 

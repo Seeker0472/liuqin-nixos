@@ -159,7 +159,11 @@ in
     # (polkitd reads it from /run/current-system/sw/share), and monitor-sensor
     # lands on PATH for manual sensor acceptance.  The action file is the
     # package's own; no copy of it lives in this repository.
-    environment.systemPackages = [ pkgs.iw pkgs.liuqinSensorCheck pkgs.liuqinIioSensorProxy ];
+    #
+    # liuqin-bt-nv (pkgs/bt-nv.nix) is a manual operator tool on PATH:
+    # rewriting the controller's stock NV/RF table after a Bluetooth power
+    # toggle.  It is deliberately not wired into any unit.
+    environment.systemPackages = [ pkgs.iw pkgs.liuqinBtNv pkgs.liuqinSensorCheck pkgs.liuqinIioSensorProxy ];
 
     # iio-sensor-proxy is started with an explicit ExecStart below, so its
     # package is not pulled in through the upstream systemd unit.  Register
