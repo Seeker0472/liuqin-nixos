@@ -1,0 +1,38 @@
+--- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
++++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
+@@ -501,15 +501,24 @@
+ 			regulator-max-microvolt = <1800000>;
+ 		};
+ 
++		/*
++		 * The WCN6855's Bluetooth and WLAN RF domains are supplied
++		 * from these rails.  The stock DTB sets qcom,init-voltage to
++		 * 952/1256/1880 mV (pm8350_s11, pm8350_s12 and pm8350c_s1);
++		 * this kernel has no qcom,init-voltage support and the
++		 * regulator core programs the low end of the DT range, so
++		 * without the minimums below the chip's PMU sits at 384 mV
++		 * instead of 952 mV and both radios lose ~15 dB of range.
++		 */
+ 		pm8350_s11: smps11 {
+ 			regulator-name = "pm8350_s11";
+-			regulator-min-microvolt = <382000>;
++			regulator-min-microvolt = <952000>;
+ 			regulator-max-microvolt = <1170000>;
+ 		};
+ 
+ 		pm8350_s12: smps12 {
+ 			regulator-name = "pm8350_s12";
+-			regulator-min-microvolt = <1224000>;
++			regulator-min-microvolt = <1256000>;
+ 			regulator-max-microvolt = <2040000>;
+ 		};
+ 
+@@ -562,7 +571,7 @@
+ 
+ 		pm8350c_s1: smps1 {
+ 			regulator-name = "pm8350c_s1";
+-			regulator-min-microvolt = <1800000>;
++			regulator-min-microvolt = <1880000>;
+ 			regulator-max-microvolt = <2024000>;
+ 			regulator-always-on;
+ 		};
