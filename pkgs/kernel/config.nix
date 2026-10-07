@@ -9,14 +9,14 @@
 # deliberately leaves out.  PREFER_BUILTIN is on for aarch64 by nixpkgs'
 # default, but it only affects questions no answer covers; an explicit
 # `=module` here stays a module, so the symbols that must be built in for the
-# current bring-up are lifted by kernel/liuqin-firstboot.config instead.
+# current bring-up are lifted by pkgs/kernel/liuqin-firstboot.config instead.
 #
 # Sources: merged and deduplicated from xiaomipad-6pro-mainline
 # device/configs/{liuqin-desktop,liuqin-keyboard,liuqin-sensors,liuqin-firstboot}.config,
 # minus the snapd-only entries; the dedup against nixpkgs common-config was
 # done while it was still enabled, so an option only it used to answer is
-# absent unless it is answered here or in kernel/liuqin-firstboot.config.
-# Options introduced by the patches in ../patches/kernel
+# absent unless it is answered here or in pkgs/kernel/liuqin-firstboot.config.
+# Options introduced by the patches in ./patches
 # (HID_NANOSIC, TOUCHSCREEN_NT36523_SPI, DRM_PANEL_NOVATEK_NT36532,
 # SERIAL_EARLYCON_SIMPLEFB) are answered here explicitly.
 { lib, kernelLib ? lib.kernel }:
@@ -30,20 +30,23 @@ with kernelLib;
 {
   # --- Core platform: SM8475 / Qualcomm bring-up ---
   ARCH_QCOM = lib.mkForce yes;
-  # TLMM for qcom,sm8475-tlmm (patch 0010); without it every GPIO-backed
-  # peripheral on liuqin defers probe forever.
+  # TLMM for qcom,sm8475-tlmm (0009-liuqin-pinctrl-sm8475.patch); without it
+  # every GPIO-backed peripheral on liuqin defers probe forever.
   PINCTRL_SM8475 = lib.mkForce yes;
   SCSI_UFS_QCOM = lib.mkForce yes;
   PHY_QCOM_QMP = lib.mkForce yes;
-  # SM8450/V6 USB3 + DP combo PHY; patch 0018 supplies the liuqin register
-  # table and the DT profile decides when it is connected.
+  # SM8450/V6 USB3 + DP combo PHY; the DP register tables are the wholesale
+  # pkgs/kernel/replaced/phy-qcom-qmp-combo.c replacement (see pkgs/kernel/default.nix
+  # postPatch), the USB3 side comes from 0008-liuqin-usb-typec-dp.patch, and
+  # the DT profile decides when it is connected.
   PHY_QCOM_QMP_COMBO = lib.mkForce module;
   PHY_QCOM_QMP_UFS = lib.mkForce yes;
   PHY_QCOM_QMP_PCIE = lib.mkForce yes;
   PHY_SNPS_EUSB2 = lib.mkForce yes;
-  # The eusb2-repeater node instantiated by DTS patch 0001 binds to
-  # PHY_QCOM_I2C_EUSB2_REPEATER ("nxp,eusb2-repeater"), backported as
-  # patches/kernel/0009. The mainline SPMI variant is kept too.
+  # The eusb2-repeater node instantiated by patch 0001 binds to
+  # PHY_QCOM_I2C_EUSB2_REPEATER ("nxp,eusb2-repeater"), whose driver is
+  # backported in 0008-liuqin-usb-typec-dp.patch. The mainline SPMI variant
+  # is kept too.
   PHY_QCOM_I2C_EUSB2_REPEATER = lib.mkForce yes;
   PHY_QCOM_EUSB2_REPEATER = lib.mkForce yes;
   I2C_QCOM_GENI = lib.mkForce yes;
@@ -118,7 +121,7 @@ with kernelLib;
   DRM_MSM_DP = lib.mkForce yes;
   DRM_MIPI_DSI = lib.mkForce yes;
   DRM_PANEL = lib.mkForce yes;
-  DRM_PANEL_NOVATEK_NT36532 = lib.mkForce module; # from patch 0004
+  DRM_PANEL_NOVATEK_NT36532 = lib.mkForce module; # 0003-liuqin-display-panel-msm.patch
   DRM_FBDEV_EMULATION = lib.mkForce yes;
   DRM_CLIENT_LOG = lib.mkForce yes; # drm_client_lib.active=log still selectable
   DRM_CLIENT_DEFAULT_FBDEV = lib.mkForce yes; # fbcon on the DSI panel; the log
@@ -136,14 +139,15 @@ with kernelLib;
   SM_CAMCC_8450 = lib.mkForce module;
   SM_GPUCC_8450 = lib.mkForce module;
 
-  # Input: touchscreen (SPI Novatek, patch 0003), keyboard cover HID
-  # (patch 0002), uinput/uhid for desktop tooling.
+  # Input: touchscreen (SPI Novatek) and keyboard cover HID, both from
+  # 0002-liuqin-input-hid-touchscreen.patch, plus uinput/uhid for desktop
+  # tooling.
   INPUT_EVDEV = lib.mkForce module;
   INPUT_UINPUT = lib.mkForce module;
   UHID = lib.mkForce module;
   HID_MULTITOUCH = lib.mkForce module;
-  HID_NANOSIC = lib.mkForce module; # from patch 0002
-  TOUCHSCREEN_NT36523_SPI = lib.mkForce module; # from patch 0003
+  HID_NANOSIC = lib.mkForce module; # 0002-liuqin-input-hid-touchscreen.patch
+  TOUCHSCREEN_NT36523_SPI = lib.mkForce module; # 0002-liuqin-input-hid-touchscreen.patch
 
   # BT's optional deps/selects must be built in so BT=y sticks
   # (RFKILL=m caps BT at m and generate-config.pl dies on the re-ask).
@@ -178,7 +182,7 @@ with kernelLib;
   CRYPTO_LIB_AES = lib.mkForce yes;
   CRYPTO_ECDH = lib.mkForce yes;
 
-  # Early console over the ABL simple-framebuffer (patch 0008).
+  # Early console over the ABL simple-framebuffer (0007-liuqin-soc-misc-earlycon.patch).
   SERIAL_EARLYCON_SIMPLEFB = lib.mkForce yes;
 
   # Pstore remains available for stock ramoops hand-off. The ABL overlay
@@ -206,7 +210,7 @@ with kernelLib;
   BT_QCA = lib.mkForce module;
   RFKILL = lib.mkForce module;
 
-  # Audio: audioreach over SoundWire + CS35L41 speaker amps (patch 0005).
+  # Audio: audioreach over SoundWire + CS35L41 speaker amps (0004-liuqin-audio-audioreach.patch).
   SOUND = lib.mkForce module;
   SND = lib.mkForce module;
   SND_SOC = lib.mkForce module;
@@ -226,7 +230,7 @@ with kernelLib;
   SND_SOC_LPASS_VA_MACRO = lib.mkForce module;
   SND_SOC_CS35L41_I2C = lib.mkForce module;
 
-  # Media: CAMSS raw capture plus the Iris V4L2 decoder (patch 0007).
+  # Media: CAMSS raw capture plus the Iris V4L2 decoder (0006-liuqin-media-iris.patch).
   # Keep these explicit so a future defconfig change cannot silently leave a
   # camera DT node without its media-controller/subdev stack.
   MEDIA_SUPPORT = lib.mkForce module;
@@ -238,7 +242,7 @@ with kernelLib;
   VIDEO_S5KJN1 = lib.mkForce module;
   VIDEO_QCOM_LIUQIN_SENSORS = lib.mkForce module;
   VIDEO_QCOM_IRIS = lib.mkForce module;
-  # The rear module's GT9764 autofocus (patch 0024).
+  # The rear module's GT9764 autofocus (0013-liuqin-camera-tuning.patch).
   VIDEO_DW9768 = lib.mkForce module;
 
   # Camera flash (PM8350C) and the module EEPROMs on the CCI buses.  Both are

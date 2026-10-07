@@ -12,9 +12,9 @@
 # its &usb_1/&usb_1_hsphy overrides, so the built DTB came out with the eUSB2
 # PHY and DWC3 disabled and the device's only debug channel never came up.
 #
-# kernel/default.nix runs this over every patch in patches/kernel, before the
+# pkgs/kernel/default.nix runs this over every patch in pkgs/kernel/patches, before the
 # patches are applied, so the next drift fails the build instead of the boot.
-# It also works standalone:  ./check-patch-hunks.py ../patches/kernel/*.patch
+# It also works standalone:  ./check-patch-hunks.py ./patches/*.patch
 #
 # Exit status: 0 when every hunk is consistent, 1 otherwise.
 

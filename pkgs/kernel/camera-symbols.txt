@@ -1,4 +1,4 @@
-# Camera/media symbols the liuqin camera stack needs.  kernel/config.nix
+# Camera/media symbols the liuqin camera stack needs.  pkgs/kernel/config.nix
 # carries these answers, but ignoreConfigErrors = true downgrades a rejected
 # structured answer to a build warning, so assert the final .config here
 # (CONFIG_X=m tolerates y or m; CONFIG_X=y must survive as y).
