@@ -30,6 +30,20 @@ in
         null the hash-pinned archive has to be registered in the store.
       '';
     };
+
+    bootImg = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      example = "./boot.img";
+      description = ''
+        The downstream v0.3.1 release image whose ramdisk carries the bulk of
+        the firmware tree (the 196 files under lib/firmware this port pins).
+        When null the hash-pinned file has to be registered in the store with
+        `nix-store --add-fixed sha256 boot.img`; the requireFile message
+        carries the same instructions. Only this release image satisfies the
+        pin - the boot.img of a v0.1.0 dump is a different build.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable (
@@ -39,11 +53,12 @@ in
       # override would return the plain derivation anyway, so the injected
       # cross build keeps serving the system unchanged.
       firmwareTree =
-        if cfg.firmware.vpu == null && cfg.firmware.cs35l41 == null then
+        if cfg.firmware.vpu == null && cfg.firmware.cs35l41 == null && cfg.firmware.bootImg == null then
           pkgs.liuqinFirmware
         else
           pkgs.liuqinFirmware.override {
             inherit (cfg.firmware) vpu cs35l41;
+            releaseBootImg = cfg.firmware.bootImg;
           };
       firmwarePath = pkgs.liuqinFirmwarePath.override {
         liuqinFirmware = firmwareTree;

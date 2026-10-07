@@ -52,8 +52,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
-    oem=$src/device/fingerprint/oem
-    client=$oem/src/fingerprint/oem
+    client=$src/oem
     vendor=${supplicant}
     qcbor=${qcbor}
 
@@ -106,8 +105,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   installPhase = ''
     runHook preInstall
-    oem=$src/device/fingerprint/oem
-    client=$oem/src/fingerprint/oem
+    client=$src/oem
     bundle=$out/libexec/liuqin-fpc-oem
 
     install -d $bundle/ufs-rpmb-provider

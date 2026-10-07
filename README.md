@@ -339,8 +339,9 @@ local copies in `data/`, hashes in `pkgs/firmware.nix`) and are assembled by
 `pkgs/firmware.nix`. The installer copies the ath11k firmware, board data and
 signed regulatory database into stage 1 so Wi-Fi can be brought up before the
 live root is switched. The installed system carries the complete device
-firmware tree. `hardware.liuqin.firmware.{vpu,cs35l41}` accept your own
-archives by path instead of a store registration.
+firmware tree. `hardware.liuqin.firmware.{vpu,cs35l41,bootImg}` accept your
+own archives and release image by path instead of a store registration, so no
+build fetches from a third-party release asset.
 
 ## Repository map
 

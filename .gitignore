@@ -7,12 +7,14 @@ __pycache__/
 # Private payloads consumed through requireFile: register them with
 # `nix-store --add-fixed sha256 <file>` instead of tracking them here.  Local
 # copies live in this directory - they are the durable copy, because no GC
-# root holds the store paths.  Five are required:
+# root holds the store paths.  Six are required:
 #   liuqin-firmware-vpu.tar.zst and liuqin-firmware-cs35l41.tar.zst
 #   (hashes in pkgs/firmware.nix), liuqin-ssc-config.tar.zst (hash in
 #   examples/demo/configuration.nix, or point
-#   hardware.liuqin.sensors.sscConfig at the file), and the two stock DT
-#   archives imported by pkgs/bootimg/stock-*.nix.
+#   hardware.liuqin.sensors.sscConfig at the file), the two stock DT
+#   archives imported by pkgs/bootimg/stock-*.nix, and the downstream v0.3.1
+#   release image (data/release-v0.3.1/boot.img, matched by *.img below)
+#   whose ramdisk carries the bulk firmware tree.
 # The other liuqin-firmware-* archives were replaced by the firmware tree in
 # the downstream release's boot.img (pkgs/firmware.nix), so local copies of
 # them are stale.

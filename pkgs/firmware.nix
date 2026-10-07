@@ -2,31 +2,27 @@
 #
 # liuqin firmware tree.
 #
-# Every payload except the VPU image and the CS35L41 archive (below) comes
-# out of the downstream project's v0.3.1 release
-# (github.com/yzddmr6/xiaomipad-6pro-mainline): its boot.img
-# ramdisk carries the firmware tree that port pins (196 files under
-# lib/firmware), and the hash below is the boot.img hash the release's own
-# SHA256SUMS lists.  boot.img and installer.img carry the same tree, so only
-# boot.img is fetched.  v0.3.1 differs from v0.1.0 in exactly one file, the
-# AudioReach topology qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin: v0.1.0 carries
-# the speaker playback graph only, v0.3.1 adds the capture chain
-# (MultiMedia2 Capture -> TX_CODEC_DMA_TX_3) the UCM Mic device enables.
-# The final derivation asserts that blob's sha256.
+# The bulk of the tree comes out of the downstream project's v0.3.1 release:
+# its boot.img ramdisk carries the 196 files under lib/firmware that this port
+# pins.  It is an operator input, not a fetch - the payload is not
+# redistributable and a single release asset is a single point of failure, so
+# the derivation only consumes the bytes (`requireFile`, or
+# hardware.liuqin.firmware.bootImg) and any mirror of the same file works
+# unchanged.  boot.img and installer.img carry the same tree, so only boot.img
+# is needed.  v0.3.1 differs from v0.1.0 in exactly one file, the AudioReach
+# topology qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin: v0.1.0 carries the speaker
+# playback graph only, v0.3.1 adds the capture chain (MultiMedia2 Capture ->
+# TX_CODEC_DMA_TX_3) the UCM Mic device enables.  The final derivation asserts
+# that blob's sha256.
 #
-# TODO: replace the release with a better source as soon as one exists: an
-# official Xiaomi image we can fetch, a mirror that outlives a single release,
-# or upstream linux-firmware once these blobs land there.  Two payloads have
-# no public source at all and stay operator inputs, so they cannot move with
-# it: the VPU image (from the official MIUI V14 extraction under
-# liuqin-mainline-blobs/extracted) and the SSC sensor config
-# (pkgs/sensors-config.nix).
+# Two more payloads have no public source at all and are operator inputs too:
+# the VPU image (from the official MIUI V14 extraction under
+# liuqin-mainline-blobs/extracted) and the CS35L41 vendor payloads.
 #
-# None of the payloads are redistributable by this repository: the release is
-# fetched by hash, the operator inputs are requireFile, and neither is
+# None of the payloads are redistributable by this repository: everything is
+# requireFile or a path the machine configuration provides, and nothing is
 # committed.
 { cpio
-, fetchurl
 , gzip
 , mkbootimg
 , python3
@@ -39,6 +35,9 @@
 # store. See hardware.liuqin.firmware in modules/liuqin/firmware.nix.
 , vpu ? null
 , cs35l41 ? null
+# The downstream release image whose ramdisk carries the firmware tree. A path
+# here overrides the requireFile fallback; see hardware.liuqin.firmware.bootImg.
+, releaseBootImg ? null
 }:
 
 let
@@ -83,17 +82,34 @@ let
         '';
       };
 
-  releaseBootImg = fetchurl {
-    url = "https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases/download/v0.3.1/boot.img";
-    hash = "sha256-llqA7RAZac8Tnesza5bTqwpxwxAgc40NbFwtSCgyVOI=";
-  };
+  releaseBootImgFile =
+    if releaseBootImg != null then
+      releaseBootImg
+    else
+      requireFile {
+        name = "boot.img";
+        hash = "sha256-llqA7RAZac8Tnesza5bTqwpxwxAgc40NbFwtSCgyVOI=";
+        message = ''
+          boot.img from the downstream project's v0.3.1 release
+          (github.com/yzddmr6/xiaomipad-6pro-mainline/releases/tag/v0.3.1),
+          whose ramdisk carries the 196-file firmware tree this port pins. The
+          hash is that file's own sha256, so any mirror of the same bytes
+          works. Keep a copy named boot.img and register it with
+          `nix-store --add-fixed sha256 boot.img` (or
+          `nix store add-file --name boot.img <file>`), or point
+          hardware.liuqin.firmware.bootImg at the file directly.
+          Note: the boot.img in a v0.1.0 release dump is a different image and
+          does not satisfy this pin (v0.1.0 predates the AudioReach capture
+          topology assertion the tree is checked against).
+        '';
+      };
 
   # Unpack just the firmware tree out of that boot image's ramdisk.
   releaseFirmware = runCommand "liuqin-release-firmware" {
     nativeBuildInputs = [ cpio gzip mkbootimg python3 ];
   } ''
     python3 ${mkbootimg}/bin/unpack_bootimg.py \
-      --boot_img ${releaseBootImg} --out unpacked
+      --boot_img ${releaseBootImgFile} --out unpacked
 
     # The ramdisk is a gzip'd cpio archive; the firmware tree is the part of
     # it this repository distributes.

@@ -48,7 +48,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
-    tod=$src/device/fingerprint/oem/src/fingerprint/libfprint-tod
+    tod=$src/libfprint-tod
 
     mkdir -p build
 
@@ -103,7 +103,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   installPhase = ''
     runHook preInstall
-    tod=$src/device/fingerprint/oem/src/fingerprint/libfprint-tod
+    tod=$src/libfprint-tod
 
     install -Dm755 build/libfprint-tod-fpc1264-oem.so \
       $out/lib/libfprint-2/tod-1/libfprint-tod-fpc1264-oem.so

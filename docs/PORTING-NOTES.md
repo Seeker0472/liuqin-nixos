@@ -265,10 +265,11 @@ trustlet, never in Linux.
   acceptance/acceptance-record flow, and fingerprint authentication for the
   `su`/SSH PAM stacks.
 - The OEM userspace (the component's own sources: the static QSEE clients, the
-  python entry points and the TOD driver) comes from the single revision pinned
-  in `pkgs/fingerprint/liuqin-fpc-oem-src.nix`; QCBOR and qsee-supplicant are
-  pinned from their own upstream tags, and the port's adaptations are the patch
-  files next to them.
+  python entry points and the TOD driver) is vendored under
+  `pkgs/fingerprint/fpc-oem-src/` (originally yzddmr6/xiaomipad-6pro-mainline
+  PR #11; see NOTICE for the revision and licenses); QCBOR and qsee-supplicant
+  are pinned from their own upstream tags, and the port's adaptations are the
+  patch files next to them.
 - The firmware images (`fpcliu.mdt` plus its segments) and the Gatekeeper/RPMB
   state are per-device data and are not in this tree; "Fingerprint" in
   `docs/INSTALL.md` documents the extraction, placement and operator steps.

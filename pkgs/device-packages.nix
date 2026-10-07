@@ -74,7 +74,7 @@ in
     liuqinGnomeFlashlight = "data-only leaf (GNOME Shell extension files)";
     # OEM FPC1264 fingerprint stack.
     liuqinFpcOemLibfprintTod = fpcReason;
-    liuqinFpcOemSrc = fpcReason;
+    liuqinFpcOemSrc = "vendored OEM component source tree (a path, not a package)";
     liuqinFpcOemQcbor = fpcReason;
     liuqinFpcOemSupplicant = fpcReason;
     liuqinFpcOemTodDriver = fpcReason;
@@ -89,5 +89,6 @@ in
     "liuqin-firmware-cs35l41.tar.zst"
     "stock-base-dtbs.tar.zst"
     "stock-dtbo-entries.tar.zst"
+    "boot.img"
   ];
 }

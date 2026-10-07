@@ -50,8 +50,8 @@
   # this file is a verbatim application of the reviewed upstream change.
   postPatch = (oldAttrs.postPatch or "") + ''
     patch -p1 --no-backup-if-mismatch \
-      < ${src}/device/fingerprint/oem/src/fingerprint/fprintd-oem/fprintd-oem-update.patch
-    cp ${src}/device/fingerprint/oem/src/fingerprint/fprintd-oem/oem-update.inc \
+      < ${src}/fprintd-oem/fprintd-oem-update.patch
+    cp ${src}/fprintd-oem/oem-update.inc \
       src/oem-update.inc
   '';
 

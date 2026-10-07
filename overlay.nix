@@ -187,11 +187,13 @@ final: prev:
         mesonFlags = (old.mesonFlags or [ ]) ++ [ "--cross-file=${crossFile}" ];
       });
 
-  # One pinned source tree of the OEM component feeds the three packages, so
+  # One vendored source tree of the OEM component feeds the three packages, so
   # the revision cannot drift between the runtime, the TOD driver and the
   # fprintd patch; the two libraries the component builds against are pinned
-  # from their own upstreams instead.
-  liuqinFpcOemSrc = final.callPackage ./pkgs/fingerprint/liuqin-fpc-oem-src.nix { };
+  # from their own upstreams instead.  Vendored (not fetched) from
+  # yzddmr6/xiaomipad-6pro-mainline PR #11, head 17c534b of the yuzelingsha
+  # fork - see NOTICE.
+  liuqinFpcOemSrc = ./pkgs/fingerprint/fpc-oem-src;
   liuqinFpcOemQcbor = final.callPackage ./pkgs/fingerprint/qcbor.nix { };
   liuqinFpcOemSupplicant = final.callPackage ./pkgs/fingerprint/qsee-supplicant.nix { };
   # libfprint TOD module (fpc1264_oem) plus the FpPrint serializer; the nixpkgs
