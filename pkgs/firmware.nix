@@ -126,6 +126,26 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   install -Dm0644 ${wireless-regdb}/lib/firmware/regulatory.db $fw/regulatory.db
   install -Dm0644 ${wireless-regdb}/lib/firmware/regulatory.db.p7s $fw/regulatory.db.p7s
 
+  # WLAN: boot the vendor ath11k set, not the release's compressed one.  The
+  # firmware loader expands "updates/" only under its hardcoded
+  # /lib/firmware* entries (drivers/base/firmware_loader/main.c, fw_path[]),
+  # and the custom firmware_class.path that liuqin-firmware-path installs has
+  # no such sibling - so without the copies below the loader's plain sweep
+  # finds no amss/board-2/m3/regdb at the requested paths, falls back to the
+  # compressed ath11k/WCN6855/hw2.x/*.zst set, and the 5 GHz link then cannot
+  # see APs the vendor set hears at -64..-78 dBm (measured 2026-10-07; ch161
+  # ran -86..-88 dBm with 50 % loss there, against -48 dBm / 0 % loss under
+  # this vendor set).  The four files must stay a set: the vendor board-2
+  # with a compressed-set amss dies in `qmi failed to load bdf file` ->
+  # `firmware crashed: MHI_CB_EE_RDDM`.  See docs/PORTING-NOTES.md,
+  # TODO(ath11k-fw-shadowed).
+  for hw in hw2.0 hw2.1; do
+    for f in amss.bin board-2.bin m3.bin regdb.bin; do
+      install -Dm0644 "$fw/updates/ath11k/WCN6855/$hw/$f" \
+                      "$fw/ath11k/WCN6855/$hw/$f"
+    done
+  done
+
   # Assert the contract paths the kernel actually requests.
   for required in \
     novatek/liuqin/novatek_nt36532_m81_fw_csot.bin \
@@ -137,6 +157,11 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
     qcom/a730_sqe.fw \
     qcom/gmu_gen70000.bin \
     ath11k/WCN6855/hw2.0/amss.bin.zst \
+    ath11k/WCN6855/hw2.0/amss.bin \
+    ath11k/WCN6855/hw2.1/amss.bin \
+    ath11k/WCN6855/hw2.1/board-2.bin \
+    ath11k/WCN6855/hw2.1/m3.bin \
+    ath11k/WCN6855/hw2.1/regdb.bin \
     updates/ath11k/WCN6855/hw2.0/amss.bin \
     updates/ath11k/WCN6855/hw2.1/amss.bin \
     qcom/vpu/vpu20_4v.mbn \

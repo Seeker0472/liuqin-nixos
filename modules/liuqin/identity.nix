@@ -35,6 +35,13 @@ in
     # policy with the device instead of with an upstream default.
     networking.networkmanager.wifi.powersave = lib.mkDefault true;
 
+    # Under the vendor ath11k set (pkgs/firmware.nix, TODO(ath11k-fw-shadowed))
+    # the permanent address NM reads is 00:00:00:00:00:00, so the post-scan
+    # restore of the real MAC fails (`set-hw-addr ... failure 99`) and blocks
+    # activation; and with one provisioned identity (liuqin-wlan-mac above)
+    # there is nothing here worth randomizing for scans anyway.
+    networking.networkmanager.wifi.scanRandMacAddress = lib.mkDefault false;
+
     # --- Bluetooth public address -----------------------------------------
     systemd.services.liuqin-bt-preconfigure = {
       description = "liuqin QCA6490 public Bluetooth address";
