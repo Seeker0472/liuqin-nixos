@@ -1,0 +1,695 @@
+diff --git a/src/ipa/simple/algorithms/af.cpp b/src/ipa/simple/algorithms/af.cpp
+new file mode 100644
+index 0000000..c53a137
+--- /dev/null
++++ b/src/ipa/simple/algorithms/af.cpp
+@@ -0,0 +1,546 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Copyright (C) 2026, liuqin port
++ *
++ * Autofocus
++ *
++ * The scan logic is ported from the CDAF half of the RPi IPA's Af
++ * algorithm (Copyright (C) 2022-2023 Raspberry Pi Ltd, BSD-2-Clause):
++ * programmed coarse scan with a direction reversal when the peak was not
++ * bracketed, early termination once the contrast drops below a fraction of
++ * the best sample, a fine scan around the coarse peak, a parabola fit for
++ * a sub-step lock, and a Settle check that only reports Focused when the
++ * peak was actually bracketed.
++ *
++ * A tick below is one frame for which the software ISP produced fresh
++ * statistics (every SwStatsCpu::kStatPerNumFrames frames, ~7.5 per second
++ * at 30 fps).  A lens move issued at the end of a tick is measured on the
++ * next tick.  AE and AWB keep running during a scan, as in the RPi
++ * algorithm; the focus measure is contrast-normalized so their corrections
++ * do not reorder the samples.
++ */
++
++#include "af.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdlib>
++#include <stdint.h>
++
++#include <libcamera/base/log.h>
++
++#include <libcamera/control_ids.h>
++
++namespace libcamera {
++
++LOG_DEFINE_CATEGORY(IPASoftAf)
++
++namespace ipa::soft::algorithms {
++
++/*
++ * The normalized figure of merit is small (order 1e-2); scale it to a
++ * useful integer range for the standard FocusFoM metadata.
++ */
++static constexpr double kFocusFoMScale = 1.0e6;
++
++int Af::init([[maybe_unused]] IPAContext &context, const ValueNode &tuningData)
++{
++	const ValueNode &range = tuningData["ranges"]["normal"];
++	range_.min = range["min"].get<double>(range_.min);
++	range_.max = range["max"].get<double>(range_.max);
++	range_.def = range["default"].get<double>(range_.def);
++
++	const ValueNode &speed = tuningData["speeds"]["normal"];
++	speed_.stepCoarse = std::max(speed["step_coarse"].get<double>(speed_.stepCoarse),
++				     0.0);
++	speed_.stepFine = std::max(speed["step_fine"].get<double>(speed_.stepFine),
++				   0.0);
++	speed_.contrastRatio = std::clamp(speed["contrast_ratio"].get<double>(speed_.contrastRatio),
++					  0.1, 0.95);
++	speed_.retriggerRatio = std::clamp(speed["retrigger_ratio"].get<double>(speed_.retriggerRatio),
++					   0.1, 0.95);
++	speed_.retriggerDelay = std::max(speed["retrigger_delay"].get<unsigned int>(speed_.retriggerDelay),
++					 1u);
++	speed_.stepTicks = speed["step_ticks"].get<unsigned int>(speed_.stepTicks);
++
++	map_ = tuningData["map"].get<ipa::Pwl>(ipa::Pwl{});
++	skipFrames_ = tuningData["skip_frames"].get<unsigned int>(skipFrames_);
++
++	if (range_.max < range_.min)
++		std::swap(range_.min, range_.max);
++	range_.def = std::clamp(range_.def, range_.min, range_.max);
++
++	LOG(IPASoftAf, Debug)
++		<< "range " << range_.min << ".." << range_.max
++		<< " D, default " << range_.def
++		<< ", coarse step " << speed_.stepCoarse
++		<< ", fine step " << speed_.stepFine
++		<< ", contrast ratio " << speed_.contrastRatio
++		<< ", retrigger " << speed_.retriggerRatio
++		<< "/" << speed_.retriggerDelay;
++
++	return 0;
++}
++
++int Af::configure(IPAContext &context, const IPAConfigInfo &configInfo)
++{
++	hasLens_ = configInfo.lensPresent;
++	lensMin_ = configInfo.lensMin;
++	lensMax_ = configInfo.lensMax;
++	if (lensMax_ < lensMin_)
++		lensMax_ = lensMin_;
++
++	if (map_.empty()) {
++		/*
++		 * Provisional linear map over the lens range: the module's
++		 * V-curve has not been measured, and this map only sets the
++		 * step uniformity and the start position.  Replace it with
++		 * the measured dioptre-to-DAC curve (the stock actuator
++		 * calibration, or a device sweep) for physical accuracy.
++		 */
++		map_.append(range_.min, lensMin_);
++		map_.append(range_.max, lensMax_);
++	}
++
++	if (!map_.domain().contains(range_.min) ||
++	    !map_.domain().contains(range_.max))
++		LOG(IPASoftAf, Warning)
++			<< "The map does not cover the configured range "
++			<< range_.min << ".." << range_.max;
++
++	goIdle();
++	initted_ = false;
++	appliedDac_ = -1;
++	manualDac_ = -1;
++	sceneContrast_ = 0.0;
++	if (mode_ == controls::AfModeContinuous)
++		triggerScan();
++
++	return 0;
++}
++
++void Af::goIdle()
++{
++	scanState_ = ScanState::Idle;
++	reportState_ = controls::AfStateIdle;
++	scanData_.clear();
++	pending_ = false;
++	sceneChangeCount_ = 0;
++}
++
++void Af::triggerScan()
++{
++	scanState_ = ScanState::Trigger;
++	reportState_ = controls::AfStateScanning;
++}
++
++void Af::startProgrammedScan(IPAContext &context)
++{
++	scanMaxContrast_ = 0.0;
++	scanMinContrast_ = 1.0e9;
++	scanMaxIndex_ = 0;
++	scanData_.clear();
++	sceneChangeCount_ = 0;
++
++	if (fsmooth_ <= range_.min + 2.0 * speed_.stepCoarse) {
++		/* Start at the low end and walk up. */
++		scanStep_ = speed_.stepCoarse;
++		scanState_ = ScanState::Coarse2;
++		moveLens(context, range_.min);
++	} else if (fsmooth_ >= range_.max - 2.0 * speed_.stepCoarse) {
++		/* Start at the high end and walk down. */
++		scanStep_ = -speed_.stepCoarse;
++		scanState_ = ScanState::Coarse2;
++		moveLens(context, range_.max);
++	} else {
++		/*
++		 * From the middle: scan down first.  If the first sample is
++		 * already near the peak the scan is not bracketing it, and
++		 * doScanSample() reverses direction.
++		 */
++		scanStep_ = -speed_.stepCoarse;
++		scanState_ = ScanState::Coarse1;
++		moveLens(context, std::clamp(fsmooth_, range_.min, range_.max));
++	}
++
++	reportState_ = controls::AfStateScanning;
++	LOG(IPASoftAf, Debug)
++		<< "AF scan start at " << ftarget_ << " D (DAC " << appliedDac_
++		<< "), step " << scanStep_;
++}
++
++void Af::moveLens(IPAContext &context, double position, bool force)
++{
++	ftarget_ = position;
++	fsmooth_ = position;
++
++	const int32_t dac = std::clamp(static_cast<int32_t>(std::lround(map_.eval(position))),
++				       lensMin_, lensMax_);
++
++	if (force || dac != appliedDac_) {
++		context.activeState.af.lensMove = dac;
++		appliedDac_ = dac;
++	}
++
++	pending_ = true;
++	waitTicks_ = speed_.stepTicks;
++}
++
++double Af::findPeak(unsigned int index) const
++{
++	if (scanData_.empty())
++		return ftarget_;
++
++	if (index >= scanData_.size())
++		index = scanData_.size() - 1;
++
++	double peak = scanData_[index].position;
++
++	if (scanData_.size() >= 3) {
++		/*
++		 * Fit a parabola through the best sample and its two
++		 * neighbours (the same quadratic interpolation as the RPi
++		 * algorithm, adapted from its AWB variant) to lock between
++		 * two sampled positions.
++		 */
++		if (index == 0)
++			index++;
++		else if (index + 1 >= scanData_.size())
++			index--;
++
++		double abx = scanData_[index - 1].position - scanData_[index].position;
++		double aby = scanData_[index - 1].contrast - scanData_[index].contrast;
++		double cbx = scanData_[index + 1].position - scanData_[index].position;
++		double cby = scanData_[index + 1].contrast - scanData_[index].contrast;
++		double denom = 2.0 * (aby * cbx - cby * abx);
++
++		/*
++		 * The RPi guard for the denominator (1/64) assumes their
++		 * hardware contrast units; ours is a normalized measure, so
++		 * judge the conditioning against the sample deltas instead.
++		 */
++		const double scale = std::max(std::abs(aby), std::abs(cby)) *
++				     std::max(std::abs(abx), std::abs(cbx));
++
++		if (denom * abx > 0.0 && std::abs(denom) >= 1.0e-3 * scale) {
++			double delta = (aby * cbx * cbx - cby * abx * abx) / denom;
++			delta = std::clamp(delta, std::min(abx, cbx),
++					   std::max(abx, cbx));
++			peak = scanData_[index].position + delta;
++		}
++	}
++
++	return peak;
++}
++
++void Af::doScanSample(IPAContext &context, double contrast)
++{
++	if (scanData_.empty() || contrast > scanMaxContrast_) {
++		scanMaxContrast_ = contrast;
++		scanMaxIndex_ = scanData_.size();
++	}
++	if (contrast < scanMinContrast_)
++		scanMinContrast_ = contrast;
++	scanData_.push_back({ ftarget_, contrast });
++
++	LOG(IPASoftAf, Debug)
++		<< "AF sample " << ftarget_ << " D (DAC " << appliedDac_
++		<< ") contrast " << contrast;
++
++	const bool terminate =
++		(scanStep_ >= 0.0 && ftarget_ >= range_.max) ||
++		(scanStep_ <= 0.0 && ftarget_ <= range_.min) ||
++		(scanState_ == ScanState::Fine && scanData_.size() >= 3) ||
++		contrast < speed_.contrastRatio * scanMaxContrast_;
++
++	if (!terminate) {
++		moveLens(context, std::clamp(ftarget_ + scanStep_,
++					     range_.min, range_.max));
++		return;
++	}
++
++	const double peak = findPeak(scanMaxIndex_);
++
++	if (scanState_ == ScanState::Coarse1 &&
++	    scanData_.front().contrast >= speed_.contrastRatio * scanMaxContrast_) {
++		/*
++		 * The scan started too close to the peak to bracket it:
++		 * walk back the way it came, keeping the peak statistics so
++		 * the ratio termination still works.
++		 */
++		scanStep_ = -scanStep_;
++		scanState_ = ScanState::Coarse2;
++		scanData_.clear();
++		moveLens(context, std::clamp(ftarget_ + scanStep_,
++					     range_.min, range_.max));
++	} else if (scanState_ == ScanState::Fine || speed_.stepFine <= 0.0) {
++		/* The peak is bracketed: move onto it and verify. */
++		scanState_ = ScanState::Settle;
++		moveLens(context, std::clamp(peak, range_.min, range_.max), true);
++		LOG(IPASoftAf, Debug)
++			<< "AF fitted peak " << peak << " D (DAC " << appliedDac_
++			<< "), settling";
++	} else if (scanStep_ >= 0.0) {
++		/* Fine scan from above the peak, walking down. */
++		scanState_ = ScanState::Fine;
++		scanStep_ = -speed_.stepFine;
++		scanData_.clear();
++		moveLens(context, std::min(peak + speed_.stepFine, range_.max));
++	} else {
++		/* Fine scan from below the peak, walking up. */
++		scanState_ = ScanState::Fine;
++		scanStep_ = speed_.stepFine;
++		scanData_.clear();
++		moveLens(context, std::max(peak - speed_.stepFine, range_.min));
++	}
++}
++
++void Af::getAverage(const SwIspStats *stats, double average[3]) const
++{
++	uint64_t count = 0;
++
++	for (unsigned int i = 0; i < SwIspStats::kYHistogramSize; i++)
++		count += stats->yHistogram[i];
++
++	if (!count) {
++		average[0] = average[1] = average[2] = 0.0;
++		return;
++	}
++
++	average[0] = static_cast<double>(stats->sum_.r()) / count;
++	average[1] = static_cast<double>(stats->sum_.g()) / count;
++	average[2] = static_cast<double>(stats->sum_.b()) / count;
++}
++
++void Af::setSceneReference(const SwIspStats *stats, double contrast)
++{
++	sceneContrast_ = contrast;
++	getAverage(stats, sceneAvg_);
++}
++
++bool Af::sceneChanged(const SwIspStats *stats, double contrast) const
++{
++	/*
++	 * The RPi comparison: the contrast or any channel average moving by
++	 * more than the retrigger ratio marks a change.  The +1 guards suit
++	 * the 0..255 channel-average scale; the normalized contrast is
++	 * compared directly.
++	 */
++	const double ratio = speed_.retriggerRatio;
++	double average[3];
++
++	if (contrast < ratio * sceneContrast_ ||
++	    sceneContrast_ < ratio * contrast)
++		return true;
++
++	getAverage(stats, average);
++
++	for (unsigned int i = 0; i < 3; i++) {
++		if (average[i] + 1.0 < ratio * sceneAvg_[i] ||
++		    sceneAvg_[i] + 1.0 < ratio * average[i])
++			return true;
++	}
++
++	return false;
++}
++
++void Af::queueRequest(IPAContext &context, [[maybe_unused]] const uint32_t frame,
++		      [[maybe_unused]] IPAFrameContext &frameContext,
++		      const ControlList &controls)
++{
++	const auto &mode = controls.get(controls::AfMode);
++	if (mode.has_value() && *mode != mode_) {
++		mode_ = *mode;
++		started_ = false;
++		initted_ = false;
++
++		switch (mode_) {
++		case controls::AfModeManual:
++			goIdle();
++			break;
++		case controls::AfModeAuto:
++			goIdle();
++			break;
++		case controls::AfModeContinuous:
++		default:
++			triggerScan();
++			break;
++		}
++	}
++
++	const auto &trigger = controls.get(controls::AfTrigger);
++	if (trigger.has_value() && mode_ == controls::AfModeAuto) {
++		if (*trigger == controls::AfTriggerStart) {
++			if (!started_) {
++				started_ = true;
++				triggerScan();
++			}
++		} else if (*trigger == controls::AfTriggerCancel) {
++			if (started_) {
++				started_ = false;
++				goIdle();
++			}
++		}
++	}
++
++	const auto &position = controls.get(controls::LensPosition);
++	if (position.has_value() && mode_ == controls::AfModeManual) {
++		const int32_t dac = std::clamp(static_cast<int32_t>(std::lround(*position)),
++					       lensMin_, lensMax_);
++		manualDac_ = dac;
++		context.activeState.af.lensMove = dac;
++	}
++}
++
++void Af::process(IPAContext &context, const uint32_t frame,
++		 [[maybe_unused]] IPAFrameContext &frameContext,
++		 const SwIspStats *stats, ControlList &metadata)
++{
++	if (!hasLens_)
++		return;
++
++	const int32_t dac = manualDac_ >= 0 ? manualDac_ : appliedDac_;
++	if (dac >= 0)
++		metadata.set(controls::LensPosition, static_cast<float>(dac));
++
++	const bool valid = stats->valid && stats->focusPixels;
++	const double contrast = valid ? stats->focusFoM : -1.0;
++
++	if (valid)
++		metadata.set(controls::FocusFoM,
++			     static_cast<int32_t>(std::min(contrast * kFocusFoMScale,
++							   2000000000.0)));
++
++	if (mode_ == controls::AfModeManual) {
++		metadata.set(controls::AfState, controls::AfStateIdle);
++		return;
++	}
++
++	if (scanState_ == ScanState::Idle && mode_ == controls::AfModeAuto && !started_) {
++		/* Dormant until the next AfTriggerStart. */
++		metadata.set(controls::AfState, reportState_);
++		return;
++	}
++
++	/* An outstanding move needs its statistics frame before it is judged. */
++	if (waitTicks_ > 0) {
++		waitTicks_--;
++		metadata.set(controls::AfState, reportState_);
++		return;
++	}
++
++	if (scanState_ == ScanState::Trigger) {
++		if (!valid) {
++			metadata.set(controls::AfState, controls::AfStateScanning);
++			return;
++		}
++
++		if (!initted_) {
++			/* From an unknown position, start at the default. */
++			moveLens(context, range_.def);
++			initted_ = true;
++
++			/*
++			 * Let AWB and AE settle before the first samples, as
++			 * the RPi algorithm does with its skipFrames after a
++			 * mode change.
++			 */
++			skipUntilFrame_ = frame + skipFrames_;
++		}
++		startProgrammedScan(context);
++		metadata.set(controls::AfState, controls::AfStateScanning);
++		return;
++	}
++
++	/* An armed scan waits out its skip before the state machine runs. */
++	if (frame < skipUntilFrame_) {
++		metadata.set(controls::AfState, controls::AfStateScanning);
++		return;
++	}
++
++	if (scanState_ == ScanState::Idle) {
++		/*
++		 * Continuous focus, as the RPi algorithm puts it: "wait for
++		 * a scene change, followed by stability".  The change adopts
++		 * the new reference and starts the count, and the stable
++		 * ticks after it carry the count to the retrigger delay.
++		 *
++		 * Counting the changing ticks themselves instead (as this
++		 * port did) can only ever fire while the camera keeps
++		 * moving: a one-off change - pointing at a new subject and
++		 * holding still - would never rescan and the lens would sit
++		 * at a blurry position.
++		 */
++		if (!valid) {
++			metadata.set(controls::AfState, reportState_);
++			return;
++		}
++
++		if (sceneContrast_ == 0.0) {
++			setSceneReference(stats, contrast);
++		} else if (sceneChanged(stats, contrast)) {
++			setSceneReference(stats, contrast);
++			sceneChangeCount_ = 1;
++		} else if (sceneChangeCount_) {
++			sceneChangeCount_++;
++		}
++
++		if (sceneChangeCount_ >= speed_.retriggerDelay) {
++			sceneChangeCount_ = 0;
++			triggerScan();
++			metadata.set(controls::AfState, controls::AfStateScanning);
++			return;
++		}
++
++		metadata.set(controls::AfState, reportState_);
++		return;
++	}
++
++	if (!valid) {
++		metadata.set(controls::AfState, controls::AfStateScanning);
++		return;
++	}
++
++	if (scanState_ == ScanState::Settle) {
++		if (!pending_) {
++			metadata.set(controls::AfState, controls::AfStateScanning);
++			return;
++		}
++
++		pending_ = false;
++		if (contrast >= speed_.contrastRatio * scanMaxContrast_ &&
++		    scanMinContrast_ <= speed_.contrastRatio * scanMaxContrast_)
++			reportState_ = controls::AfStateFocused;
++		else
++			reportState_ = controls::AfStateFailed;
++
++		setSceneReference(stats, std::max(scanMaxContrast_, contrast));
++		scanData_.clear();
++		if (mode_ == controls::AfModeAuto)
++			started_ = false;
++		scanState_ = ScanState::Idle;
++
++		LOG(IPASoftAf, Debug)
++			<< "AF settled at " << ftarget_ << " D (DAC " << appliedDac_
++			<< "), state " << reportState_;
++
++		metadata.set(controls::AfState, reportState_);
++		return;
++	}
++
++	/* Coarse1, Coarse2 and Fine: accumulate samples and step. */
++	if (!pending_) {
++		metadata.set(controls::AfState, controls::AfStateScanning);
++		return;
++	}
++
++	pending_ = false;
++	doScanSample(context, contrast);
++	metadata.set(controls::AfState, reportState_);
++}
++
++REGISTER_IPA_ALGORITHM(Af, "Af")
++
++} /* namespace ipa::soft::algorithms */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/algorithms/af.h b/src/ipa/simple/algorithms/af.h
+new file mode 100644
+index 0000000..2aea46b
+--- /dev/null
++++ b/src/ipa/simple/algorithms/af.h
+@@ -0,0 +1,125 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Copyright (C) 2026, liuqin port
++ *
++ * Autofocus
++ *
++ * The state machine is ported from the CDAF half of the RPi IPA's Af
++ * algorithm (BSD-2-Clause, Copyright (C) 2022-2023 Raspberry Pi Ltd):
++ * a programmed coarse scan that reverses direction when it starts too
++ * close to the peak to bracket it, early termination when the contrast
++ * falls below a fraction of the best sample, a fine scan around the
++ * coarse peak, a parabola fit for a sub-step lock, and a final check
++ * that the peak was actually bracketed before reporting Focused.
++ *
++ * Positions are in dioptres (1/m); the piecewise-linear `map` converts
++ * them to the lens driver's DAC units.  PDAF is not part of this port:
++ * the sensor's phase data has no path to this ISP, so the scan always
++ * runs the CDAF path.
++ */
++
++#pragma once
++
++#include <stdint.h>
++#include <vector>
++
++#include <libcamera/control_ids.h>
++
++#include "libipa/pwl.h"
++
++#include "algorithm.h"
++
++namespace libcamera {
++
++namespace ipa::soft::algorithms {
++
++class Af : public Algorithm
++{
++public:
++	Af() = default;
++	~Af() = default;
++
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void queueRequest(IPAContext &context, const uint32_t frame,
++			  IPAFrameContext &frameContext,
++			  const ControlList &controls) override;
++	void process(IPAContext &context, const uint32_t frame,
++		     IPAFrameContext &frameContext, const SwIspStats *stats,
++		     ControlList &metadata) override;
++
++private:
++	enum class ScanState { Idle, Trigger, Coarse1, Coarse2, Fine, Settle };
++
++	struct Range {
++		double min = 0.0;
++		double max = 10.0;
++		double def = 1.0;
++	};
++
++	struct Speed {
++		double stepCoarse = 1.0;
++		double stepFine = 0.25;
++		double contrastRatio = 0.75;
++		double retriggerRatio = 0.75;
++		unsigned int retriggerDelay = 6;	/* ticks */
++		unsigned int stepTicks = 0;		/* extra ticks per step */
++	};
++
++	struct ScanRecord {
++		double position;
++		double contrast;
++	};
++
++	void goIdle();
++	void triggerScan();
++	void startProgrammedScan(IPAContext &context);
++	void moveLens(IPAContext &context, double position, bool force = false);
++	void doScanSample(IPAContext &context, double contrast);
++	double findPeak(unsigned int index) const;
++	void getAverage(const SwIspStats *stats, double average[3]) const;
++	void setSceneReference(const SwIspStats *stats, double contrast);
++	bool sceneChanged(const SwIspStats *stats, double contrast) const;
++
++	/* Tuning */
++	Range range_;
++	Speed speed_;
++	ipa::Pwl map_;			/* dioptres -> lens DAC */
++	unsigned int skipFrames_ = 60;
++
++	/* Lens range, from the pipeline handler */
++	bool hasLens_ = false;
++	int32_t lensMin_ = 0;
++	int32_t lensMax_ = 1023;
++
++	/* State machine */
++	ScanState scanState_ = ScanState::Idle;
++	int32_t mode_ = controls::AfModeContinuous;
++	bool started_ = false;		/* Auto: AfTriggerStart armed a scan */
++	uint32_t skipUntilFrame_ = 0;	/* No samples before this stream frame */
++	bool initted_ = false;		/* The lens position is known */
++	double ftarget_ = 0.0;		/* The position to measure next */
++	double fsmooth_ = 0.0;		/* The position the lens is at */
++	int32_t appliedDac_ = -1;	/* The DAC value last sent to the lens */
++	bool pending_ = false;		/* ftarget_ is awaiting its frame */
++	unsigned int waitTicks_ = 0;	/* Ticks left before the frame counts */
++	int32_t manualDac_ = -1;	/* The application's raw-DAC position */
++
++	/* Scan data */
++	double scanStep_ = 0.0;
++	double scanMaxContrast_ = 0.0;
++	double scanMinContrast_ = 1.0e9;
++	unsigned int scanMaxIndex_ = 0;
++	std::vector<ScanRecord> scanData_;
++
++	/* Scene change detection for continuous focus */
++	double sceneContrast_ = 0.0;
++	double sceneAvg_[3] = { 0.0, 0.0, 0.0 };
++	unsigned int sceneChangeCount_ = 0;
++
++	int32_t reportState_ = controls::AfStateIdle;
++};
++
++} /* namespace ipa::soft::algorithms */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/algorithms/meson.build b/src/ipa/simple/algorithms/meson.build
+index 73c6372..1cd58d5 100644
+--- a/src/ipa/simple/algorithms/meson.build
++++ b/src/ipa/simple/algorithms/meson.build
+@@ -2,6 +2,7 @@
+ 
+ soft_simple_ipa_algorithms = files([
+     'adjust.cpp',
++    'af.cpp',
+     'awb.cpp',
+     'agc.cpp',
+     'blc.cpp',

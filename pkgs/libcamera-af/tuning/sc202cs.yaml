@@ -7,11 +7,14 @@ algorithms:
   - BlackLevel:
       blackLevel: 4160
   - Awb:
+      # Bound on how far the grey-world correction may move red and blue
+      # from green (see awb.cpp).
+      max-gain: 1.6
   # Identity CCM at three correlated-colour-temperature points: keeps hues
-  # untouched until a measured matrix is available, but switches the soft
-  # IPA's colour path on (context.ccmEnabled), which is also the gate for the
-  # Adjust algorithm's saturation stage - without a Ccm entry the whole matrix
-  # path is dead and saturation can never be applied.
+  # untouched until a measured matrix is available, but its presence switches
+  # the soft IPA's colour path on (context.ccmEnabled), which is also the gate
+  # for the Adjust algorithm's saturation stage - without a Ccm entry the
+  # whole matrix path is dead and saturation can never be applied.
   - Ccm:
       ccms:
         - ct: 2860
@@ -27,4 +30,7 @@ algorithms:
                  0, 1, 0,
                  0, 0, 1]
   - Adjust:
+      # Mild colour boost on top of the (identity) matrix; an application
+      # that sets Saturation overrides it.
+      saturation: 1.3
   - Agc:

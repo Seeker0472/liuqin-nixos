@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# The patched libcamera of the liuqin AF series: the seven local patches of
+# The patched libcamera of the liuqin AF series: the local patches of
 # this directory (upstream-bound; see README.md) plus the per-sensor soft-IPA
 # tuning files.
 #
@@ -13,13 +13,14 @@
 { libcamera }:
 libcamera.overrideAttrs (old: {
   patches = (old.patches or [ ]) ++ [
-    ./0001-simple-lens-position.patch
-    ./0002-simple-contrast-af.patch
-    ./0003-sensor-helpers.patch
-    ./0004-ae-digital-gain.patch
-    ./0005-adjust-default-saturation.patch
-    ./0006-respect-flip-defaults.patch
-    ./0007-awb-gain-bound.patch
+    ./0001-swisp-focus-stat.patch
+    ./0002-ipa-simple-lens-control.patch
+    ./0003-ipa-simple-agc.patch
+    ./0004-ipa-simple-awb.patch
+    ./0005-ipa-simple-af.patch
+    ./0006-ipa-simple-adjust.patch
+    ./0007-sensor-helpers.patch
+    ./0008-camera-sensor-flip-defaults.patch
   ];
 
   # Per-sensor simple-IPA tuning files: without them the soft ISP logs

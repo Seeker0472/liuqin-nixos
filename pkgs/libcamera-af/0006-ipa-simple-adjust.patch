@@ -1,0 +1,71 @@
+diff --git a/src/ipa/simple/algorithms/adjust.cpp b/src/ipa/simple/algorithms/adjust.cpp
+index 8bf39c4..91ad11a 100644
+--- a/src/ipa/simple/algorithms/adjust.cpp
++++ b/src/ipa/simple/algorithms/adjust.cpp
+@@ -24,15 +24,25 @@ constexpr float kDefaultSaturation = 1.0f;
+ 
+ LOG_DEFINE_CATEGORY(IPASoftAdjust)
+ 
+-int Adjust::init(IPAContext &context, [[maybe_unused]] const ValueNode &tuningData)
++int Adjust::init(IPAContext &context, const ValueNode &tuningData)
+ {
++	/*
++	 * The saturation the ISP applies when the application does not set the
++	 * control is a per-sensor tuning decision: with only the AWB's channel
++	 * gains in play a scene reads washed out next to the vendor's
++	 * rendering, but how much colour boost is wanted depends on the
++	 * module's calibration.
++	 */
++	defaultSaturation_ = std::clamp(tuningData["saturation"].get<float>(kDefaultSaturation),
++					0.0f, 2.0f);
++
+ 	context.ctrlMap[&controls::Gamma] =
+ 		ControlInfo(0.1f, 10.0f, kDefaultGamma);
+ 	context.ctrlMap[&controls::Contrast] =
+ 		ControlInfo(0.0f, 2.0f, kDefaultContrast);
+ 	if (context.ccmEnabled)
+ 		context.ctrlMap[&controls::Saturation] =
+-			ControlInfo(0.0f, 2.0f, kDefaultSaturation);
++			ControlInfo(0.0f, 2.0f, defaultSaturation_);
+ 	return 0;
+ }
+ 
+@@ -41,7 +51,14 @@ int Adjust::configure(IPAContext &context,
+ {
+ 	context.activeState.knobs.gamma = kDefaultGamma;
+ 	context.activeState.knobs.contrast = std::optional<float>();
+-	context.activeState.knobs.saturation = std::optional<float>();
++	/*
++	 * Applying a unity saturation through the matrix path would only add
++	 * rounding noise, so leave it unset when it is the default.
++	 */
++	context.activeState.knobs.saturation =
++		defaultSaturation_ == kDefaultSaturation
++			? std::optional<float>()
++			: std::optional<float>(defaultSaturation_);
+ 
+ 	return 0;
+ }
+@@ -124,7 +141,7 @@ void Adjust::process([[maybe_unused]] IPAContext &context,
+ 	metadata.set(controls::Contrast, contrast.value_or(kDefaultContrast));
+ 
+ 	const auto &saturation = frameContext.saturation;
+-	metadata.set(controls::Saturation, saturation.value_or(kDefaultSaturation));
++	metadata.set(controls::Saturation, saturation.value_or(defaultSaturation_));
+ }
+ 
+ REGISTER_IPA_ALGORITHM(Adjust, "Adjust")
+diff --git a/src/ipa/simple/algorithms/adjust.h b/src/ipa/simple/algorithms/adjust.h
+index 49c1f26..84d7665 100644
+--- a/src/ipa/simple/algorithms/adjust.h
++++ b/src/ipa/simple/algorithms/adjust.h
+@@ -43,6 +43,9 @@ public:
+ 
+ private:
+ 	void applySaturation(Matrix<float, 3, 3> &ccm, float saturation);
++
++	/* Applied when the application does not set Saturation itself */
++	float defaultSaturation_ = 1.0f;
+ };
+ 
+ } /* namespace ipa::soft::algorithms */

@@ -1,0 +1,239 @@
+diff --git a/include/libcamera/internal/software_isp/swisp_stats.h b/include/libcamera/internal/software_isp/swisp_stats.h
+index d9d0d9b..93933cf 100644
+--- a/include/libcamera/internal/software_isp/swisp_stats.h
++++ b/include/libcamera/internal/software_isp/swisp_stats.h
+@@ -43,6 +43,23 @@ struct SwIspStats {
+ 	 * \brief A histogram of luminance values of all the sampled pixels
+ 	 */
+ 	Histogram yHistogram;
++	/**
++	 * \brief Normalized local contrast over the centre of the processed
++	 *        frame (a focus figure of merit)
++	 *
++	 * The sum of squared luminance gradients divided by the sum of squared
++	 * luminance, measured on the processed frame (so it is independent of
++	 * the raw input format) over its central 3/5.  Higher is sharper, and
++	 * being contrast-normalized it is comparable between frames taken at
++	 * different exposures.  Only meaningful when \ref focusPixels is
++	 * non-zero; both fields are zeroed when no measurement was made for
++	 * this statistics update.
++	 */
++	double focusFoM;
++	/**
++	 * \brief Number of pixels that contributed to \ref focusFoM
++	 */
++	uint32_t focusPixels;
+ };
+ 
+ } /* namespace libcamera */
+diff --git a/include/libcamera/internal/software_isp/swstats_cpu.h b/include/libcamera/internal/software_isp/swstats_cpu.h
+index 5518709..b993864 100644
+--- a/include/libcamera/internal/software_isp/swstats_cpu.h
++++ b/include/libcamera/internal/software_isp/swstats_cpu.h
+@@ -57,6 +57,8 @@ public:
+ 	void startFrame(uint32_t frame);
+ 	void finishFrame(uint32_t frame, uint32_t bufferId);
+ 	void processFrame(uint32_t frame, uint32_t bufferId, MappedFrameBuffer &input);
++	void setFocus(uint32_t frame, const uint8_t *data, unsigned int stride,
++		      unsigned int bpp, const Size &size);
+ 
+ 	void processLine0(uint32_t frame, unsigned int y, const uint8_t *src[], unsigned int statsBufferIndex = 0)
+ 	{
+diff --git a/src/libcamera/software_isp/debayer_cpu.cpp b/src/libcamera/software_isp/debayer_cpu.cpp
+index 49382b4..3886340 100644
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -680,6 +680,13 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
+ 		return -EINVAL;
+ 	}
+ 
++	/*
++	 * Used by the focus figure of merit measurement (SwStatsCpu::setFocus).
++	 */
++	outputSize_ = outputCfg.size;
++	if (getOutputConfig(outputCfg.pixelFormat, outputConfig_) != 0)
++		return -EINVAL;
++
+ 	int ret = setDebayerFunctions(inputCfg.pixelFormat,
+ 				      outputCfg.pixelFormat,
+ 				      ccmEnabled);
+@@ -1114,6 +1121,14 @@ void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+ 	/* Measure before emitting signals */
+ 	bench_.finishFrame();
+ 
++	/*
++	 * The autofocus figure of merit is measured on the processed frame:
++	 * that is where the acutance that matters lives, and it is the only
++	 * format-independent place to measure it.
++	 */
++	stats_->setFocus(frame, out.planes()[0].data(), outputConfig_.stride,
++			 outputConfig_.bpp, outputSize_);
++
+ 	/*
+ 	 * Buffer ids are currently not used, so pass zeros as its parameter.
+ 	 *
+diff --git a/src/libcamera/software_isp/debayer_egl.cpp b/src/libcamera/software_isp/debayer_egl.cpp
+index 02651fe..9e24226 100644
+--- a/src/libcamera/software_isp/debayer_egl.cpp
++++ b/src/libcamera/software_isp/debayer_egl.cpp
+@@ -332,6 +332,10 @@ int DebayerEGL::configure(const StreamConfiguration &inputCfg,
+ 	outputSize_ = outputCfg.size;
+ 	nativeOutputSize_ = outSizeRange.max;
+ 
++	/* Record the bytes per pixel for SwStatsCpu::setFocus(). */
++	if (getOutputConfig(outputCfg.pixelFormat, outputConfig_) != 0)
++		return -EINVAL;
++
+ 	window_.x = ((inputCfg.size.width - outputCfg.size.width) / 2) &
+ 		    ~(inputConfig_.patternSize.width - 1);
+ 	window_.y = ((inputCfg.size.height - outputCfg.size.height) / 2) &
+@@ -642,6 +646,13 @@ void DebayerEGL::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+ 
+ 	metadata.planes()[0].bytesused = output->planes()[0].length;
+ 
++	/*
++	 * The output buffer is complete now.  Wait for the GPU before the
++	 * focus measurement reads it back from the CPU, and before the
++	 * consumers get it.
++	 */
++	egl_.syncOutput();
++
+ 	/* Calculate stats for the whole frame */
+ 	if (frame % SwStatsCpu::kStatPerNumFrames) {
+ 		stats_->finishFrame(frame, 0);
+@@ -656,11 +667,23 @@ void DebayerEGL::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+ 			inDmaSyncer.emplace(input->planes()[0].fd, DmaSyncer::SyncType::Read);
+ 			inMapped.emplace(input, MappedFrameBuffer::MapFlag::Read);
+ 		}
++
++		/*
++		 * Measure the local contrast of the processed frame for the
++		 * autofocus algorithm; this is a CPU read-back of the output
++		 * buffer and only runs on statistics frames.
++		 */
++		DmaSyncer focusSyncer(output->planes()[0].fd, DmaSyncer::SyncType::Read);
++		MappedFrameBuffer outMap(output, MappedFrameBuffer::MapFlag::Read);
++		if (outMap.isValid())
++			stats_->setFocus(frame, outMap.planes()[0].data(),
++					 outputConfig_.stride, outputConfig_.bpp,
++					 outputSize_);
++
+ 		stats_->processFrame(frame, 0, inMapped.value());
+ 	}
+ 	inDmaSyncer.reset();
+ 
+-	egl_.syncOutput();
+ 	bench_.finishFrame();
+ 
+ 	outputBufferReady.emit(output);
+diff --git a/src/libcamera/software_isp/swstats_cpu.cpp b/src/libcamera/software_isp/swstats_cpu.cpp
+index 7fb77ce..3a4e770 100644
+--- a/src/libcamera/software_isp/swstats_cpu.cpp
++++ b/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -11,6 +11,8 @@
+ 
+ #include "libcamera/internal/software_isp/swstats_cpu.h"
+ 
++#include <algorithm>
++
+ #include <libcamera/base/log.h>
+ 
+ #include <libcamera/stream.h>
+@@ -416,6 +418,13 @@ void SwStatsCpu::finishFrame(uint32_t frame, uint32_t bufferId)
+ 		}
+ 
+ 		sharedStats_->sum_ >>= sumShift_;
++	} else {
++		/*
++		 * Keep consumers that only check focusPixels from reading a
++		 * stale figure of merit.
++		 */
++		sharedStats_->focusFoM = 0;
++		sharedStats_->focusPixels = 0;
+ 	}
+ 
+ 	sharedStats_->valid = valid;
+@@ -616,4 +625,83 @@ void SwStatsCpu::processFrame(uint32_t frame, uint32_t bufferId, MappedFrameBuff
+ 	bench_.finishFrame();
+ }
+ 
++/**
++ * \brief Measure the local contrast of a processed frame
++ * \param[in] frame The frame number
++ * \param[in] data Pointer to the start of the processed frame
++ * \param[in] stride The number of bytes per line
++ * \param[in] bpp The number of bytes per pixel
++ * \param[in] size The size of the processed frame in pixels
++ *
++ * The autofocus algorithm needs a sharpness figure of merit to rank lens
++ * positions, and the software ISP is the only component that has the
++ * processed frame.  Measure a normalized Tenengrad: the sum of squared
++ * luminance gradients divided by the sum of squared luminance, over the
++ * central 3/5 of the frame.  The normalization makes frames taken at
++ * different exposures comparable, which matters because the autofocus
++ * algorithm compares scores across scans.
++ *
++ * The measurement follows the statistics cadence (\ref kStatPerNumFrames):
++ * the AF algorithm only sees fresh statistics on those frames, and the other
++ * frames would only burn CPU on a value nobody reads.
++ *
++ * Luma is the sum of the first three bytes of the pixel, which makes the
++ * measure independent of the RGB byte order; the alpha byte of 32-bpp
++ * formats is ignored.
++ */
++void SwStatsCpu::setFocus(uint32_t frame, const uint8_t *data,
++			  unsigned int stride, unsigned int bpp,
++			  const Size &size)
++{
++	if (frame % kStatPerNumFrames)
++		return;
++
++	sharedStats_->focusFoM = 0.0;
++	sharedStats_->focusPixels = 0;
++
++	if (!data || size.width < 3 || size.height < 3)
++		return;
++
++	/*
++	 * The middle of the frame is where the subject usually is; the
++	 * borders add mostly lens-shading gradients that are not focus
++	 * information.
++	 */
++	const unsigned int x0 = std::max(1u, size.width / 5);
++	const unsigned int x1 = size.width - size.width / 5;
++	const unsigned int y0 = std::max(1u, size.height / 5);
++	const unsigned int y1 = size.height - size.height / 5;
++
++	uint64_t sumGradient = 0;
++	uint64_t sumLuma = 0;
++	uint32_t count = 0;
++
++	for (unsigned int y = y0; y < y1; y++) {
++		const uint8_t *row = data + static_cast<size_t>(y) * stride;
++		const uint8_t *prev = row - stride;
++
++		for (unsigned int x = x0; x < x1; x++) {
++			const uint8_t *p = row + static_cast<size_t>(x) * bpp;
++			const uint8_t *left = p - bpp;
++			const uint8_t *up = prev + static_cast<size_t>(x) * bpp;
++			int luma = p[0] + p[1] + p[2];
++			int dx = luma - (left[0] + left[1] + left[2]);
++			int dy = luma - (up[0] + up[1] + up[2]);
++
++			sumGradient += static_cast<uint64_t>(dx * dx + dy * dy);
++			sumLuma += static_cast<uint64_t>(luma * luma);
++			count++;
++		}
++	}
++
++	if (!sumLuma) {
++		/* Nothing measurable (a fully black frame). */
++		return;
++	}
++
++	sharedStats_->focusFoM = static_cast<double>(sumGradient) /
++				 static_cast<double>(sumLuma);
++	sharedStats_->focusPixels = count;
++}
++
+ } /* namespace libcamera */

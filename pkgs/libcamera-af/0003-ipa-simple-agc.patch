@@ -1,0 +1,201 @@
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index a13a755..22281b0 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -65,10 +65,36 @@ Agc::Agc()
+ {
+ }
+ 
++int Agc::init(IPAContext &context, [[maybe_unused]] const ValueNode &tuningData)
++{
++	/*
++	 * Standard auto-exposure switch; AeEnable=false freezes the exposure
++	 * at its current values.
++	 */
++	context.ctrlMap[&controls::AeEnable] = ControlInfo(false, true, true);
++
++	return 0;
++}
++
++void Agc::queueRequest(IPAContext &context,
++		       [[maybe_unused]] const uint32_t frame,
++		       [[maybe_unused]] IPAFrameContext &frameContext,
++		       const ControlList &controls)
++{
++	/*
++	 * Exposure is a continuous state, not per-frame data: apply the
++	 * switch immediately instead of storing it in the frame context.
++	 */
++	const auto &aeEnable = controls.get(controls::AeEnable);
++	if (aeEnable.has_value())
++		context.activeState.agc.aeEnable = *aeEnable;
++}
++
+ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
+ {
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
++	double &dgain = context.activeState.agc.dgain;
+ 
+ 	double error = kExposureOptimal - exposureMSV;
+ 
+@@ -85,20 +111,31 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 	float factor = 1.0f + step;
+ 
+ 	if (factor > 1.0f) {
+-		/* Scene too dark: increase exposure first, then gain. */
++		/*
++		 * Scene too dark: increase exposure, then analogue gain, then
++		 * the ISP's digital gain.
++		 */
+ 		if (exposure < context.configuration.agc.exposureMax) {
+ 			int32_t next = static_cast<int32_t>(exposure * factor);
+ 			exposure = std::max(next, exposure + 1);
+-		} else {
++		} else if (again < context.configuration.agc.againMax) {
+ 			double next = again * factor;
+ 			if (next - again < context.configuration.agc.againMinStep)
+ 				again += context.configuration.agc.againMinStep;
+ 			else
+ 				again = next;
++		} else {
++			dgain = std::min(dgain * factor,
++					 context.configuration.agc.dgainMax);
+ 		}
+ 	} else {
+-		/* Scene too bright: decrease gain first, then exposure. */
+-		if (again > context.configuration.agc.again10) {
++		/*
++		 * Scene too bright: decrease the digital gain first, then the
++		 * analogue gain, then the exposure.
++		 */
++		if (dgain > 1.0) {
++			dgain = std::max(dgain * factor, 1.0);
++		} else if (again > context.configuration.agc.again10) {
+ 			double next = again * factor;
+ 			if (again - next < context.configuration.agc.againMinStep)
+ 				again -= context.configuration.agc.againMinStep;
+@@ -114,6 +151,7 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 			      context.configuration.agc.exposureMax);
+ 	again = std::clamp(again, context.configuration.agc.againMin,
+ 			   context.configuration.agc.againMax);
++	dgain = std::clamp(dgain, 1.0, context.configuration.agc.dgainMax);
+ 
+ 	context.activeState.agc.exposure = exposure;
+ 	context.activeState.agc.again = again;
+@@ -121,7 +159,26 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 	LOG(IPASoftExposure, Debug)
+ 		<< "exposureMSV " << exposureMSV
+ 		<< " error " << error << " factor " << factor
+-		<< " exp " << exposure << " again " << again;
++		<< " exp " << exposure << " again " << again
++		<< " dgain " << dgain;
++}
++
++void Agc::prepare(IPAContext &context,
++		  [[maybe_unused]] const uint32_t frame,
++		  [[maybe_unused]] IPAFrameContext &frameContext,
++		  DebayerParams *params)
++{
++	/*
++	 * The AE's digital gain (used once exposure and the sensor's analogue
++	 * gain are both at their limits) rides on top of the AWB channel
++	 * gains.  This runs after Awb::prepare() because the tuning files
++	 * list the algorithms in that order.
++	 */
++	float dgain = static_cast<float>(context.activeState.agc.dgain);
++
++	params->gains.r() *= dgain;
++	params->gains.g() *= dgain;
++	params->gains.b() *= dgain;
+ }
+ 
+ void Agc::process(IPAContext &context,
+@@ -130,19 +187,34 @@ void Agc::process(IPAContext &context,
+ 		  const SwIspStats *stats,
+ 		  ControlList &metadata)
+ {
++	auto &agc = context.activeState.agc;
++
+ 	utils::Duration exposureTime =
+ 		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
+ 	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
+ 	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
++	metadata.set(controls::DigitalGain, agc.dgain);
+ 
+-	if (!context.activeState.agc.valid) {
++	if (!agc.valid) {
+ 		/*
+ 		 * Init active-state from sensor values in case updateExposure()
+ 		 * does not run for the first frame.
+ 		 */
+-		context.activeState.agc.exposure = frameContext.sensor.exposure;
+-		context.activeState.agc.again = frameContext.sensor.gain;
+-		context.activeState.agc.valid = true;
++		agc.exposure = frameContext.sensor.exposure;
++		agc.again = frameContext.sensor.gain;
++		agc.valid = true;
++	}
++
++	if (!agc.aeEnable) {
++		/*
++		 * Manual exposure: freeze at the current values.  Application
++		 * provided ExposureTime/AnalogueGain are not honoured yet (the
++		 * soft IPA would have to register them with ranges derived
++		 * from the sensor controls).
++		 */
++		frameContext.sensor.exposure = agc.exposure;
++		frameContext.sensor.gain = agc.again;
++		return;
+ 	}
+ 
+ 	if (!stats->valid) {
+@@ -150,8 +222,8 @@ void Agc::process(IPAContext &context,
+ 		 * Use the new exposure and gain values calculated the last time
+ 		 * there were valid stats.
+ 		 */
+-		frameContext.sensor.exposure = context.activeState.agc.exposure;
+-		frameContext.sensor.gain = context.activeState.agc.again;
++		frameContext.sensor.exposure = agc.exposure;
++		frameContext.sensor.gain = agc.again;
+ 		return;
+ 	}
+ 
+@@ -189,7 +261,19 @@ void Agc::process(IPAContext &context,
+ 	}
+ 
+ 	float exposureMSV = (denom == 0 ? 0 : static_cast<float>(num) / denom);
+-	updateExposure(context, frameContext, exposureMSV);
++
++	/*
++	 * The statistics are taken before the ISP gains are applied (the AWB
++	 * needs its measurements that way too), so the measured MSV does not
++	 * include our own digital gain.  Fold it in so the loop converges on
++	 * the actual image brightness; it is capped at the bin count because
++	 * the histogram cannot go beyond the top bin.
++	 */
++	double effectiveMSV = exposureMSV * agc.dgain;
++	if (effectiveMSV > kExposureBinsCount)
++		effectiveMSV = kExposureBinsCount;
++
++	updateExposure(context, frameContext, effectiveMSV);
+ }
+ 
+ REGISTER_IPA_ALGORITHM(Agc, "Agc")
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 112d9f5..47c692e 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -19,6 +19,12 @@ public:
+ 	Agc();
+ 	~Agc() = default;
+ 
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++	void queueRequest(IPAContext &context, const uint32_t frame,
++			  IPAFrameContext &frameContext,
++			  const ControlList &controls) override;
++	void prepare(IPAContext &context, const uint32_t frame,
++		     IPAFrameContext &frameContext, DebayerParams *params) override;
+ 	void process(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+ 		     const SwIspStats *stats,

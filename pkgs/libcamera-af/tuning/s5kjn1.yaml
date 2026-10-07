@@ -4,21 +4,21 @@
 # pedestal of this module; it makes the black level deterministic instead of
 # the soft IPA's histogram guess.
 #
-# The Ccm entry below is an identity matrix: it keeps hues untouched until
-# measured colour correction matrices are calibrated (see
-# docs/PORTING-NOTES.md), and it is what switches the soft IPA's
-# matrix path on (context.ccmEnabled) - the gate for the Adjust algorithm's
-# saturation stage.
+# The Ccm entry below is an identity matrix at three correlated-colour-
+# temperature points.  It keeps hues untouched until measured matrices are
+# available, and its presence is what enables the soft IPA's colour-matrix
+# path (context.ccmEnabled) - the gate for the Adjust algorithm's saturation
+# stage and for future measured CCMs.  Replace the matrices with calibrated
+# ones when they exist.
 version: 1
 algorithms:
   - BlackLevel:
       blackLevel: 4096
   - Awb:
-  # Identity CCM at three correlated-colour-temperature points: keeps hues
-  # untouched until a measured matrix is available, but switches the soft
-  # IPA's colour path on (context.ccmEnabled), which is also the gate for the
-  # Adjust algorithm's saturation stage - without a Ccm entry the whole matrix
-  # path is dead and saturation can never be applied.
+      # Bound on how far the grey-world correction may move red and blue
+      # from green (see awb.cpp); the Adjust saturation below is what
+      # restores the colour richness the vendor rendering has.
+      max-gain: 1.6
   - Ccm:
       ccms:
         - ct: 2860
@@ -34,4 +34,39 @@ algorithms:
                  0, 1, 0,
                  0, 0, 1]
   - Adjust:
+      # Mild colour boost on top of the (identity) matrix; an application
+      # that sets Saturation overrides it.
+      saturation: 1.3
   - Agc:
+  - Af:
+      # Contrast-detection autofocus, ported from the RPi IPA's Af
+      # algorithm (CDAF path).  Distances are in dioptres (1/m); `map`
+      # converts them to lens DAC units and is anchored at the one measured
+      # point (see below).  The counts are
+      # statistics ticks: the soft ISP hands fresh statistics to the IPA
+      # every 4th frame, so one tick is ~4 frames.
+      ranges:
+        normal:
+          min: 0.0
+          max: 10.0
+          default: 1.0          # hyperfocal-ish start (calibration pending)
+      speeds:
+        normal:
+          step_coarse: 0.5      # dioptres between coarse scan samples (~51 DAC)
+          step_fine: 0.25       # dioptres between fine scan samples
+          contrast_ratio: 0.75  # end a scan below this fraction of the peak
+          retrigger_ratio: 0.75 # scene change: a 33% contrast/channel shift
+          retrigger_delay: 10   # ... followed by this many *stable* ticks (RPi default)
+          step_ticks: 0         # extra ticks between scan steps
+      # Provisional dioptre->DAC map, anchored at the one measured point
+      # (30 cm ~ 3.33 D ~ DAC 512, sweep 2026-10-07).  Replace with the
+      # module's real V-curve when it is measured.
+      map: [ 0.0, 0.0, 3.33, 512.0, 10.0, 1023.0 ]
+      # Stream frames ignored before the first samples.  The soft ISP's first
+      # frames are still converging - on a dark scene the AGC ramps its
+      # digital gain for up to ~2 s - and the focus figure of merit is
+      # measured on the gamma-encoded output, where that ramp shifts the
+      # absolute value by up to 4x.  Sampling before it settles makes the
+      # scan treat the first sample as the peak and fail (measured
+      # 2026-10-07); 240 frames is ~4 s on the EGL path's 60 fps.
+      skip_frames: 240
