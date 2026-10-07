@@ -9,9 +9,23 @@ let
   cfg = config.hardware.liuqin;
 in
 {
+  # Hardware integration: display/backlight, input firmware in the initrd,
+  # audio UCM2, WLAN/BT private identity, sensors stack, and the small
+  # GNOME-facing containment units.
+  #
+  # Only the declarative half lives here: state directories, unit ordering,
+  # sandboxing and polkit. Every command a unit runs is a package from the
+  # overlay (pkgs/*.nix, exposed as pkgs.liuqin*), and the device-unique paths
+  # travel as arguments so each command stays runnable by hand, including
+  # against fixture trees with no tablet involved.
   imports = [
     ./storage.nix
-    ./hardware.nix
+    ./firmware.nix
+    ./display.nix
+    ./audio.nix
+    ./identity.nix
+    ./sensors.nix
+    ./containment.nix
     ./gnome.nix
     ./initrd-guard.nix
     ./usb-shell.nix
@@ -41,7 +55,7 @@ in
 
           "abl"    ABL's fastboot loads a boot.img from a boot slot; the kernel
                    command line travels in the Android boot header
-                   (pkgs/bootimg.nix). Initial installation is always performed
+                   (pkgs/bootimg/default.nix). Initial installation is always performed
                    from the RAM installer image; no host-side fastboot writer is
                    part of this repository.
           "uboot"  U-Boot boots the extlinux configuration NixOS installs at
@@ -106,7 +120,7 @@ in
 
       # Post-mortem forensics on a unit with no reachable debug UART.  The
       # PMIC vWDT resets ~20s after the kernel stops petting it; the lockup
-      # detectors (enabled in kernel/config.nix) bark earlier and panic, and
+      # detectors (enabled in pkgs/kernel/config.nix) bark earlier and panic, and
       # the panic text plus the stuck task's stack land in the ramoops pstore
       # dump, which survives the reset.  ftrace_dump_on_oops pushes an armed
       # tracer's ring buffer into that same dump.
@@ -138,7 +152,7 @@ in
           # below instead.
           "earlycon=simplefb"
           # The panel console.  With DRM_CLIENT_DEFAULT_FBDEV (see
-          # kernel/liuqin-firstboot.config) fbcon binds on the DSI panel, so
+          # pkgs/kernel/liuqin-firstboot.config) fbcon binds on the DSI panel, so
           # console=tty0 gives the kernel log *and* a getty on the panel, and a
           # compositor takes DRM master from it normally.  The downstream
           # "drm_log" client is deliberately NOT named here any more: it
@@ -152,7 +166,7 @@ in
           "firmware_class.path=/var/lib/firmware"
           # TEO chooses the idle state from the timer deadline instead of
           # menu's heuristics, which is the better default on a
-          # battery-powered device.  kernel/liuqin-firstboot.config builds it
+          # battery-powered device.  pkgs/kernel/liuqin-firstboot.config builds it
           # in and says "chosen at runtime", but nothing ever chose it: the
           # kernel came up on menu (drivers/cpuidle/cpuidle.c exposes the
           # choice as cpuidle.governor=).
