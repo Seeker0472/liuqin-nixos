@@ -8,16 +8,13 @@
     let
       lib = nixpkgs.lib;
 
-      # The requireFile payloads that have no public source count as unfree:
-      # the VPU image, the SSC sensor config and the vendor CS35L41 payloads
-      # (see pkgs/firmware.nix).  The same predicate serves the flake's own
-      # package sets and mkLiuqinSystem.
+      # The requireFile payloads that have no public source count as unfree.
+      # The names live in pkgs/device-packages.nix, the same registry that
+      # classifies the device packages, so the predicate and the payloads
+      # cannot drift.  It serves the flake's own package sets and
+      # mkLiuqinSystem alike.
       allowLiuqinUnfree = pkg:
-        builtins.elem (lib.getName pkg) [
-          "liuqin-ssc-config.tar.zst"
-          "liuqin-firmware-vpu.tar.zst"
-          "liuqin-firmware-cs35l41.tar.zst"
-        ];
+        builtins.elem (lib.getName pkg) (import ./pkgs/device-packages.nix).unfree;
 
       pkgsHost = import nixpkgs { system = "x86_64-linux"; };
 
@@ -113,12 +110,12 @@
             cfg = configuration.config;
             toplevel = cfg.system.build.liuqinLiveToplevel;
             bootargs = cfg.boot.kernelParams ++ [ "init=${toplevel}/init" ];
-            mkImage = imageBootargs: pkgsArm.callPackage ./pkgs/bootimg.nix {
+            mkImage = imageBootargs: pkgsArm.callPackage ./pkgs/bootimg {
               kernel = cfg.boot.kernelPackages.kernel;
               gawk = pkgsHost.gawk;
               bootargs = lib.concatStringsSep " " imageBootargs;
               ramdisk = cfg.system.build.netbootRamdisk + "/initrd";
-              extraOverlayDts = ./dts/liuqin-installer-overlay.dts;
+              extraOverlayDts = ./pkgs/bootimg/dts/liuqin-installer-overlay.dts;
             };
           in
           {
@@ -138,7 +135,7 @@
             toplevel = cfg.system.build.toplevel;
           in
           {
-            bootimg = pkgsArm.callPackage ./pkgs/bootimg.nix {
+            bootimg = pkgsArm.callPackage ./pkgs/bootimg {
               kernel = cfg.boot.kernelPackages.kernel;
               gawk = pkgsHost.gawk;
               bootargs = lib.concatStringsSep " " (
@@ -172,7 +169,7 @@
           # Low-level bring-up artifact only: this has an empty ramdisk and
           # no `init=` command line. Use installer-bootimg or bootimg-nixos
           # for a bootable NixOS environment.
-          bootimg-kernel-only = pkgsArm.callPackage ./pkgs/bootimg.nix {
+          bootimg-kernel-only = pkgsArm.callPackage ./pkgs/bootimg {
             kernel = normalKernel;
             gawk = pkgsHost.gawk;
           };
@@ -190,8 +187,8 @@
           installer-squashfs = installerImages.squashfsStore;
           # The bootloader this device boots, and the ABL boot.img built from
           # it: this is the whole U-Boot pipeline inside this flake, with no
-          # sibling checkout. See u-boot/default.nix for where the tree comes
-          # from and ../pkgs/bootimg.nix for the boot.img contract (shared with
+          # sibling checkout. See pkgs/u-boot/default.nix for where the tree comes
+          # from and pkgs/bootimg/default.nix for the boot.img contract (shared with
           # the kernel image).
           uboot = pkgsArm.liuqinUboot.uboot;
           uboot-bootimg = pkgsArm.liuqinUboot.bootimg;
@@ -240,5 +237,91 @@
         self.nixosConfigurations.liuqin.config.system.build.toplevel;
       checks.x86_64-linux.eval-installer =
         self.nixosConfigurations.liuqin-installer.config.system.build.toplevel;
+
+      # Device-free hygiene, run by `nix flake check` on any host: no tablet,
+      # no sibling checkout, no network.
+      #
+      # Patch hunk counts: GNU patch silently drops the tail of a hunk whose
+      # @@ header understates its line count, and the build stays green
+      # (pkgs/kernel/check-patch-hunks.py). The kernel build runs this over
+      # pkgs/kernel/patches in postPatch; the U-Boot series has no build-time
+      # equivalent, and this check covers both without building either.
+      checks.x86_64-linux.liuqin-patch-hunks =
+        pkgsHost.runCommand "liuqin-patch-hunks"
+          { nativeBuildInputs = [ pkgsHost.python3 ]; }
+          ''
+            python3 ${./pkgs/kernel/check-patch-hunks.py} ${./pkgs/kernel/patches}/*.patch
+            python3 ${./pkgs/kernel/check-patch-hunks.py} ${./pkgs/u-boot/patches}/*.patch
+            touch $out
+          '';
+
+      # pkgs/u-boot/port.manifest pins the bytes of pkgs/u-boot/{patches,files} so a
+      # hand edit that bypasses verify-port.sh --write fails here, without
+      # the liuqin-dualboot dev tree the full verify-port check compares
+      # against. New files must be staged for the flake source to carry them
+      # (the check says so when the manifest itself is missing).
+      checks.x86_64-linux.liuqin-uboot-port-manifest =
+        pkgsHost.runCommand "liuqin-uboot-port-manifest"
+          { nativeBuildInputs = [ pkgsHost.coreutils ]; }
+          ''
+            cd ${./pkgs/u-boot}
+            if [ ! -f port.manifest ]; then
+              echo "pkgs/u-boot/port.manifest is not in the flake source." >&2
+              echo "A new file must be staged before it is visible: git add pkgs/u-boot/port.manifest" >&2
+              exit 1
+            fi
+            # The pinned file set and the on-disk set must be identical ...
+            find files patches -type f | LC_ALL=C sort > "$TMPDIR/current.list"
+            sed 's/^[0-9a-f]\{64\}  //' port.manifest | LC_ALL=C sort > "$TMPDIR/pinned.list"
+            different=$(comm -3 "$TMPDIR/pinned.list" "$TMPDIR/current.list")
+            if [ -n "$different" ]; then
+              echo "pkgs/u-boot/{patches,files} and port.manifest disagree on the file set:" >&2
+              echo "$different" >&2
+              echo "re-run pkgs/u-boot/verify-port.sh --write" >&2
+              exit 1
+            fi
+            # ... and every pinned hash must match.
+            sha256sum -c --quiet port.manifest
+            touch $out
+          '';
+
+      # The classification registry must cover overlay.nix's definitions
+      # exactly, and every injected name must exist in the cross set.  A new
+      # package fails this check until pkgs/device-packages.nix classifies it
+      # (inject or native), which is the decision that used to be silently
+      # omittable.
+      checks.x86_64-linux.liuqin-package-manifest =
+        let
+          manifest = import ./pkgs/device-packages.nix;
+          defined = builtins.attrNames (self.overlays.default pkgsHost pkgsHost);
+          declared = manifest.inject ++ builtins.attrNames manifest.native;
+          unclassified = lib.subtractLists defined declared;
+          missing = lib.subtractLists declared defined;
+          unknownInject =
+            builtins.filter (n: !(builtins.hasAttr n pkgsArm)) manifest.inject;
+          problems =
+            lib.optional (unclassified != [ ])
+              "not classified in pkgs/device-packages.nix: ${builtins.concatStringsSep " " unclassified}"
+            ++ lib.optional (missing != [ ])
+              "classified but not defined in overlay.nix: ${builtins.concatStringsSep " " missing}"
+            ++ lib.optional (unknownInject != [ ])
+              "injected but absent from the cross set: ${builtins.concatStringsSep " " unknownInject}";
+        in
+        pkgsHost.runCommand "liuqin-package-manifest" { }
+          (
+            if problems == [ ] then
+              "touch $out"
+            else
+              ''
+                echo "pkgs/device-packages.nix and overlay.nix disagree:" >&2
+                ${lib.concatMapStrings (p: "echo '  ${p}' >&2\n") problems}exit 1
+              ''
+          );
+
+      # The storage guard's fixture tests (fail-closed argument handling and
+      # identity check, no root or block device needed) run in its checkPhase;
+      # building the package here is what makes `nix flake check` execute them.
+      checks.x86_64-linux.liuqin-storage-guard =
+        pkgsHost.callPackage ./pkgs/storage-guard.nix { };
     };
 }

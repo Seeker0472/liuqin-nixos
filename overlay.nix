@@ -10,10 +10,10 @@ final: prev:
   # host/OTG, DP Alt Mode and the MiPPS ABI.  The per-feature bring-up
   # profiles are gone - they existed to bisect the bring-up, and every one of
   # them has been validated on hardware.
-  liuqinKernel = final.callPackage ./kernel { };
+  liuqinKernel = final.callPackage ./pkgs/kernel { };
   # RAM installer kernel: same display/earlycon fixes, with the input and USB
   # host paths promoted to built-in because the installer has no module tree.
-  liuqinInstallerKernel = final.callPackage ./kernel { installer = true; };
+  liuqinInstallerKernel = final.callPackage ./pkgs/kernel { installer = true; };
 
   liuqinKernelDtb = prev.runCommand "liuqin-dtb-${final.liuqinKernel.version}"
     { nativeBuildInputs = [ final.buildPackages.dtc ]; } ''
@@ -21,7 +21,7 @@ final: prev:
     cp ${final.liuqinKernel}/dtbs/qcom/sm8475-xiaomi-liuqin.dtb $out/
 
     # The scheduler only learns that the three Kryo clusters differ through
-    # these two properties (patches/kernel/0016); with them missing every CPU
+    # these two properties (pkgs/kernel/patches/0011-liuqin-cpu-topology-thermal.patch); with them missing every CPU
     # falls back to cpu_capacity 1024 and SD_ASYM_CPUCAPACITY is never set, and
     # the failure is silent.  Assert the values, not just presence: setting
     # 1024 on every CPU would pass a count-only check.
@@ -30,7 +30,7 @@ final: prev:
       n=$(grep -cF "$1" board.dts || true)
       [ "$n" -eq "$2" ] || {
         echo "error: board DTB has $n lines of '$1', expected $2" >&2
-        echo "       (the CPU capacity/energy-model patch 0016 is missing)" >&2
+        echo "       (the CPU capacity/energy-model patch 0011-liuqin-cpu-topology-thermal.patch is missing)" >&2
         exit 1
       }
     }
@@ -48,7 +48,7 @@ final: prev:
 
   # --- boot.img tooling ---
   mkbootimg = final.callPackage ./pkgs/mkbootimg.nix { };
-  liuqinBootimg = final.callPackage ./pkgs/bootimg.nix {
+  liuqinBootimg = final.callPackage ./pkgs/bootimg {
     kernel = final.liuqinKernel;
     # bootimg.nix runs its DT/symbol synthesis on the build host.  In the
     # aarch64 package set the unqualified gawk would be an aarch64 executable
@@ -58,28 +58,31 @@ final: prev:
 
   # --- U-Boot ---
   # The bootloader this device boots, built here rather than in a sibling
-  # checkout: Qualcomm's U-Boot fork plus the liuqin port (u-boot/patches for
-  # the files it shares with its base, u-boot/files for the ones it adds;
-  # u-boot/verify-port.sh proves the three reproduce the dev tree byte for byte). The
-  # boot.img is packaged by pkgs/bootimg.nix, the same ABL pipeline as the
+  # checkout: Qualcomm's U-Boot fork plus the liuqin port (pkgs/u-boot/patches
+  # for the files it shares with its base, pkgs/u-boot/files for the ones it
+  # adds; pkgs/u-boot/verify-port.sh proves the three reproduce the dev tree
+  # byte for byte). The boot.img is packaged by pkgs/bootimg/default.nix, the
+  # same ABL pipeline as the
   # kernel image. buildPackages is the x86_64 set that runs the host tools.
-  liuqinUboot = final.callPackage ./u-boot { hostPkgs = final.buildPackages; };
+  liuqinUboot = final.callPackage ./pkgs/u-boot { hostPkgs = final.buildPackages; };
 
   # --- Device packages ---
-  liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd.nix { };
+  liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd { };
 
   # --- Device glue --------------------------------------------------------
-  # The commands the module wires into units (modules/liuqin/hardware.nix):
+  # The commands the modules wire into units (modules/liuqin/*.nix):
   # the script bodies live here, the unit ordering stays in the module. Each
   # command is parameterised (state paths, sysfs roots, actions) so the whole
   # flow can be exercised against fixture trees, with no tablet involved.
   liuqinScreenRefresh = final.callPackage ./pkgs/screen-refresh.nix { };
   liuqinBacklightDefault = final.callPackage ./pkgs/backlight.nix { };
   liuqinPersistProvision = final.callPackage ./pkgs/persist-provision.nix { };
+  # persistent-root identity guard, run by modules/liuqin/initrd-guard.nix
+  liuqinStorageGuard = final.callPackage ./pkgs/storage-guard.nix { };
   liuqinFirmwarePath = final.callPackage ./pkgs/firmware-path.nix { };
   liuqinWlanMac = final.callPackage ./pkgs/wlan-mac.nix { };
   liuqinBtPublicAddr = final.callPackage ./pkgs/bt-public-addr.nix { };
-  liuqinBtNv = final.callPackage ./pkgs/bt-nv.nix { };
+  liuqinBtNv = final.callPackage ./pkgs/bt-nv { };
   liuqinSlpi = final.callPackage ./pkgs/slpi.nix { };
   liuqinSensorProxyRefresh = final.callPackage ./pkgs/sensor-proxy-refresh.nix { };
 
@@ -115,7 +118,7 @@ final: prev:
   # the narrow qcom-battery ABI.  Runtime key files are never part of Nix.
   liuqinMippsd = final.callPackage ./pkgs/mipps-daemon.nix { };
 
-  liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc.nix { };
+  liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };
 
   # libssc at the pinned downstream commit.
@@ -130,20 +133,13 @@ final: prev:
 
   # iio-sensor-proxy with the liuqin SSC patches 0003-0006; the hexagonrpcd
   # side is a single patch (0001-hexagonrpcd-implement-ssc-file-service),
-  # applied in pkgs/hexagonrpc.nix.
-  liuqinIioSensorProxy = prev.iio-sensor-proxy.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [
-      ./data/sensors-patches/0003-iio-sensor-proxy-start-preclaimed-coldplug-sensor.patch
-      ./data/sensors-patches/0004-iio-sensor-proxy-serialize-ssc-accel-polling.patch
-      ./data/sensors-patches/0005-iio-sensor-proxy-cancel-released-pending-claims.patch
-      ./data/sensors-patches/0006-iio-sensor-proxy-broadcast-sensor-availability.patch
-    ];
-  });
+  # applied in pkgs/hexagonrpc/default.nix.
+  liuqinIioSensorProxy = final.callPackage ./pkgs/iio-sensor-proxy { };
 
   # The device's UCM2 files as a leaf package.  Deliberately NOT an override of
   # alsa-ucm-conf: that package is a build input of alsa-lib, so patching it
-  # would rebuild every audio consumer in the closure.  See pkgs/alsa-ucm.nix.
-  liuqinAlsaUcm = final.callPackage ./pkgs/alsa-ucm.nix { };
+  # would rebuild every audio consumer in the closure.  See pkgs/alsa-ucm/default.nix.
+  liuqinAlsaUcm = final.callPackage ./pkgs/alsa-ucm { };
 
   # Firmware tree assembled from requireFile placeholders (operator-supplied
   # stock-ROM payloads); see pkgs/firmware.nix.

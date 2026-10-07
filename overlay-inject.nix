@@ -17,43 +17,16 @@
 # those artifacts. Building the per-machine derivations (/etc, units, initrd)
 # still needs an aarch64 executor: binfmt on the host, or the device itself.
 #
-# Applied via `mkLiuqinSystem { injectFrom = ...; }`, passing the flake's own
-# `pkgsArm`. A consumer building on a real aarch64 host should leave it unset.
-#
-# liuqinPowerKeyd is deliberately NOT injected: pkgs/power-keyd.nix substitutes
-# a path from gnome-control-center into its menu helper, and the cross build of
-# that package therefore drags the entire *cross* GNOME desktop (mutter,
-# webkitgtk, ...) into the installed system's closure - cross derivations no
-# cache can serve.  Built natively it is three files of C and shell and points
-# at the native gnome-control-center the GNOME desktop already carries.
-#
-# The device-glue commands (pkgs/screen-refresh.nix, backlight.nix,
-# persist-provision.nix, wlan-mac.nix, bt-public-addr.nix, slpi.nix,
-# sensor-proxy-refresh.nix, like the existing sensors-tools/usb-login)
-# are not injected either: they are single shell scripts with no closure of
-# their own, so building them natively costs one text derivation each and keeps
-# them out of the cross set's dependency graph.
+# The list itself is not kept here: pkgs/device-packages.nix is the single
+# classification registry (what is injected, what is deliberately native, and
+# why), shared with the flake's liuqin-package-manifest check.
 { pkgsArm }:
 
 _final: _prev:
-{
-  inherit (pkgsArm)
-    liuqinKernel
-    # The installed system's kernel comes from hardware.liuqin.package ->
-    # liuqinKernel; without this entry it would silently resolve to the native
-    # package set while liuqinKernel stays cross-built.
-    liuqinInstallerKernel
-    liuqinKernelDtb
-    liuqinInstallerKernelDtb
-    mkbootimg
-    liuqinBootimg
-    liuqinUboot
-    liuqinHexagonrpc
-    liuqinMippsd
-    liuqinSensorsConfig
-    liuqinLibssc
-    liuqinIioSensorProxy
-    liuqinFirmware
-    liuqinInitrdFirmware
-    ;
-}
+
+let
+  manifest = import ./pkgs/device-packages.nix;
+in
+builtins.listToAttrs (
+  map (name: { inherit name; value = pkgsArm.${name}; }) manifest.inject
+)
