@@ -197,7 +197,10 @@ with kernelLib;
   MAC80211 = lib.mkForce module;
   ATH11K = lib.mkForce module;
   ATH11K_PCI = lib.mkForce module;
-  ATH11K_DEBUG = lib.mkForce yes;
+  # ath11k debug-level logging (ath11k_dbg) was a bring-up aid and stays off
+  # in the shipping kernel. Note that the driver's msdu_done messages are
+  # ath11k_warn(), not debug-gated, so they are unaffected either way.
+  ATH11K_DEBUG = lib.mkForce no;
   PCI_PWRCTRL = lib.mkForce yes;
   PCI_PWRCTRL_PWRSEQ = lib.mkForce module;
   BT = lib.mkForce module;

@@ -219,6 +219,19 @@ in
         cfg.debugTransport == "usb" || cfg.debugTransport == "both"
       );
 
+      # The USB transport is an unauthenticated root shell on the gadget link,
+      # so leaving it on is a bring-up decision rather than a quiet default.
+      # The warning keys off the resulting option, so it fires both when
+      # debugTransport selects it and when a machine turns it on directly.
+      warnings = lib.optional config.hardware.liuqin.usbShell.enable ''
+        hardware.liuqin.debugTransport = "${cfg.debugTransport}" leaves the
+        USB debug shell enabled: an unauthenticated root shell over the cabled
+        gadget link (telnet 192.168.7.2 port 2323, NCM/ECM network, busybox
+        login wrapper). Keep it only while bring-up needs it and only with a
+        directly attached, trusted host; "ssh" (key-only) or "none" disable it.
+        The RAM installer's separate USB channel is unaffected.
+      '';
+
       # U-Boot boots NixOS through NixOS' own extlinux loader: it writes the
       # generation list to /boot/extlinux/extlinux.conf on the `linux`
       # partition, next to the kernel, initrd and device tree each label points
