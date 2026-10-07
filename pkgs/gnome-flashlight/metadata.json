@@ -1,0 +1,7 @@
+{
+  "uuid": "liuqin-flashlight@liuqin",
+  "name": "Flashlight",
+  "description": "Control the Xiaomi Pad 6 Pro's rear flash LED (torch and brightness) from the Quick Settings menu.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1
+}

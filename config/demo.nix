@@ -29,5 +29,28 @@
   # Audio tools on the device: alsaucm/arecord/amixer/aplay.  The system
   # already carries alsa-lib and the liuqin UCM2 tree; see PORTING-NOTES.md
   # (Audio) for the verified state and the remaining limits.
-  environment.systemPackages = [ pkgs.alsa-utils ];
+  environment.systemPackages = [
+    pkgs.alsa-utils
+    # Flashlight Quick Settings toggle + brightness slider for the rear flash
+    # LED (see pkgs/gnome-flashlight).
+    (pkgs.callPackage ../pkgs/gnome-flashlight { })
+  ];
+
+  # Hand the flash LED's brightness attribute to the video group (the camera
+  # stack's group): the LED class device has no /dev node, so udev's
+  # GROUP/MODE/uaccess have nothing to act on - the attribute itself has to be
+  # adjusted from a rule.
+  services.udev.extraRules = ''
+    SUBSYSTEM=="leds", KERNEL=="white:flash", RUN+="${pkgs.coreutils}/bin/chgrp video /sys/class/leds/white:flash/brightness", RUN+="${pkgs.coreutils}/bin/chmod 0664 /sys/class/leds/white:flash/brightness"
+  '';
+
+  # Enable the flashlight extension for the user; the LED itself is the only
+  # state it has, so nothing else needs configuring.
+  programs.dconf.profiles.user.databases = [
+    {
+      settings."org/gnome/shell" = {
+        enabled-extensions = [ "liuqin-flashlight@liuqin" ];
+      };
+    }
+  ];
 }
