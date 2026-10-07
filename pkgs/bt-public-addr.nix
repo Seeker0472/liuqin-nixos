@@ -7,7 +7,7 @@
 # request is bounded and the controller's completion reply is required, not
 # just btmgmt's exit status (downstream liuqin-bt-public-addr semantics).
 #
-# The unit (modules/liuqin/hardware.nix) pulls this in via bluetooth.service;
+# The unit (modules/liuqin/identity.nix) pulls this in via bluetooth.service;
 # BlueZ has no declarative option for the public address.
 { writeShellApplication
 , bluez

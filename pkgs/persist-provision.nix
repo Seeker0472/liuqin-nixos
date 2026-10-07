@@ -5,7 +5,7 @@
 # the SSC sensor registry. Everything here is device-unique, so none of it can
 # live in the Nix store or the repository.
 #
-# Wired into units by modules/liuqin/hardware.nix, which supplies the system
+# Wired into units by modules/liuqin/sensors.nix, which supplies the system
 # layout as flags; the fail-closed checks (exact byte counts, a >100-file
 # registry floor, a malformed identity is fatal) follow the downstream
 # provision-liuqin-from-persist.sh.

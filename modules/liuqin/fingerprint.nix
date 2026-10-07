@@ -4,12 +4,12 @@
 #
 # The full stack, from the sensor up:
 #
-#   kernel      qseecomtee.ko (CONFIG_TEE_QSEECOM, patch 0026) speaks the
+#   kernel      qseecomtee.ko (CONFIG_TEE_QSEECOM, 0017-liuqin-tee-qseecom-legacy-transport.patch) speaks the
 #               legacy QSEE transport and exposes /dev/tee0 and /dev/teepriv0;
-#               fpc1020.ko (CONFIG_SENSORS_FPC1020, patch 0027) powers the
+#               fpc1020.ko (CONFIG_SENSORS_FPC1020, 0018-liuqin-misc-fpc1020.patch) powers the
 #               sensor and reports its interrupt through /dev/fpc1020, and
 #               deliberately performs no SPI (the fpcliu trustlet owns the
-#               bus); patch 0028 adds the DT node.  QCOM_QSEECOM and the TEE
+#               bus); 0019-liuqin-dts-fpc1264.patch adds the DT node.  QCOM_QSEECOM and the TEE
 #               core (TEE=module) are pulled in by modprobe as dependencies,
 #               so only the two leaf modules are named below.
 #   TOD driver  pkgs.liuqinFpcOemTodDriver: the out-of-tree libfprint TOD

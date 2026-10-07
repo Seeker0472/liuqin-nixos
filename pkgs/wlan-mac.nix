@@ -5,7 +5,7 @@
 # root-only state written by liuqin-persist-provision; this command refuses
 # anything else and never falls back to the hardware address.
 #
-# The unit (modules/liuqin/hardware.nix) runs it before NetworkManager; there
+# The unit (modules/liuqin/identity.nix) runs it before NetworkManager; there
 # is no declarative NetworkManager option for this, because the address is
 # per-device state, not a build-time value.
 { writeShellApplication, coreutils, gnugrep, iproute2 }:

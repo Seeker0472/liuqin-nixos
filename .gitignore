@@ -10,6 +10,6 @@ __pycache__/
 # the other liuqin-firmware-* archives were replaced by the firmware tree in
 # the downstream release's boot.img (pkgs/firmware.nix), so local copies of
 # them are stale.
-# The stock-*.tar.zst archives are NOT listed: data/stock-*.nix imports them
+# The stock-*.tar.zst archives are NOT listed: pkgs/bootimg/stock-*.nix imports them
 # with builtins.path, so they must stay in the tree for a boot image to build.
 data/liuqin-*.tar.zst

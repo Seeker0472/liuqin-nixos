@@ -5,7 +5,7 @@
 # so the units can provision the SSC registry before the DSP starts; this is
 # what starts and stops it.
 #
-# The unit (modules/liuqin/hardware.nix) uses `start` for ExecStart and `stop`
+# The unit (modules/liuqin/sensors.nix) uses `start` for ExecStart and `stop`
 # for ExecStop. The registry check is run as the FastRPC user that will serve
 # it to the DSP; when the command is run manually as a non-root user it checks
 # readability with its own privileges instead of failing on runuser.

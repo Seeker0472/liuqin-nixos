@@ -2,7 +2,7 @@
 #
 # One blank/unblank of the framebuffer makes fbcon redraw its whole console
 # buffer - scrollback included - into the memory the panel scans. The installed
-# system (modules/liuqin/hardware.nix) and the RAM installer
+# system (modules/liuqin/display.nix) and the RAM installer
 # (config/installer.nix) used to carry verbatim twins of this script.
 #
 # `--graphics-dir` exists so the blank sequence can be exercised against a

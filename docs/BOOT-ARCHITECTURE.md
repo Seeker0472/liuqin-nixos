@@ -117,10 +117,10 @@ demo 的 `demo-bootdir` 已随这次迁移删除，`boot.loader = "uboot"` 现�
 
 ```sh
 nix build .#uboot           # u-boot-nodtb.bin + sm8450-xiaomi-liuqin.dtb
-nix build .#uboot-bootimg   # 上面那份 + ABL 打包（pkgs/bootimg.nix）
+nix build .#uboot-bootimg   # 上面那份 + ABL 打包（pkgs/bootimg/default.nix）
 ```
 
-产物在 `liuqin-nixos/u-boot/`，三部分：
+产物在 `liuqin-nixos/pkgs/u-boot/`，三部分：
 
 | 路径 | 内容 |
 | --- | --- |
@@ -128,17 +128,17 @@ nix build .#uboot-bootimg   # 上面那份 + ABL 打包（pkgs/bootimg.nix）
 | `files/` | 移植**新增**的 15 个文件，按树内路径放：`board/qualcomm/liuqin/`（含 `liuqin.env`）、两个 DTS（`arch/arm/dts/` 与 `dts/upstream/src/arm64/qcom/`）与 `cmd/partlog.c`。构建时覆盖到基线之上。 |
 | `patches/` | 对基线**已有**文件的 30 处改动，切成 13 个 topic patch。分组之间**文件互不重叠**，所以顺序无关、也不会互相 fuzz：Kconfig 符号、mach 板级钩子（含跨复位 stage log 的标记）、`Makefile` 的 `pwd` 修正、console/input、UFS+QMP-UFS PHY、eUSB2 PHY、dwc3（含端点状态机）、fastboot 弱钩子、f_fastboot 请求池、pinctrl/PMIC GPIO/RPMH regulator/SMMU、`cmd` 的 partlog 接线、bootmenu 重绘、`boot/pxe_utils.c` 的 extlinux 按键菜单。 |
 
-`u-boot/default.nix` 逐字复刻 `liuqin-dualboot/u-boot/build.sh` 的 `scripts/config`
+`pkgs/u-boot/default.nix` 逐字复刻 `liuqin-dualboot/u-boot/build.sh` 的 `scripts/config`
 清单与 `DEVICE_TREE`（实测配置因此是唯一来源；**构建期不再对结果做任何断言** ——
 要核对就手动比 `$out/uboot.config` 与 dev 树的 `u-boot/source/.output/.config`，
 或用 `nm` 查入口符号是否在 ELF 里，做法见 `AGENTS.md` §3）；`boot.img` 的契约（ids、`__symbols__` 并集 1744、惰性
 sink、`base 0`/`kernel_offset 0x8000`/`dtb_offset 0x1f00000`、8 MiB padding、
-空 newc ramdisk）由 `pkgs/bootimg.nix` 统一实现，内核镜像走同一条管线。构建还会
+空 newc ramdisk）由 `pkgs/bootimg/default.nix` 统一实现，内核镜像走同一条管线。构建还会
 把实际用的 `.config` 装进产物（`$out/uboot.config`），用来跟 dev 树构建逐行对照。
 
 **维护约定**：`liuqin-dualboot/u-boot/source` 是移植的唯一真源，这份打包只是它
 的机械函数：基线已有的文件 → `patches/`（topic 分组写在脚本里），移植新增的文件
-→ `files/`。改移植要先改 dev 树，再跑 `u-boot/verify-port.sh`（默认只校验，
+→ `files/`。改移植要先改 dev 树，再跑 `pkgs/u-boot/verify-port.sh`（默认只校验，
 `--write` 重新切出 `patches/` + `files/`），它会断言
 **基线 + 补丁 + `files/` == dev 树，逐字节**（当前：30 个改动、15 个新增、
 35363 个文件）。分组是否互相覆盖、有没有新增/删除文件对不上，也都在这条检查里。

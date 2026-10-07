@@ -2,7 +2,7 @@
 
 生产分支的相机总览：**做了什么 / 还没做什么 / 注意事项与关键事实**。
 实验过程的原始日志、数据与失败记录在 `camera/mainline` 分支（git 历史）；
-内核补丁索引在 `patches/kernel/README.md`；移植背景见 `docs/PORTING-NOTES.md`（Camera）。
+内核补丁索引在 `pkgs/kernel/patches/README.md`；移植背景见 `docs/PORTING-NOTES.md`（Camera）。
 
 ## 我们做了什么（真机实测）
 

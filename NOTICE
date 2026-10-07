@@ -3,19 +3,20 @@ License boundaries in this repository
 
 This repository is MIT-licensed overall (see LICENSE), except:
 
-* patches/kernel/*.patch are Linux kernel patches, licensed GPL-2.0-only.
+* pkgs/kernel/patches/*.patch are Linux kernel patches, licensed GPL-2.0-only.
   Each patch file's header records its provenance; those headers are
   preserved verbatim.
-* dts/liuqin-abl-boot-overlay.dts is GPL-2.0-only (device-tree source,
+* pkgs/bootimg/dts/liuqin-abl-boot-overlay.dts is GPL-2.0-only (device-tree source,
   carried unchanged from the downstream project).
-* pkgs/liuqin-power-keyd/liuqin-power-keyd.c, liuqin-power-key-action.sh
+* pkgs/power-keyd/liuqin-power-keyd.c, liuqin-power-key-action.sh
   and liuqin-power-menu.py are MIT, carried from the downstream project
   (yzddmr6/xiaomipad-6pro-mainline).
-* data/ucm2/ (ALSA UCM2 configuration) is BSD-3-Clause per upstream
+* pkgs/alsa-ucm/ucm2/ (ALSA UCM2 configuration) is BSD-3-Clause per upstream
   alsa-ucm-conf; the liuqin card files originate from the downstream
   project.
-* data/sensors-patches/*.patch are patches to hexagonrpc (GPL-2.0) and
-  iio-sensor-proxy (GPL-3.0 / LGPL); they retain their downstream headers.
+* pkgs/hexagonrpc/patches/*.patch and pkgs/iio-sensor-proxy/patches/*.patch
+  are patches to hexagonrpc (GPL-2.0) and iio-sensor-proxy (GPL-3.0 / LGPL);
+  they retain their downstream headers.
 * pkgs/firmware.nix and pkgs/sensors-config.nix reference proprietary
   Qualcomm/Xiaomi binaries that are NOT redistributable. This repository is
   PRIVATE / personal self-use and must not be published publicly: the
@@ -25,7 +26,7 @@ This repository is MIT-licensed overall (see LICENSE), except:
   operator. If the
   repository is ever to be published, these files must first be removed
   from history (git filter-repo --path-glob 'data/*.tar.zst'
-  --invert-paths) and data/stock-dtbo-entries.nix / stock-base-dtbs.nix
+  --invert-paths) and pkgs/bootimg/stock-dtbo-entries.nix / stock-base-dtbs.nix
   switched back to requireFile inputs.
 
 Vendor-derived data in the device patches
@@ -35,11 +36,11 @@ The camera patches embed register tables decoded from Xiaomi/Qualcomm binaries
 and fall under the same PRIVATE / personal-self-use caveat as the firmware
 above; none of the source containers is committed.
 
-* patches/kernel/0019 (IMX596, SC202CS) and 0020 (S5KJN1 vendor modes) carry
+* pkgs/kernel/patches/0019 (IMX596, SC202CS) and 0020 (S5KJN1 vendor modes) carry
   sensor init/mode tables extracted from the MIUI sensor-module containers
   (com.qti.sensormodule.*.bin); they were machine-generated during bring-up
   (the generator lived in the bring-up branch).
-* patches/kernel/0018 carries the CSIPHY 2.1.3 lane table extracted from the
+* pkgs/kernel/patches/0018 carries the CSIPHY 2.1.3 lane table extracted from the
   vendor camera.ko during bring-up.
 
 If the repository is ever published, treat these tables with the same care as

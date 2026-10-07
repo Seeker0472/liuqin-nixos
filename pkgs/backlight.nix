@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Force the known-good desktop backlight level after systemd-backlight@
-# restored whatever the last session left (modules/liuqin/hardware.nix orders
+# restored whatever the last session left (modules/liuqin/display.nix orders
 # the unit accordingly). The panel is this board's only boot evidence, so the
 # write is verified instead of assumed.
 #

@@ -1,7 +1,7 @@
 # liuqin-nixos — Xiaomi Pad 6 Pro (SM8475)
 
 NixOS support for the Xiaomi Pad 6 Pro, built around Linux 7.2.5 and the
-device patches in `patches/kernel/`. The repository is private: `data/` contains
+device patches in `pkgs/kernel/patches/`. The repository is private: `data/` contains
 proprietary firmware and stock DT artifacts from the operator's device.
 
 ## Installation model
@@ -159,7 +159,7 @@ and no `init=` command line; it is not a normal bootable NixOS system image.
 `bootimg-nixos` is the normal ABL RAM-boot image for an installed system;
 `demo-bootimg` is the corresponding demo artifact. `uboot` and `uboot-bootimg`
 are the bootloader itself and its ABL boot.img, built entirely here (see
-`u-boot/default.nix` for where the sources come from). The U-Boot path needs no
+`pkgs/u-boot/default.nix` for where the sources come from). The U-Boot path needs no
 `/boot` artifact: NixOS installs its own extlinux generation list into the
 target's `/boot` during installation. Later updates run the loader script
 explicitly after switching the system profile; see `docs/INSTALL.md`.
@@ -277,7 +277,7 @@ The early framebuffer implementation keeps the most recent screenful when it
 wraps instead of clearing the entire display. This is deliberate: the panel is
 the only pre-userspace diagnostic channel on this unit, and the last visible
 lines identify where a boot stopped. The ramoops node supplied by the kernel
-DTS is disabled in `dts/liuqin-abl-boot-overlay.dts` because ABL already carries
+DTS is disabled in `pkgs/bootimg/dts/liuqin-abl-boot-overlay.dts` because ABL already carries
 the same `/reserved-memory/ramoops@a7000000` region; retaining both produces an
 overlap and does not yield a usable second log channel.
 
@@ -286,7 +286,7 @@ reliable on this device and is no longer part of the kernel, cmdline or tools.
 
 ## DTB and ABL overlay pipeline
 
-`pkgs/bootimg.nix`:
+`pkgs/bootimg/default.nix`:
 
 1. applies the ABL metadata overlay;
 2. applies the installer-only USB2 peripheral overlay when building
@@ -316,13 +316,13 @@ device firmware tree.
 flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
 modules/liuqin/           installed-system hardware and initrd modules
-kernel/                   Linux configuration and installer profile
-patches/kernel/           Linux 7.2.5 device patches, applied in filename
-                          order (index/provenance: patches/kernel/README.md)
-pkgs/bootimg.nix          ABL boot image and DTB construction
-u-boot/                   the bootloader: the port's own base tree + patches + files
+pkgs/kernel/              Linux configuration and installer profile; the 7.2.5
+                          device patches live in pkgs/kernel/patches/, applied
+                          in filename order (index/provenance: that README.md)
+pkgs/bootimg/             ABL boot image and DTB construction, with the ABL and
+                          installer DT overlays under dts/
+pkgs/u-boot/              the bootloader: the port's own base tree + patches + files
                           (verify-port.sh proves the three equal the dev tree)
-dts/                      ABL and installer DT overlays
 data/                     private firmware and stock DT artifacts
 ```
 

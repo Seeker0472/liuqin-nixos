@@ -158,8 +158,8 @@ in
     # console at 0.0057 s, which loses the log that says what went wrong.
     "keep_bootcon"
     # console=tty0 is what gets the log and the getty; with the fbdev DRM
-    # client that is fbcon on the DRM framebuffer, which patch 0012 also keeps
-    # updated per draw.
+    # client that is fbcon on the DRM framebuffer, which 0003-liuqin-display-panel-msm.patch
+    # also keeps updated per draw.
     "console=tty0"
     # One path only: fw_path_para is a single char[256] (module_param_string,
     # firmware_loader/main.c) and does NOT split on ':', so a second
@@ -270,7 +270,8 @@ in
   # went to a different buffer. One blank/unblank makes fbcon redraw the whole
   # console buffer (its scrollback included) into the framebuffer the panel
   # scans, so the complete boot log ends up visible. Per-draw flushing is
-  # handled in the kernel by patch 0012 and needs nothing from userspace. The
+  # handled in the kernel by 0003-liuqin-display-panel-msm.patch (the msm
+  # dirtyfb fix) and needs nothing from userspace. The
   # command is shared with the installed system (pkgs/screen-refresh.nix).
   systemd.services.liuqin-screen-refresh = {
     description = "Redraw the console into the panel framebuffer";

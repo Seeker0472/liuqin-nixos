@@ -2,7 +2,7 @@
 
 NixOS support for the Xiaomi Pad 6 Pro (`xiaomi,liuqin`, SM8475) on Linux
 7.2.5, built from the kernel.org tarball plus the device patch series in
-`patches/kernel/`.  This is the *current state* record: subsystem status,
+`pkgs/kernel/patches/`.  This is the *current state* record: subsystem status,
 the MiPPS key contract, debug/deployment methods, and how the kernel patch
 series is organised.  Dated bring-up history, failed experiments and
 per-run measurements live in git history.
@@ -93,7 +93,7 @@ Companion documents: `README.md` (build outputs and configuration model),
   touch unresponsive; (2) adding `input_abs_set_res()` in the driver made
   evdev report **zero** events (cause unknown; the change was reverted).
   Remaining options: a synthetic EDID on the DSI connector (vendor/product),
-  or an explicit Mutter/GNOME mapping; `modules/liuqin/hardware.nix` carries
+  or an explicit Mutter/GNOME mapping; `modules/liuqin/firmware.nix` carries
   the same record next to the driver code.
 - The touchscreen firmware parser should validate ranges
   (`offset <= length && size <= length - offset`) before checksums/copies;
@@ -262,7 +262,7 @@ Known limits:
   the PLL keeps the HBR2 programming; other link rates/monitors are
   unsupported.  Adding one means capturing the vendor's registers at that
   rate the same way (`FIXME(dp-link-rates)` in
-  `files/kernel/phy-qcom-qmp-combo.c`).
+  `pkgs/kernel/replaced/phy-qcom-qmp-combo.c`).
 - The DT declares **2 data lanes** only; 4-lane DP is not implemented.
 - Repeated DP/PD hotplug (10×) and long-run stability are unverified.
 
@@ -336,11 +336,12 @@ synthesized when absent) or the build fails.
   init voltages encode.
 - The stock BT HAL additionally writes a per-chip NV/RF table to the
   controller at every Bluetooth enable (154 vendor commands, captured from
-  the unit's own HCI traffic into `data/bt-nv/`).  Mainline's driver only
+  the unit's own HCI traffic into the table checked in at
+  `pkgs/bt-nv/liuqin-bt-nv.table`).  Mainline's driver only
   downloads the rampatch/NVM files, and without the table - with identical
   rampatch/NVM, board file and rail voltages - the ATK mouse only linked while
   touching the tablet, while the same mouse worked 1 m away on stock Android
-  (**measured** 2026-10-06).  `liuqin-bt-nv` (`pkgs/bt-nv.nix`, installed on
+  (**measured** 2026-10-06).  `liuqin-bt-nv` (`pkgs/bt-nv/default.nix`, installed on
   PATH) is a manual operator tool that replays the table.  It is deliberately
   not a service, and that is also the honest state of the fix: the table lives
   in controller RAM, the writes are what made the difference in the A/B
@@ -384,12 +385,12 @@ root=fstab loglevel=7 lsm=landlock,yama,bpf
   single `char[256]`, no `:` splitting).  A second `:`-joined path
   invalidates the parameter and every `request_firmware()` fails with `-2`.
   Both call sites point at `/var/lib/firmware`.
-- Three config inputs: `kernel/config.nix` (structured answers),
-  `kernel/liuqin-firstboot.config` and `kernel/installer.config` (raw
+- Three config inputs: `pkgs/kernel/config.nix` (structured answers),
+  `pkgs/kernel/liuqin-firstboot.config` and `pkgs/kernel/installer.config` (raw
   fragments appended in `postConfigure` before one `make olddefconfig`, then
   asserted against the final `.config`).  `enableCommonConfig` is
   deliberately off.
-- The ramoops node is disabled in `dts/liuqin-abl-boot-overlay.dts` because
+- The ramoops node is disabled in `pkgs/bootimg/dts/liuqin-abl-boot-overlay.dts` because
   ABL supplies the same region; keeping both overlaps.
 
 ## 2. MiPPS key material and the daemon
@@ -616,7 +617,7 @@ both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
   pushed and collected it.  Diffs between vendor-live and our registers
   (`dp-reg-diff.py`) distinguished stable configuration differences from
   dynamic state, and `dp-gen-vendor-tables.py` generated the C tables that
-  are now in `files/kernel/phy-qcom-qmp-combo.c`.
+  are now in `pkgs/kernel/replaced/phy-qcom-qmp-combo.c`.
 - **The probe was removed from this repository during consolidation and is
   archived under `liuqin-audit/kernel-exp/dp-dump-probe/`** (source,
   `Makefile`, `default.nix`), together with the build/collect scripts
@@ -635,7 +636,7 @@ both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
 
 ## 4. Kernel patch series
 
-`kernel/default.nix` applies every `patches/kernel/*.patch` to a pristine
+`pkgs/kernel/default.nix` applies every `pkgs/kernel/patches/*.patch` to a pristine
 7.2.5 tree in **byte-sorted filename order**, except the patches listed in
 its `dtPatchNames` (`0014-…`/`0015-…`/`0016-…` today), which are applied
 last.  The 16 patches are grouped by subsystem; the first 14 were merged down
@@ -668,7 +669,7 @@ and the CS35L41 amplifier naming.
 
 The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
 it, and 0014 adds the USB/Type-C/DP nodes (connector, FSA4480 SBU mux,
-912 mV PLL rail) on top.  `kernel/default.nix` keeps 0014 in `dtPatchNames`
+912 mV PLL rail) on top.  `pkgs/kernel/default.nix` keeps 0014 in `dtPatchNames`
 so it is applied after the sorted series; the earlier USB3/Type-C/DP DT
 patches could not coexist as separate patches because they add the same
 `pm8350_l1` regulator and `&usb_1_qmpphy` node and the Type-C `&usb_1` hunk
@@ -680,7 +681,7 @@ overrides), so they are applied after 0014 as well.
 
 ### One file is replaced, not patched
 
-`files/kernel/phy-qcom-qmp-combo.c` is copied over the tree in `postPatch`.
+`pkgs/kernel/replaced/phy-qcom-qmp-combo.c` is copied over the tree in `postPatch`.
 The DP side of the combo PHY is a wholesale replacement whose values are the
 vendor's live register state; upstream shares the same DP block between the
 `sm8350` and `sm8450` cfgs, so a unified diff cannot distinguish them and
@@ -690,7 +691,7 @@ patch fuzz would hit the wrong cfg.  The file is generated by
 
 ### Config assertions, not just patches
 
-- `kernel/check-patch-hunks.py` runs in `postPatch` and fails the build if a
+- `pkgs/kernel/check-patch-hunks.py` runs in `postPatch` and fails the build if a
   patch's declared hunk counts do not match its body (GNU patch silently
   truncates a short hunk — the bug that once dropped `&usb_1`/`&usb_1_hsphy`
   and left the installed system with no USB debug channel).
@@ -700,16 +701,16 @@ patch fuzz would hit the wrong cfg.  The file is generated by
   `=y` and every `CONFIG_X=m` as `=y|=m` (`ZRAM` is an exact-`m` exception).
   `postBuild` also asserts `fw_path_para` survived into `vmlinux`.
 - The full build asserts the camera config symbols against the final
-  `.config` via `kernel/camera-symbols.txt`.
+  `.config` via `pkgs/kernel/camera-symbols.txt`.
 
 ### Adding or regenerating a patch
 
 Use a scratch git repo of only the files the series touches and let git
-produce the diffs (full recipe in `patches/kernel/README.md`):
+produce the diffs (full recipe in `pkgs/kernel/patches/README.md`):
 
 ```sh
 mkdir /tmp/kfix && cd /tmp/kfix
-grep -h '^+++ b/' patches/kernel/*.patch | sed 's|^+++ b/||' | sort -u > paths.txt
+grep -h '^+++ b/' pkgs/kernel/patches/*.patch | sed 's|^+++ b/||' | sort -u > paths.txt
 tar -tJf linux-7.2.5.tar.xz > members.txt
 awk 'NR==FNR{m[$0]=1;next}{if (m["linux-7.2.5/"$0]) print "linux-7.2.5/"$0}' \
     members.txt paths.txt > extract.txt
@@ -723,6 +724,6 @@ git diff <before> <after> > 00NN-liuqin-<group>.patch
 
 Verify by replaying the regenerated patches onto a pristine checkout and
 requiring `git diff <target> HEAD` to be **empty**; run
-`python3 kernel/check-patch-hunks.py patches/kernel/*.patch` and
+`python3 pkgs/kernel/check-patch-hunks.py pkgs/kernel/patches/*.patch` and
 `nix build .#kernel` before trusting a change.  Keep each patch's prose
 header with it.

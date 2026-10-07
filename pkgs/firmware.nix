@@ -96,7 +96,7 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   # directory of its own (qcom/vpu).
   chmod -R u+w $fw
 
-  # VPU: the iris driver (patch 0007) requests qcom/vpu/vpu20_4v.mbn, which
+  # VPU: the iris driver (0006-liuqin-media-iris.patch) requests qcom/vpu/vpu20_4v.mbn, which
   # the release's firmware tree does not carry.
   tar --zstd -xf ${vpu} -C $fw
 
