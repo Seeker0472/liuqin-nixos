@@ -242,6 +242,10 @@ with kernelLib;
   VIDEO_S5KJN1 = lib.mkForce module;
   VIDEO_QCOM_LIUQIN_SENSORS = lib.mkForce module;
   VIDEO_QCOM_IRIS = lib.mkForce module;
+  # Decodes H.264/HEVC bit-exactly and VP9 except for each stream's first
+  # frame; FIXME(vp9-first-frame) in docs/PORTING-NOTES.md.  AV1 is
+  # deliberately not advertised for sm8450: the VPU2 firmware has no AV1
+  # decoder and an AV1 session takes the core down (patch 0006).
   # The rear module's GT9764 autofocus (0013-liuqin-camera-tuning.patch).
   VIDEO_DW9768 = lib.mkForce module;
 

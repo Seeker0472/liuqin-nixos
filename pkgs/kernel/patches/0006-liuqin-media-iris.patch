@@ -186,10 +186,21 @@ Merged from: bring-up patches 0007
  static const struct iris_firmware_desc iris_vpu30_p4_s6_gen2_desc = {
  	.firmware_data = &iris_hfi_gen2_data,
  	.get_vpu_buffer_size = iris_vpu_buf_size,
-@@ -118,6 +125,41 @@ const struct iris_platform_data qcs8300_data = {
+@@ -118,6 +125,52 @@ const struct iris_platform_data qcs8300_data = {
  	.max_core_mbps = (((3840 * 2176) / 256) * 120),
  };
  
++/*
++ * SM8450's VPU2 firmware has no AV1 decoder: handing it an AV1 session makes
++ * the firmware raise a system error (0x05000003), which takes the whole VPU
++ * core down, so AV1 must not be advertised as a supported format here.
++ */
++static const u32 iris_fmts_sm8450_dec[] = {
++	[IRIS_FMT_H264] = V4L2_PIX_FMT_H264,
++	[IRIS_FMT_HEVC] = V4L2_PIX_FMT_HEVC,
++	[IRIS_FMT_VP9] = V4L2_PIX_FMT_VP9,
++};
++
 +/*
 + * SM8450 is the first Iris2 generation.  Its HFI packet protocol, register
 + * layout and resource names match the VPU3 path used by SM8550; the signed
@@ -213,8 +224,8 @@ Merged from: bring-up patches 0007
 +	.opp_clk_tbl = iris_opp_clk_table_vpu3x,
 +	/* Upper bound of DMA address range */
 +	.dma_mask = 0xe0000000 - 1,
-+	.inst_iris_fmts = iris_fmts_vpu3x_dec,
-+	.inst_iris_fmts_size = ARRAY_SIZE(iris_fmts_vpu3x_dec),
++	.inst_iris_fmts = iris_fmts_sm8450_dec,
++	.inst_iris_fmts_size = ARRAY_SIZE(iris_fmts_sm8450_dec),
 +	.inst_caps = &platform_inst_cap_sm8450,
 +	.tz_cp_config_data = tz_cp_config_vpu3,
 +	.tz_cp_config_data_size = ARRAY_SIZE(tz_cp_config_vpu3),
