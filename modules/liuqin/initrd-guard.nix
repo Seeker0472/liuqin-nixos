@@ -11,18 +11,17 @@
 # partition number, start or size is baked in — those differ per capacity
 # variant (256 GB vs 512 GB) and per layout.
 #
-# TODO: the guard below is roughly 150 lines of embedded shell.  Move it into
-# pkgs/ and use writeShellApplication with runtimeInputs, following the
-# pkgs/liuqin-power-keyd/ pattern.  Not urgent: this is the safety net
-# that keeps the wrong partition from being opened writable, so it wants the
-# same care as the rest of the storage path rather than a hurried rewrite.
+# The guard command itself lives in pkgs/storage-guard.nix
+# (writeShellApplication): this module owns the unit, the ordering, the
+# identity options and the marker contract, and passes the root device, the
+# label and the marker size/sha256 to it as arguments.
 #
 # This is the declarative equivalent of the downstream 1216-line busybox
 # init's storage section: same checks, same fail-closed behavior, expressed
 # as systemd initrd units instead of shell control flow. The probe mount is
 # read-only (ro,noload); the rw mount happens via sysroot.mount only after
 # this unit succeeds (sysroot.mount Requires/After the guard below).
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 
 let
   cfg = config.hardware.liuqin;
@@ -49,121 +48,6 @@ let
   markerSize = marker.size;
   markerArgument = marker.escaped;
 
-  guardScript = pkgs.writeShellScript "liuqin-storage-guard" ''
-    set -eu
-
-    export PATH=${lib.makeBinPath (with pkgs; [
-      coreutils
-      util-linux
-      gnugrep
-    ])}
-
-    # The configured root device; the partition node, its partlabel name and
-    # its parent disk are all derived from it below.
-    root=${cfg.storage.rootDevice}
-    part=$(basename "$root")
-    dev=$(readlink -f "$root" 2>/dev/null || true)
-
-    fail() {
-      echo "liuqin-storage-guard: $*" >&2
-      # Never leave anything writable on failure.
-      for node in /dev/sd[a-z] /dev/sd*[0-9]*; do
-        [ -b "$node" ] && blockdev --setro "$node" 2>/dev/null || true
-      done
-      exit 1
-    }
-
-    [ -b "$dev" ] || fail "root device $root is absent"
-    [ "$(readlink -f "$dev")" = "$dev" ] || fail "$dev is a symlink"
-
-    # sysfs identity: /sys/class/block/<node> resolves to the kernel
-    # directory <...>/block/<disk>/<node>, whose parent names the disk and
-    # whose 'partition' attribute exists only for a partition. Geometry is
-    # deliberately not checked: partition numbers, start and size differ per
-    # capacity variant and per layout.
-    sys=$(readlink -f "/sys/class/block/$(basename "$dev")" 2>/dev/null || true)
-    [ -n "$sys" ] || fail "no sysfs entry for $dev"
-    [ -e "$sys/partition" ] || fail "$dev is not a partition"
-    parent=/dev/$(basename "$(dirname "$sys")")
-    [ -b "$parent" ] || fail "parent disk of $dev ($parent) is absent"
-    [ "$(readlink -f "$parent")" = "$parent" ] || fail "$parent is a symlink"
-
-    grep -qxF "PARTNAME=$part" "$sys/uevent" || fail "$dev PARTNAME is not $part"
-
-    # The label must resolve to exactly this partition.
-    label_path=$(findfs LABEL=${cfg.storage.rootLabel} 2>/dev/null || true)
-    [ -n "$label_path" ] || fail "label ${cfg.storage.rootLabel} not found"
-    [ "$(readlink -f "$label_path")" = "$dev" ] || fail "label resolves elsewhere"
-
-    # Controlled escape for the freshly-formatted case: the label checks out
-    # but the ext4 filesystem is empty (no /nix). That is the state a plain
-    # `fastboot format:ext4` leaves behind; it is unrecoverable
-    # in the initrd (emergencyAccess is false, no shell), so say exactly how
-    # to recover instead of dropping silently into emergency.target.
-    probe=$(mktemp -d)
-    mount -t ext4 -o ro,noload "$dev" "$probe" || fail "read-only probe mount failed"
-    if [ ! -d "$probe/nix" ]; then
-      umount "$probe"; rmdir "$probe"
-      echo "liuqin-storage-guard: $part is correctly labelled but EMPTY" >&2
-      echo "(freshly formatted, no NixOS rootfs)." >&2
-      echo "Recovery: boot the RAM installer image again, mount the target at /mnt," >&2
-      echo "and run nixos-install --root /mnt --no-channel-copy after checking the" >&2
-      echo "filesystem (README.md, Installation model)." >&2
-      fail "empty rootfs: reinstall from the liuqin RAM installer"
-    fi
-
-    # Lock every sd* node read-only, then verify the lock took. An empty
-    # glob is a failure, not proof of safety.
-    seen=0
-    for node in /dev/sd[a-z] /dev/sd*[0-9]*; do
-      [ -b "$node" ] || continue
-      seen=1
-      blockdev --setro "$node"
-    done
-    [ "$seen" = 1 ] || fail "no sd* nodes to lock"
-    for node in /dev/sd[a-z] /dev/sd*[0-9]*; do
-      [ -b "$node" ] || continue
-      [ "$(blockdev --getro "$node")" = 1 ] || fail "read-only lock did not hold on $node"
-    done
-
-    # Probe-mount the root read-only and require the root marker to be a
-    # regular file owned 644 root:root whose sha256 matches exactly the
-    # activation-provisioned marker and repaired by systemd-tmpfiles at boot
-    # (see systemd.tmpfiles below).
-    marker=$probe/etc/liuqin-nixos-root
-    marker_ok=0
-    if [ -f "$marker" ] && [ ! -L "$marker" ]; then
-      meta=$(stat -c '%a %u %g %s' "$marker" 2>/dev/null || true)
-      sum=$(sha256sum "$marker" | cut -d' ' -f1)
-      if [ "$meta" = "644 0 0 ${toString markerSize}" ] && [ "$sum" = "${markerSha256}" ]; then
-        marker_ok=1
-      else
-        echo "liuqin-storage-guard: marker meta '$meta' sha256 '$sum' rejected" >&2
-      fi
-    fi
-    umount "$probe"
-    rmdir "$probe"
-    [ "$marker_ok" = 1 ] || fail "root marker missing or invalid (reinstall from the RAM installer)"
-
-    # Unlock the parent disk first: a partition cannot be opened rw while
-    # its parent disk is read-only (downstream init:674-682 opens
-    # parent, then target, in that order).
-    blockdev --setrw "$parent"
-    [ "$(blockdev --getro "$parent")" = 0 ] || fail "could not re-enable rw on $parent"
-    blockdev --setrw "$dev"
-    [ "$(blockdev --getro "$dev")" = 0 ] || fail "could not re-enable rw on $dev"
-
-    # Reassert read-only on every sibling partition after the unlock: the
-    # parent disk rw must not widen any other partition's window.
-    for node in /dev/$(basename "$parent")[0-9]*; do
-      [ -b "$node" ] || continue
-      [ "$node" = "$dev" ] && continue
-      blockdev --setro "$node"
-      [ "$(blockdev --getro "$node")" = 1 ] || fail "read-only reassert failed on $node"
-    done
-
-    echo "liuqin-storage-guard: $dev ($part) identity verified; only $dev is writable"
-  '';
 in
 {
   options.hardware.liuqin.rootMarkerContent = lib.mkOption {
@@ -218,10 +102,10 @@ in
     boot.initrd.systemd = {
       enable = true;
       # The initrd systemd image does not infer these paths from the shell
-      # text in ExecStart. The guard and all commands in its PATH must be
-      # copied into the image explicitly.
+      # text in ExecStart. The guard package and every command it puts on its
+      # own PATH (its runtimeInputs) must be copied into the image explicitly.
       storePaths = [
-        guardScript
+        pkgs.liuqinStorageGuard
         pkgs.coreutils
         pkgs.gnugrep
         pkgs.util-linux
@@ -251,7 +135,19 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = guardScript;
+          # systemd splits the ExecStart line itself and cannot see the
+          # argument boundaries the module has: a space in a configured device
+          # path or label would become another argument. Quotes are not enough
+          # either - systemd expands $ and % in a word after unquoting it - so
+          # every value goes through utils.escapeSystemdExecArg, which quotes
+          # and escapes both.
+          ExecStart = lib.concatStringsSep " " [
+            "${pkgs.liuqinStorageGuard}/bin/liuqin-storage-guard"
+            "--root" (utils.escapeSystemdExecArg cfg.storage.rootDevice)
+            "--label" (utils.escapeSystemdExecArg cfg.storage.rootLabel)
+            "--marker-size" (utils.escapeSystemdExecArg (toString markerSize))
+            "--marker-sha256" (utils.escapeSystemdExecArg markerSha256)
+          ];
         };
       };
 
