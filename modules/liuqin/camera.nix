@@ -42,7 +42,8 @@ in
   options.hardware.liuqin.camera.autofocus = {
     enable = lib.mkEnableOption ''
       EXPERIMENTAL: autofocus support.  Applies the local libcamera series
-      (core LensPosition control + contrast-detection AF in the simple
+      (the software ISP's focus figure of merit, contrast-detection AF as a
+      simple-IPA algorithm, and the lens channel from the IPA to the
       pipeline; see pkgs/libcamera-af/) on top of the stock libcamera.
       Patching libcamera rebuilds it and everything linking it (pipewire
       and its dependents) and the series is upstream-bound, so this stays

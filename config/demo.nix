@@ -18,6 +18,15 @@
   # are in docs/TODO/FINGERPRINT-MAINLINE.md.
   hardware.liuqin.fingerprint.enable = true;
 
+  # The software ISP defaults to the EGL (GPU) debayer, which scales the
+  # sensor's full frame to the stream size.  The CPU debayer has no scaler:
+  # it centre-crops, so a 1920x1080 stream from a 3840x2160 sensor mode
+  # halves the field of view.  The GPU path's focus figure of merit used to
+  # respond ~6x less to lens moves than the same metric on saved frames; with
+  # the readback synchronisation in the patch it tracks focus (measured
+  # 2026-10-07: 1248 defocused vs 4261 focused on the manual scene), so no
+  # mode pin is needed; libcamera falls back to CPU if EGL is unavailable.
+
   # USB bring-up deployment: the single kernel carries every feature
   # (USB3 peripheral, Type-C host/OTG, DP Alt Mode); the MiPPS coordinator
   # runs because this system carries the key files.
