@@ -28,14 +28,14 @@ Companion documents: `README.md` (build outputs and configuration model),
 | Touch, pen, keyboard folio, touchpad, keys | verified | touch drifts when an external DP monitor is bound (Mutter heuristic); touch resume retries firmware |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
 | Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
-| USB3 device (peripheral) | verified | 10-hotplug stability record still open |
+| USB3 device (peripheral) | verified | 10-hotplug stability record still open; cover-closed suspend churn re-enumerates the gadget (TODO) |
 | Type-C host + OTG power | verified | 10-hotplug record and automatic gadget re-bind still open |
 | DP Alt Mode | verified | single-link-rate tables (HBR2 capture); 2-lane DT only; repeated hotplug unverified |
 | Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
 | Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
 | Sensors (SSC/SLPI) | partly verified | accelerometer bridged to iio-sensor-proxy; gyro/light real samples, CCT/RGB unverified |
-| Wi-Fi / Bluetooth | verified | ath11k `msdu_done` noise, occasional reconnects |
-| Storage (UFS, root guard) | verified | — |
+| Wi-Fi / Bluetooth | verified | ath11k `msdu_done` noise, reconnects; 5 GHz fixed 2026-10-07 by booting the vendor fw/BDF set (-48 dBm ch161, 0 % loss) |
+| Storage (UFS, root guard) | verified | root ext4 bitmap-checksum errors in dmesg (TODO) |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones vs 81 on Android; no IPA |
 | Fingerprint (FPC1264) | verified | one finger per account; enrolment needs a password login (or the polkit prompt) to authorise it; press firmly |
@@ -312,6 +312,55 @@ synthesized when absent) or the build fails.
   2026-09-29), with repeated `msdu_done` errors and occasional carrier
   reconnects.  WLAN MAC and BT public address are per-device values
   provisioned from persist.
+- **TODO(wifi-5ghz-rf)**: the 2.4 GHz link is healthy on this unit while the
+  5 GHz receive path sits far below expectation.  **Measured** 2026-10-07
+  (full-feature kernel, same minute and position, same AP `CMCC-Z6bX`, the
+  host as the reference client): 2.4 GHz `ch6` -43/-44 dBm with 0 % ping loss
+  against 5 GHz `ch161` -85..-88 dBm with 50 % ping loss; the reference
+  (Intel AX210, same AP) reads about -62/-76 dBm, and on a second 5 GHz AP
+  (Ciallo `ch44`) the tablet reads -77 dBm where the reference reads
+  ~-55 dBm.  `station dump` shows both 5 GHz chains weak (`[-89, -90]`)
+  against one strong 2.4 GHz chain (`[-76, -44]`), i.e. the tablet's own
+  band-to-band spread is ~40 dB where ~6-12 dB is physical.  Association
+  itself works (ch161, VHT-MCS2/NSS2, PTK=CCMP), so this is margin, not a
+  functional break.  Ruled out: RF rails (live `pm8350_s11` 952 mV / `s12`
+  1256 mV / `pm8350c_s1` 1888 mV, patch 0020 active), regdomain (driver
+  self-managed `CN`; every enabled 5 GHz channel is `no IR`, which removes
+  active scanning only) and TX caps (AP limits 30/27 dBm).  Resolved by
+  `TODO(ath11k-fw-shadowed)` below: the chip had been booting the compressed
+  `.zst` firmware/BDF set, and with the vendor set installed at the plain
+  paths the same antennas hold `ch161` at -48 dBm with 0 % loss.  The
+  `802-11-wireless.band=bg` pin that the tablet's local
+  `CMCC-Z6bX.nmconnection` carried as the workaround has been dropped - NM
+  selects `ch161` on its own now.
+- **TODO(ath11k-fw-shadowed)**: the firmware package ships two ath11k sets
+  and the kernel only reads the `.zst` one.  The firmware loader expands
+  `updates/` only under its hardcoded `/lib/firmware*` entries
+  (`drivers/base/firmware_loader/main.c`, `fw_path[]`), and the custom
+  `firmware_class.path=/run/firmware` has no such sibling, so the live set is
+  `ath11k/WCN6855/hw2.x/*.zst`: `amss` `WLAN.HSP.1.1-03125-…SILICONZ_LITE-
+  3.6510.37` and a 131-entry `board-2` (entry for `17cb:0108 / chip 18 /
+  board 255`: 60036 B, `e9c3d433…`).  The unread `updates/` set instead
+  carries `amss` `WLAN.HSP.2.0.c2-00057-…696964.3` (stock's branch is
+  `…c2-00057-…570200.7`) and a 108-entry `board-2` whose matching entry is
+  59920 B, byte-identical to the stock ROM's `bd_m81.elf`.  **Measured**
+  2026-10-07 with both sets installed at the plain paths and a PCI
+  unbind/bind re-probe: the vendor set boots and its scan sees `shebang-5G`
+  `ch36` -64 dBm and `Seeker` `ch36` -78 dBm, neither of which the `.zst`
+  set can see; but the vendor `board-2` with the LITE `amss` dies
+  (`-110` → `firmware crashed: MHI_CB_EE_RDDM`, reproduced), so the four
+  files must stay a set, and under the vendor set NetworkManager still fails
+  activation (`set-hw-addr … failure 99`).  Fix: ship the vendor set at the
+  plain `ath11k/WCN6855/hw2.1/` paths (first search path wins over `.zst`),
+  then settle the NM/MAC wrinkle and re-run the 5 GHz margin table above.
+  Implemented in `pkgs/firmware.nix` (both hw dirs, as a set) with the
+  scan-MAC randomization disabled in `modules/liuqin/identity.nix` for the
+  `set-hw-addr` failure, and **verified** 2026-10-07 after a deploy + reboot:
+  `fw_build_id` is the vendor build, `ch161` associates at -48 dBm (signal
+  avg -48, beacon -46, chains `[-59, -48]`, tx retries/failed 0) with 0 %
+  loss on 20 x 1200 B pings, and the link ramps to VHT-MCS7/NSS2 80 MHz
+  (526-650 Mbit/s tx) once the profile's `band=bg` pin is dropped; the scan
+  now lists the 5 GHz APs the `.zst` set could not see.
 - Bluetooth runs the stock QCA6490 payloads.  The mainline driver asks for the
   `wcn`-prefixed rampatch/NVM names first, and only linux-firmware ships those,
   so `pkgs/firmware.nix` installs the stock `qca/hp*` files under both names;
@@ -354,6 +403,26 @@ synthesized when absent) or the build fails.
   wiped again).
 - UFS, GPU, PCIe/WCN6855 (needs patch 0010's cape tables) and the initrd
   storage guard work (**verified**).
+- **TODO(lid-suspend-loop)**: closing the folio cover while the debug gadget
+  is attached turns into a suspend/resume loop.  **Measured** 2026-10-07:
+  `Lid closed.` 11:17:04 → `Lid opened.` 11:41:09, 15 suspends in the window,
+  the next one starting exactly ~28 s after each resume (the sleeps
+  themselves are cut short after 3-163 s by an unidentified wake source).
+  Each request arrives at logind over D-Bus (`Suspending…`) and
+  `liuqin-power-keyd` never logs, so the requester is also unidentified.  Per
+  cycle the host sees the gadget re-enumerate (`usb 1-2: new high-speed USB
+  device`), ath11k re-downloads firmware (`mhi0: Requested to power ON`,
+  `chip_id`/`fw_version` again), NetworkManager re-associates
+  (`DEAUTH_LEAVING` from the suspend path) and the touch controller re-flashes
+  its firmware (`nvt_update_firmware … #20`).  Next: reproduce with
+  `systemctl service-log-level systemd-logind debug`, then decide whether the
+  lid action should ignore USB wakeups while docked.
+- **TODO(rootfs-ext4)**: the root filesystem reports
+  `EXT4-fs error (device sda36): ext4_validate_block_bitmap: bad block bitmap
+  checksum` at switch-root and again at 11:33 (**measured** 2026-10-07;
+  `initial error at time 1773777354`).  Run `fsck.ext4` on the `linux`
+  partition from the RAM installer and decide whether the storage guard
+  should fail closed on it.
 - CPU: cluster capacities 277/832/1024 (expected 278/833/1024), EAS active,
   `teo` idle governor, CPU thermal cooling maps in place (**verified**).
   `CONFIG_UCLAMP_TASK` is not enabled (free to enable, useless until

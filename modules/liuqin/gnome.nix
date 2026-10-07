@@ -35,6 +35,16 @@ in
       HandlePowerKeyLongPress = "ignore";
     };
 
+    # FIXME(lid-suspend-loop, 2026-10-07): HandleLidSwitch is not set here, so
+    # logind's default (suspend) applies - and with the folio cover closed while
+    # the USB debug gadget is attached, the unit enters a suspend/resume loop: a
+    # new suspend exactly ~28 s after every resume, with gadget re-enumeration
+    # and an ath11k firmware reload on each cycle (the `Suspending…` request
+    # arrives at logind over D-Bus and the requester is unidentified).  Decide
+    # the docked-cover policy here, e.g. ignore USB wakeups, or ignore the lid
+    # switch entirely while the cable is in - see docs/PORTING-NOTES.md,
+    # TODO(lid-suspend-loop).
+
     # GTK/WebKit dmabuf corruption on the Adreno 730: force the
     # memory-copy upload path until the kernel coherency story is fixed.
     environment.sessionVariables = {
