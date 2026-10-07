@@ -77,8 +77,13 @@ in
       systemd.user.services.wireplumber.environment.LD_LIBRARY_PATH =
         lib.mkIf cfg.autofocus.enable "${pkgs.liuqinLibcameraAf}/lib";
 
+      # v4l-utils' CLI tools (v4l2-ctl, media-ctl, v4l2-compliance) are the
+      # manual camera path the README and PORTING-NOTES document.  The two Qt
+      # applications the package ships by default (qv4l2, qvidcap) are lab
+      # GUIs: nothing here invokes them and they drag a full Qt6 stack in -
+      # 716 MiB of closure against 82 MiB without.
       environment.systemPackages = with pkgs;
-        [ v4l-utils libcamera ]
+        [ (v4l-utils.override { withGUI = false; }) libcamera ]
         ++ lib.optional cfg.autofocus.enable pkgs.liuqinCamAf;
 
       # libcamera's software ISP needs a dma-buf provider; without it the simple
