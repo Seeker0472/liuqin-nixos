@@ -31,6 +31,7 @@
 , findutils
 , python3
 , mkbootimg
+, requireFile
 # Payload source. The kernel's Image by default; the U-Boot port passes its
 # u-boot-nodtb.bin, which this ABL wants shaped like a Linux Image too (the
 # build pads it and it carries the same ARM64 header).
@@ -75,10 +76,10 @@ let
   # Stock ABL artifacts extracted from the operator's own device images
   # (liuqin-audit/evidence/dtbo + the stock base DTB). They are device-only
   # data: they never change for a given stock bootloader, so they are
-  # imported as fixed-output paths. Point LIUQIN_STOCK_DTBO / _DTBS at the
-  # tar.zst archives produced from the stock dump (see docs/PORTING-NOTES.md).
-  stockDtbo = import ./stock-dtbo-entries.nix;
-  stockBaseDtbs = import ./stock-base-dtbs.nix;
+  # operator-supplied requireFile inputs (see pkgs/bootimg/stock-dtbo-entries.nix
+  # and stock-base-dtbs.nix for the archive contract and hashes).
+  stockDtbo = import ./stock-dtbo-entries.nix { inherit requireFile; };
+  stockBaseDtbs = import ./stock-base-dtbs.nix { inherit requireFile; };
 in
 # bootargs is interpolated verbatim into a double-quoted DTS string below;
 # a quote or backslash would corrupt the generated overlay (or worse).

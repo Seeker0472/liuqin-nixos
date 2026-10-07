@@ -17,34 +17,42 @@ This repository is MIT-licensed overall (see LICENSE), except:
 * pkgs/hexagonrpc/patches/*.patch and pkgs/iio-sensor-proxy/patches/*.patch
   are patches to hexagonrpc (GPL-2.0) and iio-sensor-proxy (GPL-3.0 / LGPL);
   they retain their downstream headers.
-* pkgs/firmware.nix and pkgs/sensors-config.nix reference proprietary
-  Qualcomm/Xiaomi binaries that are NOT redistributable. This repository is
-  PRIVATE / personal self-use and must not be published publicly: the
-  committed data/*.tar.zst archives (liuqin-firmware-*, stock-dtbo-entries,
-  stock-base-dtbs) are the operator's own device / stock ROM dumps. The SSC
-  sensor archive is an uncommitted `requireFile` input supplied by the
-  operator. If the
-  repository is ever to be published, these files must first be removed
-  from history (git filter-repo --path-glob 'data/*.tar.zst'
-  --invert-paths) and pkgs/bootimg/stock-dtbo-entries.nix / stock-base-dtbs.nix
-  switched back to requireFile inputs.
+* pkgs/firmware.nix, pkgs/sensors-config.nix and pkgs/bootimg/stock-*.nix
+  reference proprietary Qualcomm/Xiaomi binaries that are NOT redistributable.
+  They are consumed as `requireFile` inputs supplied by the operator: the
+  archives are neither committed nor part of the flake source, and the tree
+  itself carries no vendor binary. The data/*.tar.zst working copies and the
+  two stock DT archives are listed in .gitignore.
+  History note: stock-dtbo-entries.tar.zst and stock-base-dtbs.tar.zst were
+  tracked in earlier commits; those commits still contain them. Publishing
+  from that history needs a rewrite
+  (`git filter-repo --path-glob 'data/*.tar.zst'
+    --path-glob 'pkgs/bootimg/stock-*.tar.zst' --invert-paths`)
+  or a fresh root commit.
 
 Vendor-derived data in the device patches
 -----------------------------------------
 
 The camera patches embed register tables decoded from Xiaomi/Qualcomm binaries
-and fall under the same PRIVATE / personal-self-use caveat as the firmware
-above; none of the source containers is committed.
+and fall under the same care as the firmware above; none of the source
+containers (com.qti.sensormodule.*.bin, the vendor camera.ko) is committed.
 
-* pkgs/kernel/patches/0019 (IMX596, SC202CS) and 0020 (S5KJN1 vendor modes) carry
-  sensor init/mode tables extracted from the MIUI sensor-module containers
-  (com.qti.sensormodule.*.bin); they were machine-generated during bring-up
+* pkgs/kernel/patches/0012-liuqin-camera-core.patch adds
+  drivers/media/i2c/qcom-liuqin-sensors.c with the IMX596 and SC202CS init and
+  mode tables, and the CSIPHY 2.1.3 lane table in
+  camss-csiphy-3ph-1-0.c; the tables were machine-generated during bring-up
   (the generator lived in the bring-up branch).
-* pkgs/kernel/patches/0018 carries the CSIPHY 2.1.3 lane table extracted from the
-  vendor camera.ko during bring-up.
+* pkgs/kernel/patches/0013-liuqin-camera-tuning.patch carries the S5KJN1
+  vendor mode tables.
 
-If the repository is ever published, treat these tables with the same care as
-data/*.tar.zst (see the filter-repo note above).
+Decision (2026-10-07): these tables stay in the tracked tree. They are
+register values - interface data the mainline drivers need compiled in to
+drive the sensors - not vendor binaries, and the port cannot work without
+them. If that posture ever changes, the move is to extract the table hunks
+into an operator-supplied payload (a patch fragment consumed through
+requireFile) that the kernel build applies after the code patch; that split
+requires a real kernel build to validate and would make camera support depend
+on the operator's payload.
 
 Knowledge (partition geometry, ABL behavior, systemd ordering rationale)
 was extracted from the downstream project and re-expressed in Nix; no

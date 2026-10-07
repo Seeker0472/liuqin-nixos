@@ -5,15 +5,25 @@
 __pycache__/
 
 # Private payloads consumed through requireFile: register them with
-# `nix-store --add-fixed sha256 <file>` instead of tracking them here.  Three
-# are still required, and local copies of all three live in this directory -
-# they are the durable copy, because no GC root holds the store paths:
+# `nix-store --add-fixed sha256 <file>` instead of tracking them here.  Local
+# copies live in this directory - they are the durable copy, because no GC
+# root holds the store paths.  Five are required:
 #   liuqin-firmware-vpu.tar.zst and liuqin-firmware-cs35l41.tar.zst
-#   (hashes in pkgs/firmware.nix), liuqin-ssc-config.tar.zst
-#   (hash in config/example.nix).
+#   (hashes in pkgs/firmware.nix), liuqin-ssc-config.tar.zst (hash in
+#   examples/demo/configuration.nix, or point
+#   hardware.liuqin.sensors.sscConfig at the file), and the two stock DT
+#   archives imported by pkgs/bootimg/stock-*.nix.
 # The other liuqin-firmware-* archives were replaced by the firmware tree in
 # the downstream release's boot.img (pkgs/firmware.nix), so local copies of
 # them are stale.
-# The stock-*.tar.zst archives are NOT listed: pkgs/bootimg/stock-*.nix imports them
-# with builtins.path, so they must stay in the tree for a boot image to build.
+# Store copies of these payloads are not rooted and may be garbage-collected;
+# the local files above are the durable copy (back them up - they are device
+# dumps that cannot be regenerated). Re-register after a GC with
+# `nix-store --add-fixed sha256 <basename>` (same store path, no rebuild), or
+# keep an explicit GC root:
+#   nix-store --add-root ~/.local/share/liuqin-payloads/<basename> \
+#     --indirect -r "$(nix-store --add-fixed sha256 <basename>)"
+# Beware `git clean -xdf`: everything listed below is untracked.
 data/liuqin-*.tar.zst
+pkgs/bootimg/stock-base-dtbs.tar.zst
+pkgs/bootimg/stock-dtbo-entries.tar.zst

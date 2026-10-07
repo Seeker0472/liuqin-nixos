@@ -1,8 +1,11 @@
 # liuqin-nixos — Xiaomi Pad 6 Pro (SM8475)
 
 NixOS support for the Xiaomi Pad 6 Pro, built around Linux 7.2.5 and the
-device patches in `pkgs/kernel/patches/`. The repository is private: `data/` contains
-proprietary firmware and stock DT artifacts from the operator's device.
+device patches in `pkgs/kernel/patches/`. Every proprietary payload (firmware,
+sensor configuration, stock DT artifacts) is an operator-supplied
+`requireFile` input, so the tree carries no vendor binary; the camera register
+tables in patches 0012/0013 are derived data that stays in-tree. See NOTICE
+for both boundaries.
 
 ## Installation model
 
@@ -331,11 +334,13 @@ different OS/DTB archive and is not an error in this input set.
 
 ## Firmware
 
-Firmware inputs are operator-supplied fixed-output archives in `data/` and are
-assembled by `pkgs/firmware.nix`. The installer copies the ath11k firmware,
-board data and signed regulatory database into stage 1 so Wi-Fi can be brought
-up before the live root is switched. The installed system carries the complete
-device firmware tree.
+Firmware inputs are operator-supplied fixed-output archives (`requireFile`:
+local copies in `data/`, hashes in `pkgs/firmware.nix`) and are assembled by
+`pkgs/firmware.nix`. The installer copies the ath11k firmware, board data and
+signed regulatory database into stage 1 so Wi-Fi can be brought up before the
+live root is switched. The installed system carries the complete device
+firmware tree. `hardware.liuqin.firmware.{vpu,cs35l41}` accept your own
+archives by path instead of a store registration.
 
 ## Repository map
 
@@ -349,12 +354,15 @@ pkgs/kernel/              Linux configuration and installer profile; the 7.2.5
                           device patches live in pkgs/kernel/patches/, applied
                           in filename order (index/provenance: that README.md)
 pkgs/bootimg/             ABL boot image and DTB construction, with the ABL and
-                          installer DT overlays under dts/
+                          installer DT overlays under dts/ and the stock DT
+                          archive inputs (stock-*.nix, requireFile)
 pkgs/u-boot/              the bootloader: the port's own base tree + patches + files
                           (verify-port.sh proves the three equal the dev tree)
-data/                     private firmware and stock DT artifacts
+data/                     local copies of the requireFile payloads (gitignored)
 ```
 
-Do not publish the `data/*.tar.zst` payloads. The device has no UART; for
+The `data/*.tar.zst` archives and the two `pkgs/bootimg/stock-*.tar.zst`
+archives are gitignored operator payloads; see `.gitignore` for registration
+instructions. The device has no UART; for
 bring-up use the framebuffer console, fastboot/U-Boot diagnostics and records
 in the sibling `liuqin-dualboot` repository.
