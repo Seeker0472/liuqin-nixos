@@ -40,7 +40,6 @@ in
     "liuqinMippsd"
     "liuqinHexagonrpc"
     "liuqinSensorsConfig"
-    "liuqinLibssc"
     "liuqinIioSensorProxy"
     # Firmware trees.
     "liuqinFirmware"
@@ -66,9 +65,6 @@ in
     liuqinUsbLogin = "shell script";
     liuqinStorageGuard = "shell script (fail-closed fixture tests in its checkPhase)";
     mkLiuqinUsbGadget = "configfs gadget shell factory, parameterised per consumer";
-    # Only a build input of liuqinLibssc; the injected libssc carries its own
-    # cross-built qrtr.
-    liuqinQrtr = "build input of liuqinLibssc";
     liuqinSensorCheck = "bounded manual sensor-acceptance client, not in any unit";
     liuqinAlsaUcm = "data-only leaf (UCM2 files)";
     liuqinGnomeFlashlight = "data-only leaf (GNOME Shell extension files)";

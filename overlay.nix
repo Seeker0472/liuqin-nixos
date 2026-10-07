@@ -121,11 +121,12 @@ final: prev:
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };
 
-  # libssc at the pinned downstream commit.
-  liuqinQrtr = final.callPackage ./pkgs/qrtr.nix { };
-  liuqinLibssc = final.callPackage ./pkgs/libssc.nix {
-    qrtr = final.liuqinQrtr;
-  };
+  # libssc (and its `ssccli`) come from nixpkgs: 0.4.4, the same upstream
+  # release this repository used to pin itself, but tracked by nixpkgs and
+  # served from cache.nixos.org. The former liuqinLibssc/liuqinQrtr pair only
+  # carried test-harness overrides for the upstream suite and was wired into
+  # nothing that ships - both are gone.
+  #
   # Bounded, sequential real-sample checks for the SSC accelerometer,
   # gyroscope, and light sensors.  These are deliberately separate from
   # iio-sensor-proxy so each sensor can be accepted independently.

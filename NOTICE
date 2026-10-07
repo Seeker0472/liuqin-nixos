@@ -28,6 +28,12 @@ This repository is MIT-licensed overall (see LICENSE), except:
   depend on an unmerged PR branch; re-sync with
   `git sparse-checkout set device/fingerprint/oem/src/fingerprint/{oem,libfprint-tod,fprintd-oem}`
   at that revision.
+* pkgs/fingerprint/qsee-supplicant-src/ is qsee-supplicant v0.1.1 vendored
+  (BSD-2-Clause per every source header; the repository is a single-author
+  project created 2026-08-08 with no larger upstream, so a pinned rev could
+  disappear).  It carries src/, include/, LICENSES/ and README.md
+  byte-identical to the v0.1.1 tag; this device's UFS RPMB provider and its
+  liuqin main() are the patch next to it.
 * pkgs/hexagonrpc/patches/*.patch and pkgs/iio-sensor-proxy/patches/*.patch
   are patches to hexagonrpc (GPL-2.0) and iio-sensor-proxy (GPL-3.0 / LGPL);
   they retain their downstream headers.

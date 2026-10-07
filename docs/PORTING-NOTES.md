@@ -267,9 +267,10 @@ trustlet, never in Linux.
 - The OEM userspace (the component's own sources: the static QSEE clients, the
   python entry points and the TOD driver) is vendored under
   `pkgs/fingerprint/fpc-oem-src/` (originally yzddmr6/xiaomipad-6pro-mainline
-  PR #11; see NOTICE for the revision and licenses); QCBOR and qsee-supplicant
-  are pinned from their own upstream tags, and the port's adaptations are the
-  patch files next to them.
+  PR #11; see NOTICE for the revision and licenses), qsee-supplicant is
+  vendored next to it (upstream v0.1.1, same reason), QCBOR is pinned to its
+  own upstream tag, and the port's adaptations are the patch files next to
+  them.
 - The firmware images (`fpcliu.mdt` plus its segments) and the Gatekeeper/RPMB
   state are per-device data and are not in this tree; "Fingerprint" in
   `docs/INSTALL.md` documents the extraction, placement and operator steps.
