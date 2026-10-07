@@ -36,14 +36,17 @@ in
     };
 
     # FIXME(lid-suspend-loop, 2026-10-07): HandleLidSwitch is not set here, so
-    # logind's default (suspend) applies - and with the folio cover closed while
-    # the USB debug gadget is attached, the unit enters a suspend/resume loop: a
-    # new suspend exactly ~28 s after every resume, with gadget re-enumeration
-    # and an ath11k firmware reload on each cycle (the `Suspending…` request
-    # arrives at logind over D-Bus and the requester is unidentified).  Decide
-    # the docked-cover policy here, e.g. ignore USB wakeups, or ignore the lid
-    # switch entirely while the cable is in - see docs/PORTING-NOTES.md,
-    # TODO(lid-suspend-loop).
+    # logind's default (suspend) applies.  The loop this described is logind's
+    # own lid recheck, not a client request: while the lid is closed,
+    # `button_recheck()` re-runs the lid action on every event-loop turn, gated
+    # only by `HoldoffTimeoutUSec` (30 s, re-armed on every sleep start and
+    # counting monotonic time, which stops during suspend) - hence a new
+    # suspend ~28 s after each resume as long as the still-unidentified wake
+    # source keeps waking the unit.  `Suspending...` is logind's own message
+    # (the D-Bus `Suspend()` path does not log it), so there is no requester to
+    # find, and USB cannot be the waker (the host sees the device disconnect;
+    # dwc3/USB wakeup is disabled).  Decide the cover policy here once the
+    # waker is measured - see docs/TODO/LID-SUSPEND-LOOP.md.
 
     # GTK/WebKit dmabuf corruption on the Adreno 730: force the
     # memory-copy upload path until the kernel coherency story is fixed.

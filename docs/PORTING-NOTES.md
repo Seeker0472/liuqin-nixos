@@ -16,7 +16,8 @@ Verification labels used throughout:
 
 Companion documents: `README.md` (build outputs and configuration model),
 `docs/INSTALL.md` (install/update/recover), `docs/BOOT-ARCHITECTURE.md`
-(boot chain and U-Boot menu), `docs/TODO/CAMERA-MAINLINE.md` (camera detail).
+(boot chain and U-Boot menu), `docs/TODO/CAMERA-MAINLINE.md` (camera detail),
+`docs/TODO/LID-SUSPEND-LOOP.md` (cover-close suspend loop).
 
 ## 1. What works and what does not
 
@@ -28,12 +29,12 @@ Companion documents: `README.md` (build outputs and configuration model),
 | Touch, pen, keyboard folio, touchpad, keys | verified | touch drifts when an external DP monitor is bound (Mutter heuristic); touch resume retries firmware |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
 | Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
-| USB3 device (peripheral) | verified | 10-hotplug stability record still open; cover-closed suspend churn re-enumerates the gadget (TODO) |
+| USB3 device (peripheral) | verified | 10-hotplug stability record still open; the cover-close suspend loop re-enumerates the gadget, see `docs/TODO/LID-SUSPEND-LOOP.md` |
 | Type-C host + OTG power | verified | 10-hotplug record and automatic gadget re-bind still open |
 | DP Alt Mode | verified | single-link-rate tables (HBR2 capture); 2-lane DT only; repeated hotplug unverified |
 | Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
 | Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
-| Sensors (SSC/SLPI) | partly verified | accelerometer bridged to iio-sensor-proxy; gyro/light real samples, CCT/RGB unverified |
+| Sensors (SSC/SLPI) | partly verified | accelerometer + ambient light live on the SensorProxy D-Bus API (four orientations and all five tilt states measured 2026-10-07); gyroscope has no userspace consumer; CCT/RGB, light-sensor identity, fusion and suspend/resume unverified |
 | Wi-Fi / Bluetooth | verified | ath11k `msdu_done` noise, reconnects; 5 GHz fixed 2026-10-07 by booting the vendor fw/BDF set (-48 dBm ch161, 0 % loss) |
 | Storage (UFS, root guard) | verified | root ext4 bitmap-checksum errors in dmesg (TODO) |
 | CPU scheduling / Energy Model | verified | — |
@@ -351,17 +352,70 @@ Details and the key contract are in §2.
 
 The SSC/SLPI path is implemented: the package serves the registry contract,
 the persist import is atomic, and bounded `libssc` checks cover acceleration,
-angular rate and the default SSC ambient-light Lux instance.  Only the
-accelerometer is bridged to `iio-sensor-proxy`, and the light check does not
-distinguish the front TCS3701 from the rear TSL2522.  The stock CCT/RGB
-calibration records have no API in the pinned `libssc`, so CCT remains
-**not implemented**.  `/sys/bus/iio/devices` can be empty because these
-devices are owned by SLPI, not an AP-side IIO bus.  Real measurements and
-the Android-derived gravity/rotation/step/tilt/motion behaviour are
-**unverified** until `liuqin-sensor-check` runs against this unit's SLPI
-firmware.  `hardware.liuqin.sensors.sscConfigHash` must be set (a
-config-only archive is accepted; `sns_reg.conf`/`sns_reg_version` are
-synthesized when absent) or the build fails.
+angular rate and the default SSC ambient-light Lux instance.  In the
+installed system the boot chain is `liuqin-slpi` -> `liuqin-hexagonrpcd-sdsp`
+-> `liuqin-ssc-sample-gate` -> patched `iio-sensor-proxy`
+(`net.hadess.SensorProxy`).  The gate fails closed unless a real accelerometer
+sample arrives (`--all --attempts 4 --require accelerometer`); the gyroscope
+and light checks are recorded but cannot fail the unit, and the claim-refresh
+helpers restart the proxy once a gnome-shell is watching.
+
+**Measured** (2026-10-07, this unit, the boot after a reboot): all three
+checks report ready (accelerometer 182 and gyroscope 139 measurement lines in
+the gate's window; light one line, 41.9 lx — 28 lx on the previous boot), and
+the D-Bus API reports `HasAccelerometer=true`, `HasAmbientLight=true`,
+`HasProximity=false`.  Rotating the unit through the four orientations and
+the five tilt states is reflected in
+`AccelerometerOrientation`/`AccelerometerTilt` (polled at 0.5 s:
+`right-up`, `normal`, `left-up`, `bottom-up`; `vertical`, `tilted-up`,
+`tilted-down`, `face-up`, `face-down` all observed).
+
+Mount matrix: `libssc` multiplies the SSC registry's matrix into every sample
+itself and logs `Mount matrix provided by firmware is all 0, falling back to
+identity matrix!` twice per proxy start — this unit's registry carries an
+all-zero matrix, so that layer is the identity, and the effective transform
+is the udev `ACCEL_MOUNT_MATRIX=-1,0,0;0,-1,0;0,0,1` on `fastrpc-sdsp` that
+`iio-sensor-proxy` applies on top.  Verified against the raw vector
+(X=+8.54 m/s², Z=+5.72): the signed matrix gives `portrait_rotation = -56.2°`
+(`right-up`), the identity would give `+56.2°` (`left-up`).
+
+Sensor claims are polkit-gated to `subject.local` sessions, so
+`monitor-sensor --accel` and `ClaimLight` are denied from an SSH session by
+design, and `LightLevel` only advances while a local client holds the claim
+(GNOME never claims the light sensor, so it reads 0).
+
+**Not done:**
+
+- **The gyroscope has no userspace consumer.**  Real samples arrive through
+  the gate, but `iio-sensor-proxy` 3.9 exposes no gyro API and nothing else
+  in the image reads `/dev/fastrpc-sdsp` directly.
+- **Ambient light: bridged, unclaimed, uncalibrated.**  CCT/RGB is **not
+  implemented** (the stock calibration records have no API in the pinned
+  `libssc`), and the light check does not distinguish the front TCS3701 from
+  the rear TSL2522 — only the default ambient-light instance is used.
+- **No fusion.**  The Android-derived gravity/rotation-vector/step/tilt/
+  motion behaviours are not implemented; only the accelerometer, gyroscope
+  and light instances are opened.  `ssc-compass` sits in the udev
+  `IIO_SENSOR_PROXY_TYPE` list, but the proxy has no compass API and no
+  magnetometer instance is opened, so that type is inert.
+- The accelerometer's magnitude at rest reads ~4.8 % above 1 g (~10.28 m/s²
+  for X=8.54, Z=5.72) and the scale is 1.0; nothing calibrates it.
+- No suspend/resume or long-run record: the gate runs once per boot, and the
+  stack's behaviour across the lid-suspend churn
+  (`TODO(lid-suspend-loop)`) is unverified.
+- `/sys/bus/iio/devices` can be empty because these devices are owned by
+  SLPI, not an AP-side IIO bus.
+
+Operator checks: `sudo liuqin-sensor-check --all --attempts 2` (root, for
+`/dev/fastrpc-sdsp` and `/run/liuqin-sensors`; the gate's own logs are
+`/run/liuqin-sensors/ssccli-*.log` with the `*-status`/`*-ready` markers),
+and `busctl --system get-property net.hadess.SensorProxy
+/net/hadess/SensorProxy net.hadess.SensorProxy AccelerometerOrientation
+AccelerometerTilt HasAmbientLight LightLevel`.
+
+`hardware.liuqin.sensors.sscConfigHash` must be set (a config-only archive is
+accepted; `sns_reg.conf`/`sns_reg_version` are synthesized when absent) or
+the build fails.
 
 ### Wi-Fi, Bluetooth, storage, power
 
@@ -460,20 +514,56 @@ synthesized when absent) or the build fails.
   wiped again).
 - UFS, GPU, PCIe/WCN6855 (needs patch 0010's cape tables) and the initrd
   storage guard work (**verified**).
-- **TODO(lid-suspend-loop)**: closing the folio cover while the debug gadget
-  is attached turns into a suspend/resume loop.  **Measured** 2026-10-07:
-  `Lid closed.` 11:17:04 → `Lid opened.` 11:41:09, 15 suspends in the window,
-  the next one starting exactly ~28 s after each resume (the sleeps
-  themselves are cut short after 3-163 s by an unidentified wake source).
-  Each request arrives at logind over D-Bus (`Suspending…`) and
-  `liuqin-power-keyd` never logs, so the requester is also unidentified.  Per
+- Video decode (Iris VPU, patch 0006): H.264 and HEVC decode 1080p30 to bytes
+  identical to a software decode, every frame, with the `iris` IRQ line rising
+  by ~260 per run (**verified** 2026-10-07); the encoder exposes H.264/HEVC.
+- **FIXME(vp9-first-frame)**: VP9 hardware decode loses the first frame of
+  every stream.  **Measured** 2026-10-07: a 30-frame 1080p30 clip yields 29
+  frames, and those 29 are byte-identical to frames 2..30 of the software
+  decode (`hw_md5 == sw_skip1`, `sw_first29` differs), so the missing frame is
+  the stream's first.  Reproduced with `-auto-alt-ref 0 -lag-in-frames 0`, so
+  it is not a hidden/alt-ref frame being filtered out.  H.264 and HEVC through
+  the same element and device lose nothing, which puts the loss in the
+  start-of-stream path only VP9 needs (its stream parameters exist only after
+  the first frame); the VP9 runs also trip
+  `gst_structure_remove_field: assertion 'IS_MUTABLE (structure)' failed` in
+  gst-plugins-good, and the other codecs do not.  Impact: ~33 ms per stream -
+  playback and transcode are unaffected, frame-accurate checks are not.
+  Next: count buffers inside the element (`GST_DEBUG=...`) or cross-check with
+  an ffmpeg built with `v4l2m2m` (nixpkgs' ffmpeg has no v4l2-m2m) to decide
+  between gst-plugins-good and the iris start path, then patch that side; no
+  kernel change is expected.
+- AV1 is deliberately not advertised for sm8450: the VPU2 firmware has no AV1
+  decoder, and an AV1 session makes it raise `qcom-iris aa00000.video-codec:
+  received system error of type 0x5000003`, which takes the whole core down
+  and leaves the machine unresponsive (**measured** 2026-10-07 across two
+  boots; the driver then trips the vb2 `start_streaming()` cleanup WARN).  The
+  gate is `iris_fmts_sm8450_dec` in patch 0006 - do not point sm8450 back at
+  `iris_fmts_vpu3x_dec`, which carries AV1 for the VPU3 platforms.
+- **TODO(lid-suspend-loop)**: closing the folio cover turns into a
+  suspend/resume loop.  **Measured** 2026-10-07: `Lid closed.` 11:17:04 →
+  `Lid opened.` 11:41:09, 15 suspends in the window, resume → next
+  `Suspending...` 27.3-27.8 s on all 14 cycles (the sleeps themselves are cut
+  short after 3-162 s by a wake source that is still unidentified).  The pace
+  is logind's own lid recheck, not a client: while the lid is closed
+  `button_recheck()` re-runs the lid action on every event-loop turn, gated
+  only by `HoldoffTimeoutUSec` (30 s, re-armed on every sleep start; monotonic
+  time stops during suspend, hence ~28 s).  `Suspending...` is logind's own
+  message (`handle_action_execute()`; the D-Bus `Suspend()` path does not log
+  it), so there is no requester to identify - the earlier reading of that line
+  as an unidentified D-Bus request was wrong, and `liuqin-power-keyd` staying
+  silent fits it.  USB cannot be the waker either (the host sees the device
+  disconnect and dwc3/USB wakeup is disabled), so "ignore USB wakeups while
+  docked" is a no-op; `HandleLidSwitchExternalPower`/`Docked` never apply here
+  (no external power reported while on the cable, no external display).  Per
   cycle the host sees the gadget re-enumerate (`usb 1-2: new high-speed USB
   device`), ath11k re-downloads firmware (`mhi0: Requested to power ON`,
   `chip_id`/`fw_version` again), NetworkManager re-associates
   (`DEAUTH_LEAVING` from the suspend path) and the touch controller re-flashes
-  its firmware (`nvt_update_firmware … #20`).  Next: reproduce with
-  `systemctl service-log-level systemd-logind debug`, then decide whether the
-  lid action should ignore USB wakeups while docked.
+  its firmware (`nvt_update_firmware … #20`).  Next: identify the waker with
+  `CONFIG_PM_DEBUG` (`/sys/power/pm_wakeup_irq`) or `/proc/interrupts` deltas,
+  then decide the cover policy - mechanics, wake-source inventory and the
+  options are in `docs/TODO/LID-SUSPEND-LOOP.md`.
 - **TODO(rootfs-ext4)**: the root filesystem reports
   `EXT4-fs error (device sda36): ext4_validate_block_bitmap: bad block bitmap
   checksum` at switch-root and again at 11:33 (**measured** 2026-10-07;
