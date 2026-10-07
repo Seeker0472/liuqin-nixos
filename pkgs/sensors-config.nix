@@ -5,9 +5,14 @@
 # proprietary binaries extracted from the stock ROM and are NOT
 # redistributable by this repository, so this is a fixed-output derivation
 # the operator materializes from their own device dump. See docs/PORTING-NOTES.md.
-{ lib, runCommand, requireFile, zstd, sscConfigHash ? null }:
+{ lib, runCommand, requireFile, zstd, sscConfigHash ? null, sscConfigArchive ? null }:
 
-assert sscConfigHash != null -> sscConfigHash != lib.fakeHash;
+# The base call (both null) must stay legal: nixpkgs' makeOverridable forces
+# it to attach `.override`, which the module uses to pass one of the two
+# inputs. With neither given the derivation is valid but unusable, and
+# requireFile's own error carries the operator instructions; the module never
+# evaluates it that way (it gates the SSC stack on a configured source).
+assert sscConfigArchive == null -> sscConfigHash != lib.fakeHash;
 
 let
   # These two files are plain-text parts of the stock SSC contract. Keeping a
@@ -26,32 +31,36 @@ let
     property=persist.vendor.sensors.enable.property=/mnt/vendor/persist/sensors/registry/file1
     property=persist.vendor.sensors.enable.property1=/mnt/vendor/persist/sensors/registry/file2
   '';
-  sscConfig = requireFile {
-    name = "liuqin-ssc-config.tar.zst";
-    # Extracted from the stock ROM's vendor partition:
-    # super -> vendor/etc/sensors/config.  The same files sit in the
-    # downstream v0.1.0 release's rootfs volumes, which ship as three ~2 GB
-    # tarball parts, so they are registered by hand instead of fetched.
-    # Record the sha256 via
-    # hardware.liuqin.sensors.sscConfigHash in the NixOS configuration.
-    hash =
-      if sscConfigHash == null then
-        # Leave the derivation valid but unusable: requireFile's own error
-        # message carries the operator instructions, and the NixOS module
-        # raises the clear assertion before this is ever evaluated.
-        lib.fakeHash
-      else
-        sscConfigHash;
-    message = ''
-      liuqin-ssc-config.tar.zst is the stock ROM's vendor/etc/sensors/config
-      directory, optionally accompanied by sns_reg.conf and sns_reg_version,
-      archived deterministically. Extract it from your own device dump, place
-      the archive in the Nix store with `nix-store --add-fixed sha256
-      liuqin-ssc-config.tar.zst`, and set hardware.liuqin.sensors.sscConfigHash
-      accordingly. Config-only archives are accepted; the audited plain-text
-      registry contract is synthesized for them.
-    '';
-  };
+  archive =
+    if sscConfigArchive != null then
+      sscConfigArchive
+    else
+      requireFile {
+        name = "liuqin-ssc-config.tar.zst";
+        # Extracted from the stock ROM's vendor partition:
+        # super -> vendor/etc/sensors/config.  The same files sit in the
+        # downstream v0.1.0 release's rootfs volumes, which ship as three ~2 GB
+        # tarball parts, so they are registered by hand instead of fetched.
+        # Record the sha256 via
+        # hardware.liuqin.sensors.sscConfigHash in the NixOS configuration.
+        hash =
+          if sscConfigHash == null then
+            # Leave the derivation valid but unusable; the module warns and
+            # omits the stack rather than reaching this.
+            lib.fakeHash
+          else
+            sscConfigHash;
+        message = ''
+          liuqin-ssc-config.tar.zst is the stock ROM's vendor/etc/sensors/config
+          directory, optionally accompanied by sns_reg.conf and sns_reg_version,
+          archived deterministically. Extract it from your own device dump, place
+          the archive in the Nix store with `nix-store --add-fixed sha256
+          liuqin-ssc-config.tar.zst`, and set hardware.liuqin.sensors.sscConfigHash
+          accordingly - or point hardware.liuqin.sensors.sscConfig at the archive
+          file instead. Config-only archives are accepted; the audited plain-text
+          registry contract is synthesized for them.
+        '';
+      };
 in
 runCommand "liuqin-ssc-config" { nativeBuildInputs = [ zstd ]; } ''
   set -eu
@@ -59,7 +68,7 @@ runCommand "liuqin-ssc-config" { nativeBuildInputs = [ zstd ]; } ''
   trap 'rm -rf "$work"' EXIT
   mkdir -p $out/share/qcom/sm8450/Xiaomi/liuqin/sensors
   mkdir -p $out/share/qcom/sm8450/Xiaomi/liuqin/socinfo
-  tar --zstd -xf ${sscConfig} -C "$work"
+  tar --zstd -xf ${archive} -C "$work"
   test -d "$work/config"
   cp -a "$work/config" $out/share/qcom/sm8450/Xiaomi/liuqin/sensors/
 

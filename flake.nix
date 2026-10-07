@@ -87,7 +87,19 @@
         # liuqin system. The installer uses nixpkgs' netboot live-root
         # machinery, while the caller supplies the device kernel/firmware
         # configuration in config/installer.nix or an equivalent module.
-        mkLiuqinInstallerSystem = { modules ? [ ] }:
+        #
+        # `authorizedKeys` puts root SSH keys into the live environment
+        # (users.users.root.openssh.authorizedKeys.keys). With a key and the
+        # installer's `VARIANT_ID=installer` os-release tag, nixos-anywhere
+        # accepts the live environment as a standard NixOS installer and skips
+        # its x86_64-only kexec image:
+        #   nixos-anywhere --flake .#mypad --target-host root@192.168.7.2
+        # Without keys the live shell stays reachable through the console and
+        # the USB telnet channel only.
+        mkLiuqinInstallerSystem =
+          { modules ? [ ]
+          , authorizedKeys ? [ ]
+          }:
           lib.nixosSystem {
             system = "aarch64-linux";
             modules = [
@@ -99,6 +111,9 @@
                 nixpkgs.pkgs = pkgsArm;
               }
             ]
+            ++ lib.optional (authorizedKeys != [ ]) {
+              users.users.root.openssh.authorizedKeys.keys = authorizedKeys;
+            }
             ++ modules;
           };
 
@@ -148,36 +163,33 @@
 
       packages.x86_64-linux =
         let
-          normalConfiguration = self.nixosConfigurations.liuqin;
-          normalKernel = normalConfiguration.config.hardware.liuqin.package;
+          demoConfiguration = self.nixosConfigurations.demo;
+          demoKernel = demoConfiguration.config.hardware.liuqin.package;
           installerConfiguration = self.nixosConfigurations.liuqin-installer;
           installerKernel = installerConfiguration.config.boot.kernelPackages.kernel;
-          exampleImages = self.lib.mkLiuqinBootImages normalConfiguration;
-          demoImages = self.lib.mkLiuqinBootImages self.nixosConfigurations.demo;
-          installerImages = self.lib.mkLiuqinInstallerImages
-            installerConfiguration;
+          demoImages = self.lib.mkLiuqinBootImages demoConfiguration;
+          installerImages = self.lib.mkLiuqinInstallerImages installerConfiguration;
         in
         {
           # Keep these outputs tied to the kernels selected by the actual
           # configurations. That makes package inspection unambiguous: the
-          # normal kernel is the installed-system kernel and the installer
+          # demo kernel is the installed-system kernel and the installer
           # kernel is the built-in-USB variant.
-          kernel = normalKernel;
+          kernel = demoKernel;
           installer-kernel = installerKernel;
           dtb = pkgsArm.liuqinKernelDtb;
           installer-dtb = pkgsArm.liuqinInstallerKernelDtb;
           # Low-level bring-up artifact only: this has an empty ramdisk and
-          # no `init=` command line. Use installer-bootimg or bootimg-nixos
+          # no `init=` command line. Use installer-bootimg or demo-bootimg
           # for a bootable NixOS environment.
           bootimg-kernel-only = pkgsArm.callPackage ./pkgs/bootimg {
-            kernel = normalKernel;
+            kernel = demoKernel;
             gawk = pkgsHost.gawk;
           };
           power-keyd = pkgsArm.liuqinPowerKeyd;
           mippsd = pkgsArm.liuqinMippsd;
-          # Boot image for the EXAMPLE configuration (config/example.nix).
-          # Your own configuration: use lib.mkLiuqinBootImages instead.
-          bootimg-nixos = exampleImages.bootimg;
+          # Boot image for the DEMO configuration (examples/demo). Your own
+          # configuration: use lib.mkLiuqinBootImages instead.
           demo-bootimg = demoImages.bootimg;
           # Full NixOS live installer: kernel plus a netboot squashfs/root
           # overlay packed into the ABL boot.img ramdisk. This is the only
@@ -196,19 +208,10 @@
 
       nixosModules.liuqin = import ./modules/liuqin;
 
-      # Example configuration (config/example.nix). Real
-      # deployments define their own via lib.mkLiuqinSystem; this one backs
-      # the flake's packages and eval check. Same build strategy as demo
-      # below: a native aarch64 closure with the device packages injected
-      # from the cross set.
-      nixosConfigurations.liuqin = self.lib.mkLiuqinSystem {
-        crossBuild = false;
-        injectFrom = pkgsArm;
-        modules = [ ./config/example.nix ];
-      };
-
-      # Complete demo system (GNOME, touch, network, audio, Bluetooth, sensors)
-      # on the dual-boot layout; see config/demo.nix.
+      # The demo system: the machine configuration users copy and the BSP's
+      # own target. It is a plain NixOS module (examples/demo/configuration.nix)
+      # and the single machine file in the repository; the consumer flake next
+      # to it is the same module wired through a separate flake.nix.
       #
       # Built natively for aarch64 rather than cross: the cross package set has
       # no binary-cache entries at all (a cross-built derivation is a different
@@ -222,7 +225,7 @@
       nixosConfigurations.demo = self.lib.mkLiuqinSystem {
         crossBuild = false;
         injectFrom = pkgsArm;
-        modules = [ ./config/demo.nix ];
+        modules = [ ./examples/demo/configuration.nix ];
       };
 
       # RAM-only NixOS installation environment. It deliberately does not
@@ -232,9 +235,19 @@
         modules = [ ./config/installer.nix ];
       };
 
+      # Starting point for a machine configuration:
+      #   nix flake init -t <this repo>
+      # copies examples/demo (flake.nix + configuration.nix) into the current
+      # directory; point inputs.liuqin.url at this repository and edit
+      # configuration.nix.
+      templates.default = {
+        path = ./examples/demo;
+        description = "liuqin machine configuration (Xiaomi Pad 6 Pro)";
+      };
+
       # Everything that must at least evaluate.
-      checks.x86_64-linux.eval-nixos =
-        self.nixosConfigurations.liuqin.config.system.build.toplevel;
+      checks.x86_64-linux.eval-demo =
+        self.nixosConfigurations.demo.config.system.build.toplevel;
       checks.x86_64-linux.eval-installer =
         self.nixosConfigurations.liuqin-installer.config.system.build.toplevel;
 

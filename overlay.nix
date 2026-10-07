@@ -141,6 +141,11 @@ final: prev:
   # would rebuild every audio consumer in the closure.  See pkgs/alsa-ucm/default.nix.
   liuqinAlsaUcm = final.callPackage ./pkgs/alsa-ucm { };
 
+  # Flashlight Quick Settings extension (data-only: shell JS + icons).  In the
+  # overlay so machine configurations reference it as pkgs.liuqinGnomeFlashlight
+  # and a copied-out configuration keeps working.
+  liuqinGnomeFlashlight = final.callPackage ./pkgs/gnome-flashlight { };
+
   # Firmware tree assembled from requireFile placeholders (operator-supplied
   # stock-ROM payloads); see pkgs/firmware.nix.
   liuqinFirmware = final.callPackage ./pkgs/firmware.nix { };

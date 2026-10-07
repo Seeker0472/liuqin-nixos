@@ -34,19 +34,29 @@
 , runCommand
 , wireless-regdb
 , zstd
+# Per-operator payloads (a zstd tar archive each): point these at your own
+# stock-ROM extraction instead of registering a hash-pinned archive in the
+# store. See hardware.liuqin.firmware in modules/liuqin/firmware.nix.
+, vpu ? null
+, cs35l41 ? null
 }:
 
 let
-  vpu = requireFile {
-    name = "liuqin-firmware-vpu.tar.zst";
-    hash = "sha256-UJ0voVU4dM3A2wH7M83A0lE6EaC9X9Xl0gibI3woYf4=";
-    message = ''
-      qcom/vpu/vpu20_4v.mbn iris2 VPU firmware, packed as a zstd tar archive
-      from the official MIUI V14 extraction in liuqin-mainline-blobs/extracted
-      (the downstream release does not carry it).  Register it with
-      `nix-store --add-fixed sha256 liuqin-firmware-vpu.tar.zst`.
-    '';
-  };
+  vpuArchive =
+    if vpu != null then
+      vpu
+    else
+      requireFile {
+        name = "liuqin-firmware-vpu.tar.zst";
+        hash = "sha256-UJ0voVU4dM3A2wH7M83A0lE6EaC9X9Xl0gibI3woYf4=";
+        message = ''
+          qcom/vpu/vpu20_4v.mbn iris2 VPU firmware, packed as a zstd tar archive
+          from the official MIUI V14 extraction in liuqin-mainline-blobs/extracted
+          (the downstream release does not carry it).  Register it with
+          `nix-store --add-fixed sha256 liuqin-firmware-vpu.tar.zst` - or point
+          hardware.liuqin.firmware.vpu at the file and skip that step.
+        '';
+      };
 
   # The vendor's CS35L41 speaker DSP payloads, extracted from the stock ROM's
   # vendor partition (`vendor/firmware/` in the super image): the two Halo
@@ -57,16 +67,21 @@ let
   # build, and its -10251826 entry points at another SKU's tuning.  The files
   # are installed under the names the mainline driver actually requests
   # (generic and -10251826 suffixed).
-  cs35l41 = requireFile {
-    name = "liuqin-firmware-cs35l41.tar.zst";
-    hash = "sha256-D4DMG4r0aY+eIh0F+Wix/Js5nQNhaA63rVtUOr9umxw=";
-    message = ''
-      CS35L41 Halo protection/calibration payloads from this device's stock
-      vendor partition, packed as a zstd tar archive rooted at `cirrus/`.
-      Register it with
-      `nix-store --add-fixed sha256 liuqin-firmware-cs35l41.tar.zst`.
-    '';
-  };
+  cs35l41Archive =
+    if cs35l41 != null then
+      cs35l41
+    else
+      requireFile {
+        name = "liuqin-firmware-cs35l41.tar.zst";
+        hash = "sha256-D4DMG4r0aY+eIh0F+Wix/Js5nQNhaA63rVtUOr9umxw=";
+        message = ''
+          CS35L41 Halo protection/calibration payloads from this device's stock
+          vendor partition, packed as a zstd tar archive rooted at `cirrus/`.
+          Register it with
+          `nix-store --add-fixed sha256 liuqin-firmware-cs35l41.tar.zst` - or
+          point hardware.liuqin.firmware.cs35l41 at the file.
+        '';
+      };
 
   releaseBootImg = fetchurl {
     url = "https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases/download/v0.3.1/boot.img";
@@ -98,11 +113,11 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
 
   # VPU: the iris driver (0006-liuqin-media-iris.patch) requests qcom/vpu/vpu20_4v.mbn, which
   # the release's firmware tree does not carry.
-  tar --zstd -xf ${vpu} -C $fw
+  tar --zstd -xf ${vpuArchive} -C $fw
 
   # CS35L41: the vendor's Halo wmfw + per-position protection/calibration
-  # payloads (see the cs35l41 requireFile above).
-  tar --zstd -xf ${cs35l41} -C $fw
+  # payloads (see the cs35l41Archive binding above).
+  tar --zstd -xf ${cs35l41Archive} -C $fw
 
   # Bluetooth: mainline's QCA UART driver asks for the "wcn"-prefixed
   # rampatch/NVM names first for the WCN6855 and falls back to the plain ones

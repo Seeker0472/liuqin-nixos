@@ -45,6 +45,24 @@ telnet 192.168.7.2 2323
 This is an unauthenticated root channel intended only for a direct, trusted
 USB cable during installation.
 
+The live environment also carries `VARIANT_ID=installer` and accepts root SSH
+keys through `liuqin.lib.mkLiuqinInstallerSystem { authorizedKeys = [ ... ]; }`,
+which installs them as root's `authorized_keys`. With a
+key built into the image, the RAM installer is a standard NixOS installer
+target: nixos-anywhere detects it from that tag and skips its kexec bootstrap
+(its built-in kexec image is x86_64-only), so the documented remote flow
+applies verbatim:
+
+```sh
+fastboot boot result-installer/boot.img
+nixos-anywhere --flake .#mypad --target-host root@192.168.7.2
+```
+
+The target partition, labels and marker still have to satisfy the storage
+guard (see below), so the partition is created and measured first as in the
+manual flow; the closure is copied into the target like any other NixOS
+install. This path has not been exercised on the unit yet.
+
 From the live tty, connect Wi-Fi with `nmtui` or `nmcli`, measure the device's
 GPT, create or select the target partition, and prepare its identity before
 mounting it at `/mnt`:
@@ -142,7 +160,7 @@ sector values are embedded in this repository.
 ```sh
 nix build .#kernel
 nix build .#bootimg-kernel-only
-nix build .#bootimg-nixos
+nix build .#demo-bootimg
 nix build .#installer-kernel
 nix build .#installer-bootimg
 nix build .#uboot            # the bootloader (u-boot-nodtb.bin + DTB)
@@ -156,8 +174,8 @@ and hands the console over to the fbdev DRM client. `installer-kernel`
 and `installer-dtb` expose its kernel and DTB separately for inspection.
 `bootimg-kernel-only` is a low-level bring-up artifact with an empty ramdisk
 and no `init=` command line; it is not a normal bootable NixOS system image.
-`bootimg-nixos` is the normal ABL RAM-boot image for an installed system;
-`demo-bootimg` is the corresponding demo artifact. `uboot` and `uboot-bootimg`
+`demo-bootimg` is the ABL RAM-boot image for the demo configuration
+(`examples/demo`). `uboot` and `uboot-bootimg`
 are the bootloader itself and its ABL boot.img, built entirely here (see
 `pkgs/u-boot/default.nix` for where the sources come from). The U-Boot path needs no
 `/boot` artifact: NixOS installs its own extlinux generation list into the
@@ -210,9 +228,18 @@ payloads in `data/`.
 }
 ```
 
-`examples/demo/` is a complete consumer flake. Edit its
+`examples/demo/` is a complete consumer flake and the repository's only
+machine configuration; the BSP builds the very same `configuration.nix` as its
+`demo` target. Copy it (`nix flake init -t <this repo>`) and edit
 `configuration.nix` for users, hostname and timezone; use the BSP's
 `installer-bootimg` for the first install.
+
+Per-device payloads are options, not hidden requireFile steps:
+`hardware.liuqin.firmware.{vpu,cs35l41}` and
+`hardware.liuqin.sensors.sscConfig` take path literals
+(`./liuqin-firmware-vpu.tar.zst`), and each falls back to the hash-pinned
+`requireFile` archive when left null. With no SSC configuration set the sensor
+stack is omitted and the module warns.
 
 ## Camera
 
@@ -315,6 +342,8 @@ device firmware tree.
 ```text
 flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
+examples/demo/            the demo machine: consumer flake + configuration.nix
+                          (the BSP's own `demo` target, single source)
 modules/liuqin/           installed-system hardware and initrd modules
 pkgs/kernel/              Linux configuration and installer profile; the 7.2.5
                           device patches live in pkgs/kernel/patches/, applied

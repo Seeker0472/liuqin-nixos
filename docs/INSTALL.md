@@ -42,8 +42,9 @@ visible cycle.
   with `mkDefault`, so an explicit `services.openssh.enable` or
   `hardware.liuqin.usbShell.enable` can still override it.  SSH defaults
   `PasswordAuthentication` off, so enroll an authorized key before relying
-  on it.  This workspace's demo target forces `"both"` (`config/demo.nix`),
-  keeping Wi-Fi SSH while exposing the USB deploy link.
+  on it.  This workspace's demo target forces `"both"`
+  (`examples/demo/configuration.nix`), keeping Wi-Fi SSH while exposing the
+  USB deploy link.
 - **Binary cache for pushes.**  A plain `python3 -m http.server 8137 --bind
   192.168.7.12` serving `/var/tmp/liuqin-cache` (reference host process name
   `liuqincache`).  Fill it on the host with `nix copy --to
@@ -67,10 +68,10 @@ visible cycle.
 
 ### Installed-system SSH and logs
 
-The example configuration uses `hardware.liuqin.debugTransport = "ssh"`; the
-demo target forces `"both"`.  The deployment key is `~/.ssh/id_liuqin`; its
-public half is embedded in the `openssh.authorizedKeys.keys` lists of
-`config/example.nix` and `examples/demo/configuration.nix`.  To use your own
+The demo configuration sets `hardware.liuqin.debugTransport = "both"`.  The
+deployment key is `~/.ssh/id_liuqin`; its
+public half is embedded in the `openssh.authorizedKeys.keys` list of
+`examples/demo/configuration.nix`.  To use your own
 key, generate one (`ssh-keygen -t ed25519 -f ~/.ssh/id_liuqin`) or extract
 the public half of an existing private key (`ssh-keygen -y -f
 ~/.ssh/id_liuqin`) and replace that string.  The tablet's WLAN address comes
@@ -174,6 +175,25 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
    `system.build.installBootLoader`) `/boot/extlinux/extlinux.conf` on the
    target.  It does **not** activate: the target's first-boot activation
    provisions `/etc/liuqin-nixos-root`, the marker the initrd guard verifies.
+
+   **Alternative: nixos-anywhere.** The live environment carries
+   `VARIANT_ID=installer`, and
+   `lib.mkLiuqinInstallerSystem { authorizedKeys = [ ... ]; }`
+   puts your key into it as root's `authorized_keys`.  nixos-anywhere then
+   treats the RAM installer as a standard NixOS installer and skips kexec
+   (its built-in kexec image is x86_64-only), so with step 1 done and the
+   partition mounted/formatted as above:
+
+   ```sh
+   # host
+   nixos-anywhere --flake .#mypad --target-host root@192.168.7.2 \
+     --phases install,reboot
+   ```
+
+   The flake's configuration must already satisfy the storage guard (ext4
+   label `LIUQIN_ROOT`, GPT partlabel `linux`/`userdata`, marker written at
+   first boot).  Nothing in this path has been exercised on the unit yet.
+
 4. **Put U-Boot into `boot_b`** (from ABL fastboot):
    `fastboot flash boot_b result-uboot/boot.img`.  Leave the slot attributes
    alone; the device already boots `boot_b` when B is active, and the

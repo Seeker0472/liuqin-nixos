@@ -119,6 +119,13 @@ in
     "${modulesPath}/profiles/perlless.nix"
   ];
 
+  # nixos-anywhere and other installers detect a running NixOS installer from
+  # this tag and skip their kexec bootstrap; /etc/os-release carries it. Root
+  # SSH keys for the live environment come in through the caller's module
+  # (lib.mkLiuqinInstallerSystem { authorizedKeys = [ ... ]; }), which sets
+  # users.users.root.openssh.authorizedKeys.keys.
+  system.nixos.variant_id = "installer";
+
   # The installer deliberately uses its own kernel variant. It keeps the
   # validated display hand-off/earlycon behaviour, but promotes the USB gadget
   # and input paths to built-in so a RAM-only image never depends on modules.

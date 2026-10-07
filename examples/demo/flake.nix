@@ -21,6 +21,14 @@
 #   nix build .#installer-bootimg RAM-only live installer (the install path)
 #   nix build .#uboot-bootimg   the U-Boot boot.img (built in this repo)
 #
+# To install over SSH (nixos-anywhere) instead of the telnet shell, build
+# your own installer with your key in it:
+#
+#   liuqin.lib.mkLiuqinInstallerSystem {
+#     modules = [ ./installer.nix ];
+#     authorizedKeys = [ "ssh-ed25519 AAAA..." ];
+#   }
+#
 # Evaluation needs nothing special. The example uses the BSP's native-aarch64 +
 # injection path: the closure is served by cache.nixos.org and only the
 # per-machine derivations need an aarch64 executor - binfmt on an x86_64 host,
