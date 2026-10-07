@@ -21,7 +21,7 @@
 # that races a setup must simply be repeated after it.
 #
 # The table itself is captured from the unit's own HCI traffic and lives in
-# data/bt-nv/liuqin-bt-nv.table (see the header there).
+# ./liuqin-bt-nv.table (see the header there).
 { writeShellApplication
 , bluez
 , coreutils
@@ -75,7 +75,7 @@ writeShellApplication {
       hcitool cmd $line >/dev/null 2>&1 || true
       n=$((n + 1))
     done <<'TABLE'
-${builtins.readFile ../data/bt-nv/liuqin-bt-nv.table}
+${builtins.readFile ./liuqin-bt-nv.table}
 TABLE
     echo "liuqin-bt-nv: wrote $n controller commands"
   '';

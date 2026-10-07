@@ -3,7 +3,7 @@
 # This is the vendor command sequence the stock Android BT HAL pushes to the
 # controller at every Bluetooth enable; it is captured verbatim from the
 # unit's own HCI traffic (btsnoop, 2026-10-06) and replayed by
-# pkgs/bt-nv.nix.  All commands use OGF 0x3f (vendor).
+# pkgs/bt-nv/default.nix.  All commands use OGF 0x3f (vendor).
 #
 # Without it the mainline stack left the BT RF section unconfigured: measured
 # on the unit, the mouse (ATK Mouse BT) only linked when it was touching the

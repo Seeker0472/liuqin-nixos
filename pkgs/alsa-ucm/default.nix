@@ -8,7 +8,7 @@
 # alsa-lib's derivation and with it every audio consumer in the closure
 # (pipewire, GStreamer, ffmpeg, GTK, ...), which takes the whole desktop off the
 # binary cache.  Nothing builds against this package - the runtime reaches it
-# through ALSA_CONFIG_UCM2 (see modules/liuqin/hardware.nix) - so it stays a
+# through ALSA_CONFIG_UCM2 (see modules/liuqin/audio.nix) - so it stays a
 # leaf and the rest of the closure keeps its upstream hashes.
 { runCommand, alsa-ucm-conf }:
 
@@ -20,8 +20,8 @@ runCommand "liuqin-alsa-ucm-conf" { } ''
   # The upstream tree is read-only in the store; the two files below need to
   # create their directories inside the copy.
   chmod -R u+w $out/share/alsa/ucm2
-  install -Dm0644 ${../data/ucm2/Qualcomm/sm8450/Xiaomi-Pad-6-Pro/HiFi.conf} \
+  install -Dm0644 ${./ucm2/Qualcomm/sm8450/Xiaomi-Pad-6-Pro/HiFi.conf} \
     $out/share/alsa/ucm2/Qualcomm/sm8450/Xiaomi-Pad-6-Pro/HiFi.conf
-  install -Dm0644 ${../data/ucm2/conf.d/sm8450/Xiaomi-Pad-6-Pro.conf} \
+  install -Dm0644 ${./ucm2/conf.d/sm8450/Xiaomi-Pad-6-Pro.conf} \
     $out/share/alsa/ucm2/conf.d/sm8450/Xiaomi-Pad-6-Pro.conf
 ''

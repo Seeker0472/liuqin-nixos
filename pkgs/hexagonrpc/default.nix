@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 #
 # hexagonrpc at the pinned downstream commit, with the liuqin patch
-# from data/sensors-patches (source and patches are unchanged downstream
+# from pkgs/hexagonrpc/patches (source and patches are unchanged downstream
 # work; see NOTICE).
 { lib
 , stdenv
@@ -24,7 +24,7 @@ stdenv.mkDerivation {
   };
 
   patches = [
-    ../data/sensors-patches/0001-hexagonrpcd-implement-ssc-file-service.patch
+    ./patches/0001-hexagonrpcd-implement-ssc-file-service.patch
   ];
 
   nativeBuildInputs = [ meson ninja pkg-config ];

@@ -5,7 +5,7 @@
 #
 # DTB pipeline (all stock dtc/fdtoverlay; the only Python in this file is the
 # payload padding in buildPhase):
-#   1. compile the ABL metadata overlay (dts/liuqin-abl-boot-overlay.dts,
+#   1. compile the ABL metadata overlay (pkgs/bootimg/dts/liuqin-abl-boot-overlay.dts,
 #      a /plugin/ DTS) with `dtc -@`
 #   2. apply it onto the kernel's sm8475-xiaomi-liuqin.dtb with fdtoverlay
 #      (fdtoverlay preserves the base's __symbols__; verified with dtc 1.7.2)
@@ -41,10 +41,10 @@
 , version ? kernel.version
 , kernel ? null
 , dtbName ? "qcom/sm8475-xiaomi-liuqin.dtb"
-, ablOverlayDts ? ../dts/liuqin-abl-boot-overlay.dts
+, ablOverlayDts ? ./dts/liuqin-abl-boot-overlay.dts
 , extraOverlayDts ? null
 # /chosen/bootargs the kernel actually reads; ABL concatenates its own
-# bootargs after it. The kernel's own DTS (patches/kernel/0001) carries a
+# bootargs after it. The kernel's own DTS (pkgs/kernel/patches/0001) carries a
 # long debug string; the build overlays this value onto /chosen/bootargs
 # with fdtoverlay before packaging, mirroring the downstream
 # tools/build-liuqin-native-boot.sh cmdline-overlay step, and the final DT
@@ -77,8 +77,8 @@ let
   # data: they never change for a given stock bootloader, so they are
   # imported as fixed-output paths. Point LIUQIN_STOCK_DTBO / _DTBS at the
   # tar.zst archives produced from the stock dump (see docs/PORTING-NOTES.md).
-  stockDtbo = import ../data/stock-dtbo-entries.nix;
-  stockBaseDtbs = import ../data/stock-base-dtbs.nix;
+  stockDtbo = import ./stock-dtbo-entries.nix;
+  stockBaseDtbs = import ./stock-base-dtbs.nix;
 in
 # bootargs is interpolated verbatim into a double-quoted DTS string below;
 # a quote or backslash would corrupt the generated overlay (or worse).

@@ -13,7 +13,7 @@ import sys
 def main():
     translate = gettext.translation(
         # The locale directory is substituted with gnome-control-center's
-        # Nix store path at build time (see pkgs/power-keyd.nix);
+        # Nix store path at build time (see pkgs/power-keyd/default.nix);
         # fallback=True still covers a missing translation.
         "gnome-control-center-2.0", "/usr/share/locale", fallback=True
     ).gettext

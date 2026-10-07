@@ -4,7 +4,7 @@
 # the downstream v0.1.0 release, so this archive has to stay in the tree
 # (builtins.path). The sha256 pins the
 # NAR of the archive like the requireFile inputs in pkgs/firmware.nix
-# (`nix hash path data/stock-dtbo-entries.tar.zst`).
+# (`nix hash path pkgs/bootimg/stock-dtbo-entries.tar.zst`).
 builtins.path {
   path = ./stock-dtbo-entries.tar.zst;
   name = "liuqin-stock-dtbo-entries";

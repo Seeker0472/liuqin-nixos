@@ -15,7 +15,17 @@ stdenv.mkDerivation {
   pname = "liuqin-power-keyd";
   version = "1.0.0";
 
-  src = ./liuqin-power-keyd;
+  # The daemon's own sources are the three files next to this expression;
+  # this file and the gschema (installed by modules/liuqin/gnome.nix) are
+  # filtered out so src carries exactly them.
+  src = builtins.path {
+    path = ./.;
+    name = "liuqin-power-keyd";
+    filter =
+      path: type:
+      !(builtins.elem (builtins.baseNameOf path)
+        [ "default.nix" "io.github.liuqin.power.gschema.xml" ]);
+  };
 
   dontConfigure = true;
 

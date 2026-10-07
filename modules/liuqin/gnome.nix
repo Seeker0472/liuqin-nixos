@@ -14,7 +14,7 @@ let
     nativeBuildInputs = [ pkgs.glib ];
   } ''
     mkdir -p $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
-    cp ${../../data/io.github.liuqin.power.gschema.xml} \
+    cp ${../../pkgs/power-keyd/io.github.liuqin.power.gschema.xml} \
       $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas/
     glib-compile-schemas $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
   '';
@@ -48,7 +48,7 @@ in
 
     # zenity (dialog) and gnome-session (gnome-session-quit) are looked up on
     # PATH by liuqin-power-menu inside the user session; keep them explicit
-    # here since pkgs/power-keyd.nix no longer carries them in a passthru.
+    # here since pkgs/power-keyd/default.nix no longer carries them in a passthru.
     environment.systemPackages = [ pkgs.zenity pkgs.gnome-session powerSchemas ];
 
     # The power policy schema (read by liuqin-power-key-action through
