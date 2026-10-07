@@ -21,7 +21,7 @@ DT node), and 0020 pins the WCN6855 RF rail voltages to the stock DTB.
 | --- | --- | --- |
 | 0001 | board-dts-bindings | the board DTS, its compatibles/bindings, dtsi fixes, dtb Makefile entry |
 | 0002 | input-hid-touchscreen | Nanosic WN8030 keyboard folio + Novatek NT36xxx touchscreen |
-| 0003 | display-panel-msm | NT36532 DSI panel, msm dirtyfb fix, first-modeset cycle fix |
+| 0003 | display-panel-msm | NT36532 DSI panel, msm dirtyfb fix, warm-start fixes (stop the DSI controller, no bootloader-PLL replay) and one early DPMS off/on after the first modeset |
 | 0004 | audio-audioreach | audioreach/sc8280xp path, cs35l41, wm_adsp, q6apm |
 | 0005 | power-pmic-glink-mipps | PON/pmic-glink + the qcom_battmgr MiPPS ABI and CC orientation |
 | 0006 | media-iris | IRIS VPU platform for sm8450 |

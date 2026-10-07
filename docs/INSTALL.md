@@ -11,15 +11,19 @@ forensic channels and the deployment cache are described in
 |  | **A. U-Boot** (the installed system's normal path) | **B. ABL direct** |
 |---|---|---|
 | chain | ABL → `boot_b` (U-Boot) → menu → `sysboot`/extlinux → kernel | ABL → `fastboot boot <boot.img>` → kernel |
-| display | ABL keeps the display running for the menu, so the kernel inherits a *running* pipeline; patch 0003 retries the cycle at 6, 10, 14, 18 and 22 s, with the panel measured to light between ~10 and 20 s | ABL finds no `/reserved-memory/splash_region` in the boot.img's DT and calls `DisableDisplay()`; the first modeset lights the panel cleanly (~1.9 s) |
+| display | ABL hands over a *live* pipeline; mainline's in-place take-over lost the picture (white, then black) until the whole pipeline was stopped and started once. Patch 0003 stops the DSI controller, drops the bootloader-PLL replay, and does one DPMS off/on 1.5 s after the first modeset — verified on the unit, the panel lights at ~4.4 s and stays | ABL finds no `/reserved-memory/splash_region` in the boot.img's DT and calls `DisableDisplay()`, which powers the panel down; the first modeset lights it cleanly (~1.9 s) |
 | generation selection | yes — the menu lists them | no — one image, one generation |
 | used for | daily boots | RAM installer, tests, recovery |
 
 Path A is the product.  Path B is what makes the installer and any
 `fastboot boot` test image look good: the flake's kernel DT renames the node
 to `linux_splash@b8000000` (patch 0001) exactly so ABL takes its teardown
-branch.  Making path A as clean as B is the "display-pipeline stop at probe"
-work item in `PORTING-NOTES.md` (Display).
+branch.  On path A the bootloader hands over a *live* pipeline, and patch 0003
+stops it and starts it again once (1.5 s after the first modeset, before any
+DRM master exists) — verified on the unit 2026-10-07: the console lights at
+~4.4 s and stays.  The follow-up work item is to move that stop into the
+driver's first-enable path, which would light the panel at ~2 s with no
+visible cycle.
 
 ## 1. Host side
 

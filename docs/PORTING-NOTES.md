@@ -24,7 +24,7 @@ Companion documents: `README.md` (build outputs and configuration model),
 
 | Subsystem | Status | One-line limit |
 | --- | --- | --- |
-| DSI display / DRM / backlight | verified | one fixed 120 Hz mode; U-Boot boots need the first-modeset cycle workaround |
+| DSI display / DRM / backlight | verified | one fixed 120 Hz mode; the U-Boot path needed an early pipeline stop/start to keep the picture, now in patch 0003 |
 | Touch, pen, keyboard folio, touchpad, keys | verified | touch drifts when an external DP monitor is bound (Mutter heuristic); touch resume retries firmware |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
 | Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
@@ -60,19 +60,66 @@ Companion documents: `README.md` (build outputs and configuration model),
   (Android/vendor timing set).  Adding 60 Hz is the single most valuable
   power item; each mode needs its panel timing-switch command, DSI/DSC
   validation and a device test.
-- **Limit — U-Boot first modeset.** Booting through the U-Boot menu inherits
-  a *running* display pipeline (ABL keeps the panel up for the menu), and
-  the first in-place modeset leaves the panel dark.  Patch 0003
-  (`msm-first-modeset-cycle`) retries a stop/start cycle at 6, 10, 14, 18
-  and 22 s, which costs visible dark seconds.  The kernel-side root cause is
-  still unknown; the ABL/`fastboot boot` path (which disables the display
-  first) lights at ~1.9 s with no cycle.  The known hand-off difference and
-  the candidate fix (an ordered quiesce of DPU timing + both DSI streams
-  before the first modeset) are recorded in the patch/Source.  Once a proper
-  fix lands, the retry cycle can be deleted.
+- **U-Boot first modeset: fixed 2026-10-07, verified on the unit.**  The panel
+  used to lose the picture right after the first modeset: the early console
+  *is* on the glass (a photo shows it - timestamps 0.000000, last line at
+  0.026 s - written into ABL's framebuffer at 0xb8000000, which can only be
+  visible while ABL's DPU and DSI are still scanning it out), then the screen
+  goes white (a powered panel with no valid stream) and black.  Register
+  snapshots (a full DSI/DPU dump from `/sys/kernel/debug/dri/0/kms`, 81
+  blocks, 0.5 s granularity) show the engine "enabled" throughout, so no dump
+  can see the fault.  The bootloader hands over a *live* pipeline, and
+  mainline's in-place take-over does not produce a picture on this board: what
+  is needed is a real stop of the whole pipeline (DPU timing/CTL/DSC, both DSI
+  hosts, the PHYs, the panel) and then a clean start.  Patch 0003 now does
+  that stop *before* programming in two places it can (`msm_dsi_host_power_on()`
+  stops the controller first, since `dsi_sw_reset()` preserves the enable bits
+  it finds; `dsi_phy_7nm.c` no longer saves/replays the bootloader's PLL
+  dividers over the driver's own configuration), and - because those two are
+  not sufficient on their own (measured) - the kernel also performs **one**
+  DPMS off/on 1.5 s after the fbdev client's first modeset, while the fbdev
+  client still owns the display.  Verified with the user watching: the panel
+  lights at ~4.4 s (`liuqin: stopping/starting the pipeline to light the first
+  modeset` at 3.36 s) and stays lit.  That early timing is load-bearing: the
+  old five-shot cycle at 6/10/14/18/22 s ran after GDM had taken DRM master,
+  where `fb_blank()` is refused and `drm_fb_helper_blank()` drops the error -
+  its blanks were never undone, which is why the screen used to light "very
+  late", and sometimes not at all.
+  The same measurement retired three earlier theories, each with evidence: a
+  panel power-on reset (sleep-in + supply cycle + DPU control-path reset
+  changed nothing), the `clk_ignore_unused pd_ignore_unused` late-init gating
+  ("clk: Not disabling unused clocks" printed and the panel still died), and
+  the backlight (ktz8866 defaults to 1500/2047, on from probe).  Follow-up:
+  do that stop inside the driver before the first programming (instead of as a
+  second DPMS commit), which should light the panel at ~2 s with no visible
+  cycle; `liuqin-screen-refresh` is gone from the installed system for good -
+  its late blank/unblank could only darken a working panel.
 - **Do not** re-add the `arm_smmu_init` / `disp_cc_sm8450_driver_init`
   blacklist: it crashes this unit, and the option that enabled it was
   removed.
+
+Hand-off contract, read from the sources and then measured.  ABL's half is
+`QcomModulePkg/Library/BootLib/UpdateDeviceTree.c` in Qualcomm's public ABL
+source (the `LA.VENDOR.1.0.r2-09400-WAIPIO.QSSI14.0` tag matches this
+generation) — `UpdateSplashMemInfo()` looks `/reserved-memory/splash_region` up
+in the DTB of the image it is about to jump to and, when the node is missing,
+calls `DisableDisplay()`: display power off, display clocks off, TE/RST reset.
+With the node present ABL instead leaves the display alive, which is what the
+U-Boot image relies on for its menu; what reaches Linux is that *powered* state
+with the link already idle (measured 2026-10-07, above), not a live pipeline.
+Android's kernel does the opposite of a cold start and *adopts* ABL's running
+pipeline (`techpack/display/msm/dsi/dsi_display.c`:
+`dsi_display_cont_splash_config()` sets `is_cont_splash_enabled`, and
+`dsi_display_enable()` then returns early with "cont splash enabled, display
+enable not required"; ABL even hands the DSI PLL calibration codes over through
+`/soc/dsi_pll_codes`).  Mainline drm/msm has no such path, and the other
+mainline ports that boot from this bootloader keep the node anyway (Nothing
+milos, `sm8450-samsung-r0q`, `sm8550-samsung-q5q`, `sm8650-ayaneo-pocket-s2`),
+so on mainline the first modeset always programs the display from scratch.  The
+measurements above show that doing so needs no power cycle and no workaround:
+what ABL leaves behind here (the panel's rails up, an idle DSI link, a stopped
+DPU) is harmless, and the only thing that ever kept this panel dark was the
+port's own blank/unblank workarounds.
 
 ### Touch and input
 
@@ -719,7 +766,7 @@ and the CS35L41 amplifier naming.
 | --- | --- | --- |
 | 0001 | `board-dts-bindings` | board DTS, compatibles/bindings, sm8450/sm8475 dtsi fixes, dtb Makefile entry |
 | 0002 | `input-hid-touchscreen` | Nanosic WN8030 keyboard folio + Novatek NT36xxx touchscreen |
-| 0003 | `display-panel-msm` | NT36532 DSI panel, msm dirtyfb fix, first-modeset cycle |
+| 0003 | `display-panel-msm` | NT36532 DSI panel, msm dirtyfb fix, warm-start fixes (stop the DSI controller, no bootloader-PLL replay) and one early DPMS off/on after the first modeset |
 | 0004 | `audio-audioreach` | audioreach/sc8280xp path, cs35l41, wm_adsp, q6apm |
 | 0005 | `power-pmic-glink-mipps` | PON/pmic-glink + qcom_battmgr MiPPS ABI and CC orientation |
 | 0006 | `media-iris` | IRIS VPU platform for sm8450 |

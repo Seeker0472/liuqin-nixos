@@ -1,8 +1,10 @@
 Display: the Novatek NT36532 DSI panel (driver plus dsi_host plumbing), the
-msm dirtyfb fix for CPU-written buffers and the first-modeset cycle fix.
+msm dirtyfb fix for CPU-written buffers, the warm-start fixes (stop the DSI
+controller before programming it; do not restore the bootloader PLL state),
+and one early DPMS off/on after the first modeset, which is what actually
+gets a picture out of a pipeline the bootloader left running.
 
 Merged from: bring-up patches 0004, 0012, 0015
-
 --- a/drivers/gpu/drm/msm/dsi/dsi_host.c
 +++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
 @@ -166,6 +166,7 @@ struct msm_dsi_host {
@@ -81,6 +83,58 @@ Merged from: bring-up patches 0004, 0012, 0015
  
  	if (msm_host->format == MIPI_DSI_FMT_RGB101010) {
  		if (!msm_dsi_host_version_geq(msm_host, MSM_DSI_VER_MAJOR_6G,
+@@ -2529,10 +2534,25 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
+ 	ret = pinctrl_pm_select_default_state(&msm_host->pdev->dev);
+ 	if (ret) {
+ 		pr_err("%s: failed to set pinctrl default state, %d\n",
+-			__func__, ret);
++		       __func__, ret);
+ 		goto fail_disable_clk;
+ 	}
+ 
++	/*
++	 * liuqin: stop the controller before programming it.  The bootloader can
++	 * leave this DSI link running (it drives the panel through Linux's whole
++	 * early boot: the ABL framebuffer and the early console are visible on
++	 * it), and programming a controller that is still streaming leaves the
++	 * panel without a picture until the link has been stopped and started
++	 * again.  dsi_sw_reset() alone is not enough here: it preserves the
++	 * enable bits it finds, so the controller would be left enabled with the
++	 * bootloader's video configuration while the new timing is written.
++	 * This runs on every power-on; on a cold link it is just a reset.
++	 */
++	dsi_op_mode_config(msm_host,
++		!!(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO), false);
++	dsi_sw_reset(msm_host);
++
+ 	dsi_timing_setup(msm_host, is_bonded_dsi);
+ 	dsi_sw_reset(msm_host);
+ 	dsi_ctrl_enable(msm_host, phy_shared_timings, phy);
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -882,11 +882,18 @@ static int dsi_pll_7nm_init(struct msm_dsi_phy *phy)
+ 
+ 	phy->vco_hw = &pll_7nm->clk_hw;
+ 
+-	/* TODO: Remove this when we have proper display handover support */
+-	msm_dsi_phy_pll_save_state(phy);
+ 	/*
+-	 * Store also proper vco_current_rate, because its value will be used in
+-	 * dsi_7nm_pll_restore_state().
++	 * liuqin: upstream saves the bootloader's PLL dividers and clock mux
++	 * here so that the first enable can restore them after
++	 * msm_dsi_host_reset_phy() wipes the PLL ("TODO: Remove this when we
++	 * have proper display handover support").  On this board that save is
++	 * what breaks the first modeset: the values it captures are ABL's, the
++	 * restore overrides the dividers and mux that the PHY's own enable just
++	 * programmed (and re-runs the VCO rate calculation for them), and the
++	 * link clocks then come out at the bootloader's rate - the panel shows
++	 * nothing (white, then black) until a stop/start cycle has saved the
++	 * driver's own values instead.  Leave state_saved clear so the first
++	 * enable programs the PLL exactly like any later one.
+ 	 */
+ 	if (!dsi_pll_7nm_vco_recalc_rate(&pll_7nm->clk_hw, VCO_REF_CLK_RATE))
+ 		pll_7nm->vco_current_rate = pll_7nm->phy->cfg->min_pll_rate;
 --- a/drivers/gpu/drm/msm/msm_fb.c
 +++ b/drivers/gpu/drm/msm/msm_fb.c
 @@ -39,11 +39,21 @@ static int msm_framebuffer_dirtyfb(struct drm_framebuffer *fb,
@@ -107,96 +161,6 @@ Merged from: bring-up patches 0004, 0012, 0015
  		return 0;
  
  	return drm_atomic_helper_dirtyfb(fb, file_priv, flags, color,
---- a/drivers/gpu/drm/msm/msm_kms.c
-+++ b/drivers/gpu/drm/msm/msm_kms.c
-@@ -6,11 +6,13 @@
-  */
- 
- #include <linux/aperture.h>
-+#include <linux/fb.h>
- #include <linux/kthread.h>
- #include <linux/sched/mm.h>
- #include <uapi/linux/sched/types.h>
- 
- #include <drm/drm_drv.h>
-+#include <drm/drm_fb_helper.h>
- #include <drm/drm_mode_config.h>
- #include <drm/drm_vblank.h>
- #include <drm/clients/drm_client_setup.h>
-@@ -21,6 +23,61 @@
- #include "msm_kms.h"
- #include "msm_mmu.h"
- 
-+/*
-+ * Temporary liuqin workaround for a dark first modeset.
-+ * The bootloader leaves the display pipeline running (ABL's splash, then
-+ * U-Boot's menu), and the first modeset that takes it over does not produce a
-+ * picture on this board: the CRTC ends up active, the panel runs its init
-+ * sequence, the framebuffer holds the console text and DPMS is on, yet the
-+ * panel stays dark.  A stop/start cycle of the pipeline brings it up and it
-+ * stays up.
-+ *
-+ * Measured on liuqin: a single cycle at ~4-7 s after the first modeset did
-+ * not take; cycles later in the boot (and any cycle once the system is up)
-+ * did.  Which moment the panel starts accepting the cycle is not known, so
-+ * retry a few times across the boot instead of betting on one delay -- five
-+ * attempts four seconds apart, the first six seconds after the fbdev client's
-+ * first modeset, and stopping as soon as userspace owns the display (the DPMS
-+ * commits are refused with -EBUSY after that, and drm_fb_helper_blank()
-+ * drops that on the floor).
-+ *
-+ * The schedule is a compromise measured on the unit: with attempts at roughly
-+ * 6, 10, 14, 18 and 22 s after the first modeset, the panel lit between 10 and
-+ * 20 s.  The first attempt was still too early on the measured boots.  Every
-+ * attempt is a visible dark second (the cycle is a real POWERDOWN/UNBLANK), so
-+ * early, repeated attempts can make the user see the panel blink after it is
-+ * already up.
-+ *
-+ * fb_blank() is what the userspace cure reaches (the driver's fb_blank plus
-+ * the FB_EVENT_BLANK notifier chain, so fbcon blanks and redraws as well).
-+ */
-+static struct delayed_work liuqin_panel_cycle_work;
-+static struct drm_device *liuqin_panel_cycle_dev;
-+static int liuqin_panel_cycle_attempts = 5;
-+
-+static void liuqin_panel_cycle(struct work_struct *work)
-+{
-+	struct drm_device *ddev = liuqin_panel_cycle_dev;
-+	struct fb_info *info;
-+
-+	if (!ddev || liuqin_panel_cycle_attempts <= 0)
-+		return;
-+
-+	info = ddev->fb_helper ? ddev->fb_helper->info : NULL;
-+	if (!info || ddev->master) {
-+		liuqin_panel_cycle_attempts = 0;
-+		return;
-+	}
-+
-+	pr_info("liuqin: panel cycle #%d\n", 6 - liuqin_panel_cycle_attempts);
-+	fb_blank(info, FB_BLANK_POWERDOWN);
-+	fb_blank(info, FB_BLANK_UNBLANK);
-+
-+	if (--liuqin_panel_cycle_attempts)
-+		schedule_delayed_work(&liuqin_panel_cycle_work,
-+				      msecs_to_jiffies(4000));
-+}
-+
- static const struct drm_mode_config_funcs mode_config_funcs = {
- 	.fb_create = msm_framebuffer_create,
- 	.atomic_check = msm_atomic_check,
-@@ -385,4 +442,11 @@ void msm_drm_kms_post_init(struct device *dev)
- 
- 	drm_kms_helper_poll_init(ddev);
- 	drm_client_setup(ddev, NULL);
-+
-+	if (ddev->fb_helper && ddev->fb_helper->info) {
-+		liuqin_panel_cycle_dev = ddev;
-+		INIT_DELAYED_WORK(&liuqin_panel_cycle_work, liuqin_panel_cycle);
-+		schedule_delayed_work(&liuqin_panel_cycle_work,
-+				      msecs_to_jiffies(6000));
-+	}
- }
 --- a/drivers/gpu/drm/panel/Kconfig
 +++ b/drivers/gpu/drm/panel/Kconfig
 @@ -622,6 +622,16 @@ config DRM_PANEL_NOVATEK_NT36523
@@ -1028,3 +992,86 @@ Merged from: bring-up patches 0004, 0012, 0015
  };
  
  /**
+--- a/drivers/gpu/drm/msm/msm_kms.c
++++ b/drivers/gpu/drm/msm/msm_kms.c
+@@ -6,11 +6,13 @@
+  */
+ 
+ #include <linux/aperture.h>
++#include <linux/fb.h>
+ #include <linux/kthread.h>
+ #include <linux/sched/mm.h>
+ #include <uapi/linux/sched/types.h>
+ 
+ #include <drm/drm_drv.h>
++#include <drm/drm_fb_helper.h>
+ #include <drm/drm_mode_config.h>
+ #include <drm/drm_vblank.h>
+ #include <drm/clients/drm_client_setup.h>
+@@ -21,6 +23,54 @@
+ #include "msm_kms.h"
+ #include "msm_mmu.h"
+ 
++/*
++ * liuqin: one early stop/start of the display pipeline after the first
++ * modeset.
++ *
++ * The first modeset programs the display correctly by every register the
++ * driver can read - DSI host enabled, the panel's interface scanning the
++ * fbdev buffer, the DSI PLL locked, the DSC blocks configured - and it keeps
++ * running (measured 2026-10-07 with /sys/kernel/debug/dri/0/kms snapshots at
++ * 0.5 s granularity), yet the panel shows nothing until the pipeline has been
++ * stopped and started once.  That is what this cycle does; the old five-shot
++ * version at 6/10/14/18/22 s was doing the same thing.
++ *
++ * It has to happen *early*: this uses fb_blank(), i.e. the fbdev client's
++ * DPMS path, which is refused once a DRM master exists (GDM/gnome-shell take
++ * the display at ~10 s here, and drm_fb_helper_blank() drops the -EBUSY on
++ * the floor), so every late attempt left the display blanked instead of
++ * cycling it - which is why the panel only lit at ~10-20 s, and sometimes not
++ * at all.  One attempt 1.5 s after the fbdev client's first modeset is before
++ * any master and lands; if a master has appeared by then there is nothing to
++ * do, and the attempt is skipped.
++ *
++ * fb_blank() is the userspace cure path (the driver's fb_blank plus the
++ * FB_EVENT_BLANK notifier chain, so fbcon blanks and redraws as well).
++ */
++static struct delayed_work liuqin_panel_cycle_work;
++static struct drm_device *liuqin_panel_cycle_dev;
++static int liuqin_panel_cycle_attempts = 1;
++
++static void liuqin_panel_cycle(struct work_struct *work)
++{
++	struct drm_device *ddev = liuqin_panel_cycle_dev;
++	struct fb_info *info;
++
++	if (!ddev || liuqin_panel_cycle_attempts <= 0)
++		return;
++
++	info = ddev->fb_helper ? ddev->fb_helper->info : NULL;
++	if (!info || ddev->master) {
++		liuqin_panel_cycle_attempts = 0;
++		return;
++	}
++
++	pr_info("liuqin: stopping/starting the pipeline to light the first modeset\n");
++	fb_blank(info, FB_BLANK_POWERDOWN);
++	fb_blank(info, FB_BLANK_UNBLANK);
++	liuqin_panel_cycle_attempts = 0;
++}
++
+ static const struct drm_mode_config_funcs mode_config_funcs = {
+ 	.fb_create = msm_framebuffer_create,
+ 	.atomic_check = msm_atomic_check,
+@@ -385,4 +435,11 @@ void msm_drm_kms_post_init(struct device *dev)
+ 
+ 	drm_kms_helper_poll_init(ddev);
+ 	drm_client_setup(ddev, NULL);
++
++	if (ddev->fb_helper && ddev->fb_helper->info) {
++		liuqin_panel_cycle_dev = ddev;
++		INIT_DELAYED_WORK(&liuqin_panel_cycle_work, liuqin_panel_cycle);
++		schedule_delayed_work(&liuqin_panel_cycle_work,
++				      msecs_to_jiffies(1500));
++	}
+ }

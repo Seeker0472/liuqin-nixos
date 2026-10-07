@@ -32,22 +32,16 @@ in
 
     # --- Panel console repaint --------------------------------------------
     # The bootloader framebuffer and the memory the panel scans after the DRM
-    # driver takes over are not the same: everything the early console drew -
-    # the complete boot log, scrollback included - lands in a buffer that is
-    # no longer on screen, which is what makes a perfectly healthy boot look
-    # like a dead panel.  The blank/unblank below makes fbcon redraw its whole
-    # console buffer into the live framebuffer.  Per-draw flushing is the
-    # kernel's job (0003-liuqin-display-panel-msm.patch, the msm dirtyfb fix)
-    # and needs nothing here.  The RAM installer uses the same command, which
-    # is why its log appears on the panel too.
-    systemd.services.liuqin-screen-refresh = {
-      description = "Redraw the console into the panel framebuffer";
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.liuqinScreenRefresh}/bin/liuqin-screen-refresh";
-      };
-    };
+    # driver takes over are not the same, so everything the early console drew
+    # used to land in a buffer that is no longer on screen - which is what
+    # made a healthy boot look like a dead panel.  The fix for that is the
+    # kernel's per-draw flushing (0003-liuqin-display-panel-msm.patch, the msm
+    # dirtyfb fix); the blank/unblank workaround that used to live here
+    # (`liuqin-screen-refresh`) is gone: measured 2026-10-07, its late blank
+    # is refused once a DRM master exists (GDM at ~10 s), so the display is
+    # left blanked with nothing to undo it - it was turning a working panel
+    # into a dark screen.  The RAM installer still runs the same command (its
+    # own unit in config/installer.nix), where the blank lands before any
+    # master exists and only costs a one-second blink.
   };
 }
