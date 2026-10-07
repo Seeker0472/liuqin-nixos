@@ -149,10 +149,20 @@ port's own blank/unblank workarounds.
 ### Camera
 
 All three modules capture on mainline through CAMSS plus libcamera's `simple`
-pipeline with the software ISP; the GNOME path (portal → pipewire →
-libcamera) works, and contrast autofocus runs in the simple pipeline while
-streaming.  Kernel side is patch 0012/0013; userspace is `pkgs/libcamera-af/`.
-**verified** (2026-10-06).
+pipeline with the software ISP, and the GNOME path (portal → pipewire →
+libcamera) works.  Contrast autofocus is a simple-IPA algorithm ported from
+the RPi IPA's `Af` (CDAF path), driven by a focus figure of merit that the
+software ISP measures on the processed frame (both the CPU and the EGL
+debayer paths); the pipeline handler only applies lens moves, and the AGC and
+AWB freeze while a scan runs.  Kernel side is patch 0012/0013; userspace is
+`pkgs/libcamera-af/`.  **Device-verified 2026-10-07: the IPA-side autofocus
+and the lens channel work, and a scan costs ~5 s at the platform's 10 fps
+(the earlier pipeline-side implementation took ~27 s); the dioptre-to-DAC map
+is provisional until the module's V-curve is measured.  The software ISP uses
+libcamera's default EGL debayer, which rescales the sensor's full frame to
+the stream size and so keeps the field of view (the CPU debayer has no
+scaler and centre-crops); the EGL focus figure of merit tracks focus well
+enough for the AF (2026-10-07).**
 
 Operating facts (full detail in `docs/TODO/CAMERA-MAINLINE.md`):
 
@@ -175,7 +185,7 @@ Operating facts (full detail in `docs/TODO/CAMERA-MAINLINE.md`):
 - Only one consumer can hold the camera; wireplumber's v4l2 monitor counts
   as one.  In a GNOME session mask it for a raw capture.
 - Open items: SC202CS gain semantics, depth flip register, AF quality
-  limits, VCM not parking, app photo/recording paths, suspend/resume
+  limits, app photo/recording paths, suspend/resume
   re-capture, colour calibration, UVC gadget, and the always-on bring-up
   workaround (patch 0013) that still needs a minimal-set bisect.
 
