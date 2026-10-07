@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Keep u-boot/{patches,files} and the liuqin-dualboot dev tree in exact sync, and
+# Keep pkgs/u-boot/{patches,files} and the liuqin-dualboot dev tree in exact sync, and
 # prove it: baseline + patches + files must reproduce that tree byte for byte.
 #
 #   ./verify-port.sh              check only; fails if the packaging is stale
 #   ./verify-port.sh --write      re-cut patches/ and files/ from the dev tree
+#                                 and regenerate port.manifest
 #
 #   PORT_TREE=/path/to/source ./verify-port.sh     use another dev tree
 #   BASELINE=/path/to/tree    ./verify-port.sh     use another baseline checkout
@@ -16,8 +17,8 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-flake=$(cd "$here/.." && pwd)
-port=${PORT_TREE:-$here/../../liuqin-dualboot/u-boot/source}
+flake=$(cd "$here/../.." && pwd)
+port=${PORT_TREE:-$here/../../../liuqin-dualboot/u-boot/source}
 write=no
 [ "${1:-}" = "--write" ] && write=yes
 
@@ -45,6 +46,14 @@ patch_groups="
 git -C "$port" rev-parse --git-dir > /dev/null 2>&1 ||
   die "$port is not a git checkout: its tree is what defines the port"
 port=$(cd "$port" && pwd)
+
+# Device-free half of this check: patches/ and files/ are pinned by
+# port.manifest, so a hand edit that bypasses --write fails `nix flake check`
+# without needing the dev tree or the baseline. --write regenerates it below.
+if [ "$write" = no ]; then
+  ( cd "$here" && sha256sum -c --quiet port.manifest ) ||
+    die "patches/ or files/ do not match port.manifest: re-run with --write"
+fi
 
 if [ -n "${BASELINE:-}" ]; then
   baseline=$(cd "$BASELINE" && pwd)
@@ -184,7 +193,9 @@ if [ "$write" = yes ]; then
   rm -rf "$here/files"
   cp -a "$work/stage/patches/." "$here/patches/"
   cp -a "$work/stage/files/." "$here/files/"
-  echo "已写入 patches/ 与 files/"
+  # Regenerate the device-free byte pin together with the packaging.
+  ( cd "$here" && find files patches -type f -print0 | sort -z | xargs -0 sha256sum > port.manifest )
+  echo "已写入 patches/、files/ 与 port.manifest"
 fi
 
 echo "OK: baseline + $(ls "$here"/patches/*.patch | wc -l) 个补丁 + files/ == dev 树，逐字节（$(wc -l < "$work/pkg") 个文件）"

@@ -51,7 +51,7 @@
 #     a newer tree that parses only that node computes a different map - and the
 #     framebuffer mapping is derived from it.
 #
-# The ABL boot.img is packaged by ../pkgs/bootimg.nix, the same pipeline the
+# The ABL boot.img is packaged by ../bootimg/default.nix, the same pipeline the
 # kernel image uses, so the boot contract (identity ids, __symbols__ union,
 # inert sink, base 0 / kernel_offset 0x8000 / dtb_offset 0x1f00000, the 8 MiB
 # payload padding and the empty newc ramdisk) lives in exactly one place.
@@ -256,7 +256,7 @@ PYEOF
     dontStrip = true;
   };
 
-  bootimg = callPackage ../pkgs/bootimg.nix {
+  bootimg = callPackage ../bootimg {
     # The DTB surgery runs gawk on the build host, so take it from the host
     # package set rather than the cross one.
     inherit (hostPkgs) gawk;
