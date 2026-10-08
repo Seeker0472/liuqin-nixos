@@ -76,6 +76,10 @@ final: prev:
   liuqinScreenRefresh = final.callPackage ./pkgs/screen-refresh.nix { };
   liuqinBacklightDefault = final.callPackage ./pkgs/backlight.nix { };
   liuqinPersistProvision = final.callPackage ./pkgs/persist-provision.nix { };
+  # Switch firmware_class.path to the union run-firmware.mount provides, after
+  # that mount is up; before the switch the loader keeps the firmware
+  # environment NixOS's activation script wrote. See modules/liuqin/firmware.nix.
+  liuqinFirmwareLoaderPath = final.callPackage ./pkgs/firmware-loader-path.nix { };
   # persistent-root identity guard, run by modules/liuqin/initrd-guard.nix
   liuqinStorageGuard = final.callPackage ./pkgs/storage-guard.nix { };
   liuqinWlanMac = final.callPackage ./pkgs/wlan-mac.nix { };

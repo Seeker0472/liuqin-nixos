@@ -56,6 +56,7 @@ in
     liuqinScreenRefresh = "shell script";
     liuqinBacklightDefault = "shell script";
     liuqinPersistProvision = "shell script";
+    liuqinFirmwareLoaderPath = "shell script";
     liuqinWlanMac = "shell script";
     liuqinBtPublicAddr = "shell script";
     liuqinBtNv = "manual BT NV/RF table writer, run by hand";

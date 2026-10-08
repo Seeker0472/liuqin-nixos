@@ -273,11 +273,20 @@ this board's Halo payloads.
   partition and registered as a `requireFile` payload), and
   `modules/liuqin/firmware.nix` declares the union of the vendor payloads, the
   system firmware tree and the per-device calibration records under
-  `/var/lib/firmware` as a mount unit (`run-firmware.mount`) and points the
-  loader at it with a tmpfiles write of `firmware_class.path` - without the
-  calibration the CS35L41 protection gate stays closed.  The overlay reads its
-  lower layers once at mount, so the mount is `PartOf=` the provisioner and a
-  `systemctl restart liuqin-persist-provision` rebuilds the union.
+  `/var/lib/firmware` as a mount unit (`run-firmware.mount`) and switches the
+  loader to it from `liuqin-firmware-loader-path.service`, ordered after that
+  mount - without the calibration the CS35L41 protection gate stays closed.
+  The order matters: the ASoC card probe (~10 s, driven by the SoundWire
+  modules udev loads) requests the AudioReach topology through this parameter,
+  and a `-ENOENT` there fails `snd_soc_register_card()` for the rest of the
+  boot - no card means no playback *and* no capture device (measured
+  2026-10-08/09: a tmpfiles write pointed the loader at the not-yet-mounted
+  `/run/firmware` and every boot lost the card).  Until the switch runs the
+  parameter keeps the `hardware.firmware` environment path NixOS's activation
+  script writes, from which the topology loads as a `.zst` blob.  The overlay
+  reads its lower layers once at mount, so the mount is `PartOf=` the
+  provisioner and a `systemctl restart liuqin-persist-provision` rebuilds the
+  union.
   `POST_PMU: * Main AMP event failed: -13` can still print at
   probe; playback is audible regardless.
 
@@ -670,9 +679,12 @@ root=fstab loglevel=7 lsm=landlock,yama,bpf cpuidle.governor=teo
   single `char[256]`, no `:` splitting).  A second `:`-joined path
   invalidates the parameter and every `request_firmware()` fails with `-2`.
   Both call sites point at `/var/lib/firmware` (the installer's initrd
-  injection); the installed system re-points the parameter at the union
-  `run-firmware.mount` mounts, from a tmpfiles `w` line
-  (`modules/liuqin/firmware.nix`).
+  injection); the installed system switches the parameter to the union
+  `run-firmware.mount` mounts from `liuqin-firmware-loader-path.service`,
+  ordered after that mount (`modules/liuqin/firmware.nix`).  Until the switch
+  runs the parameter keeps the `hardware.firmware` path the activation script
+  writes - pointing it at the union earlier loses the ~10 s ASoC card probe
+  (`request_firmware()` fails hard there and the probe is not retried).
 - Three config inputs: `pkgs/kernel/config.nix` (structured answers),
   `pkgs/kernel/liuqin-firstboot.config` and `pkgs/kernel/installer.config` (raw
   fragments appended in `postConfigure` before one `make olddefconfig`, then

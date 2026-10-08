@@ -102,17 +102,27 @@ in
       # not exist on NixOS, so the board gets one union of the three trees it
       # needs: the vendor CS35L41 payloads (they must shadow linux-firmware's
       # same-named files in the system tree), the system firmware tree and the
-      # per-device calibration records under /var/lib/firmware.  Both halves are
-      # declarative - the union is a mount unit, and the loader parameter is a
-      # tmpfiles write of the same string, byte for byte (tmpfiles does not
-      # append a newline, which a char[256] parameter would keep).  The write is
-      # deliberately unordered with respect to the mount: the value is the same
-      # path either way, and a request_firmware() that loses the race fails the
-      # way it already does while the parameter is still empty.  The parameter
-      # itself is compiled in (CONFIG_FW_LOADER, asserted from vmlinux in
-      # pkgs/kernel/default.nix), so /sys/module/firmware_class always exists
-      # and a `w` typo would fail the tmpfiles unit instead of silently
-      # leaving every load to the default path.
+      # per-device calibration records under /var/lib/firmware.  The union is a
+      # mount unit; the parameter is a second unit that runs only once the
+      # mount is up.
+      #
+      # The order of the two units below is load-bearing, not cosmetic.  The
+      # ASoC card probe (triggered by the SoundWire/WCD938x modules udev loads
+      # at ~10 s) loads the AudioReach topology
+      # `qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin` through this parameter, and a
+      # -ENOENT there fails snd_soc_register_card() for the rest of the boot:
+      # no card means no playback *and* no capture device.  Until the switch
+      # below runs, the loader keeps the path NixOS's activation script wrote
+      # (the hardware.firmware environment, which carries the topology as a
+      # compressed blob, CONFIG_FW_LOADER_COMPRESS_ZSTD); a mount that fails
+      # leaves that environment in place instead of an empty directory.  A
+      # tmpfiles `w` line cannot express that order - tmpfiles-setup runs in
+      # the initrd and again long before the union - so it pointed the loader
+      # at the not-yet-mounted `/run/firmware` during every card probe.  The
+      # parameter itself is compiled in
+      # (CONFIG_FW_LOADER, asserted from vmlinux in pkgs/kernel/default.nix),
+      # so the file always exists and a broken write fails the unit instead of
+      # silently leaving every load to the default path.
       #
       # The mount keeps the ordering the board needs: before sound.target (the
       # CS35L41 protection firmware is requested during the first DAPM
@@ -154,9 +164,26 @@ in
           };
         }
       ];
-      systemd.tmpfiles.rules = [
-        "w /sys/module/firmware_class/parameters/path - - - - /run/firmware"
-      ];
+
+      # The loader switch: only after the union (Requires/After above) so that
+      # the card probe earlier in the boot still sees the activation script's
+      # firmware environment, and before sound.target so the union's
+      # calibration records are in place before the first DAPM power-up.
+      systemd.services.liuqin-firmware-loader-path = {
+        description = "Point the firmware loader at the firmware union";
+        wantedBy = [ "sound.target" ];
+        requires = [ "run-firmware.mount" ];
+        after = [ "run-firmware.mount" ];
+        before = [ "sound.target" ];
+        # The parameter exists whenever firmware_class is in the kernel; the
+        # condition keeps a module-only build from creating a stray file.
+        unitConfig.ConditionPathExists = "/sys/module/firmware_class/parameters/path";
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.liuqinFirmwareLoaderPath}/bin/liuqin-firmware-loader-path /run/firmware";
+        };
+      };
     }
   );
 }
