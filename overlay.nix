@@ -83,6 +83,7 @@ final: prev:
   liuqinBtNv = final.callPackage ./pkgs/bt-nv { };
   liuqinSlpi = final.callPackage ./pkgs/slpi.nix { };
   liuqinSensorProxyRefresh = final.callPackage ./pkgs/sensor-proxy-refresh.nix { };
+  liuqinPanelPosture = final.callPackage ./pkgs/panel-posture.nix { };
 
   # --- USB2 control channel ---
   # The configfs gadget (mkLiuqinUsbGadget takes the USB strings and the two

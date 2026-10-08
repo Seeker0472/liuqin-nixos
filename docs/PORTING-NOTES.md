@@ -124,7 +124,64 @@ port's own blank/unblank workarounds.
 
 - Novatek NT36523 SPI touchscreen, pen, Nanosic WN8030 keyboard-folio
   bridge (keyboard, media keys, touchpad) and the power keys are **verified**
-  (2026-09-29).  Hall switches are covered by `gpio-keys`.
+  (2026-09-29).  The folio halls stay owned by `gpio-keys` (SW_LID /
+  SW_TABLET_MODE); `hid-nanosic` derives the levels from those switch states
+  (the `sw` bitmap - EV_SW state never appears in `key`) and pushes the
+  vendor's hall command (hall_n high nibble, hall_s low) to the bridge on
+  every switch change, after resume and after a bridge reset.  Pushing that
+  command does **not** gate the folio: with 13 pushes counted (`hall_sends`)
+  against a folded keyboard, every key still reached the input layer
+  (measured 2026-10-08), so the disable is host-side instead - `hid-nanosic`
+  drops the folio's keyboard/mouse/touchpad/consumer reports while
+  SW_TABLET_MODE is 1, and fails open when the switch device is absent.  A
+  second DT reference to the hall lines is not an option on 7.2.5: it trips
+  the shared-GPIO proxy path and makes `gpio-keys`' probe fail with -EBUSY
+  (observed on the unit 2026-10-08), so the driver deliberately reads the
+  input states instead of the lines.
+- **The folio-folded hall belongs to the bridge driver** (measured
+  2026-10-08, folio attached): gpio23 reads low with the keyboard folded onto
+  the back (the tablet posture) and high with the keyboard deployed in front -
+  *and* with the folio removed, which is exactly why a plain switch node
+  cannot express it.  `hid-nanosic` owns the line as `tablet-mode-gpios`
+  (`GPIO_ACTIVE_LOW`), combines it with a liveness window over the bridge's
+  data interrupt - with the keypad attached that interrupt fires about once a
+  second even when idle, and it stops within seconds of the keypad coming off
+  (77 s of silence observed; line levels, the status interrupt and every I2C
+  probe including the firmware-version read are identical either way, the
+  bridge being on the tablet side) - and reports SW_TABLET_MODE = folded OR
+  absent on its own input device ("liuqin-folio").  The window is re-checked
+  on the hall IRQ and on a 5 s timer; a folio-less boot starts out absent.  GNOME therefore gets tablet mode - auto-rotate and the
+  on-screen keyboard - both folded and with the folio removed.  The
+  active-high mapping that shipped first was inverted on the unit: GNOME
+  stayed in laptop mode when folded (no auto-rotate, the panel pinned
+  portrait) while the driver muted the keyboard in the deployed posture.
+  Moving the line out of `gpio-keys` also drops its `wakeup-source`: one
+  candidate less for the lid-suspend loop below.
+- **Laptop-posture landscape is a seeded mutter configuration.**
+  `hardware.liuqin.desktop.gnome.panelOrientation` (default `right`, i.e.
+  transform 270) seeds `~/.config/monitors.xml` for the session user through
+  `systemd.tmpfiles` type `C`, so the file is written once and a later change
+  by the user - or one mutter writes itself - is never clobbered by an
+  activation.  The panel is natively portrait (1800x2880) while the folio
+  stands the tablet in landscape, so the laptop posture needs an explicit
+  transform.  The file alone is not enough: mutter applies it at session
+  start only, keeps the last gravity-derived transform when tablet mode ends
+  (measured 2026-10-08: folded portrait, keyboard deployed, panel stays
+  portrait), and does not persist `ApplyMonitorsConfig` calls at all - a
+  transient call is undone by the next screen-state change and no
+  `monitors.xml` is written.
+  `liuqin-panel-posture` (`pkgs/panel-posture.nix`, a session user service)
+  therefore watches the driver's `tablet_mode` attribute: entering the laptop
+  posture re-applies the rotation `monitors.xml` configures, verifies the
+  transform actually moved and retries.  The *persistent* method is the one
+  that works - measured 2026-10-09, the temporary method returns success and
+  changes nothing - and mutter writes no file either way, so the configured
+  `monitors.xml` stays the source of truth.  Entering tablet mode the service
+  checks that something is polling the proxy, and when mutter's own claim has
+  been lost (it is one-shot, see the sensor section below) the service claims
+  the accelerometer itself and follows `AccelerometerOrientation` directly -
+  `right-up` is the 270 deg landscape pose, `normal` the native portrait -
+  until the posture changes back.
 - Touch resume repeatedly retries the firmware download and can end in
   `resume failed closed`; the input device reappears after recovery.  The
   installer does not ship the touchscreen firmware payload (its panel is
@@ -371,6 +428,27 @@ Sensor claims are polkit-gated to `subject.local` sessions, so
 `monitor-sensor --accel` and `ClaimLight` are denied from an SSH session by
 design, and `LightLevel` only advances while a local client holds the claim
 (GNOME never claims the light sensor, so it reads 0).
+
+**Claim lifetime** (measured 2026-10-08).  The proxy polls a sensor only
+while a client holds its claim, and mutter's orientation manager is a
+one-shot: it claims when `net.hadess.SensorProxy` *appears* after it is
+running, and nothing re-claims when the panel orientation becomes managed
+again after a laptop-posture interlude.  A lost claim looks like this: the
+proxy's CPU time stops advancing (`/proc/<pid>/stat` fields 14+15 frozen
+over 4 s), `AccelerometerOrientation` keeps its last value through a full
+four-pose rotation, `PanelOrientationManaged=true` is still set, and the
+panel silently stops following the accelerometer (it keeps whatever
+transform was applied last).  A transient local claim (`systemd-run --user
+monitor-sensor --accel`, admitted by the `subject.local` rule above) makes
+the proxy poll again - CPU and orientation come back - but mutter does not
+resume consuming the orientation: only a fresh shell claims again.  The
+boot chain's refresh helpers verify a claim by the proxy's CPU advancing,
+which cannot tell *which* client claimed, so a greeter claim that dies when
+the greeter exits can mask a session shell that never got one.
+`liuqin-panel-posture` repairs the user-visible half of that loss: entering
+tablet mode it finds the proxy unpolled, claims the accelerometer itself and
+applies the transform, so rotation survives a dead mutter claim.  Only a
+fresh shell can give mutter its own claim back.
 
 **Not done:**
 

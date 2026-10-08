@@ -61,6 +61,7 @@ in
     liuqinBtNv = "manual BT NV/RF table writer, run by hand";
     liuqinSlpi = "shell script";
     liuqinSensorProxyRefresh = "shell script";
+    liuqinPanelPosture = "shell script";
     liuqinUsbLogin = "shell script";
     liuqinStorageGuard = "shell script (fail-closed fixture tests in its checkPhase)";
     mkLiuqinUsbGadget = "configfs gadget shell factory, parameterised per consumer";

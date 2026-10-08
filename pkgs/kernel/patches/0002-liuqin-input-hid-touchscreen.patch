@@ -137,7 +137,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,1282 @@
+@@ -0,0 +1,1730 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -162,12 +162,16 @@ Merged from: bring-up patches 0002, 0003
 + *
 + * Deliberately absent, all of it present in the vendor driver:
 + *
-+ *  - The hall GPIOs. tlmm 10 and 23 are already described as gpio-keys
-+ *    SW_LID / SW_TABLET_MODE in sm8475-xiaomi-liuqin.dts, which is both the
-+ *    better semantics and an exclusive claim - a second consumer would fail
-+ *    with -EBUSY and take the whole probe down with it. The vendor driver only
-+ *    ever forwarded those levels to a Xiaomi userspace daemon. Do not "restore"
-+ *    them here.
++ *  - A second consumer for a hall line. The lid hall (tlmm 10) stays with
++ *    gpio-keys as SW_LID; a second reference to it would trip the shared-GPIO
++ *    machinery (GPIOD_FLAG_SHARED + gpio-shared-proxy) and gpio-keys' own
++ *    lookup would then miss the proxy and fail with -EBUSY (observed on the
++ *    unit). The folio-folded hall (tlmm 23) is owned here instead, as a plain
++ *    GPIO: the switch it belongs to is not the hall alone, because
++ *    SW_TABLET_MODE=1 means "no keyboard attached" - folded, or no folio at
++ *    all - and only this side can combine the line with the bridge's own
++ *    liveness. The vendor driver only ever forwarded the hall levels to a
++ *    Xiaomi userspace daemon.
 + *  - The /dev/nanodev0 character device. It exists to give that same daemon a
 + *    raw I2C write channel for keyboard-MCU firmware updates; an unauthenticated
 + *    path to write arbitrary bytes onto an I2C bus is not something to recreate.
@@ -183,12 +187,14 @@ Merged from: bring-up patches 0002, 0003
 +#include <linux/gpio/consumer.h>
 +#include <linux/hid.h>
 +#include <linux/i2c.h>
++#include <linux/input.h>
 +#include <linux/interrupt.h>
 +#include <linux/mod_devicetable.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
 +#include <linux/property.h>
 +#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
 +#include <linux/sysfs.h>
 +#include <linux/workqueue.h>
 +
@@ -226,6 +232,41 @@ Merged from: bring-up patches 0002, 0003
 +
 +static const u8 nanosic_version_command[NANOSIC_VERSION_COMMAND_LEN] = {
 +	0x4c, 0x32, 0x00, 0x4f, 0x30, 0x80, 0x18, 0x01, 0x00, 0x18,
++};
++
++/*
++ * The bridge's own uplink commands share the version request's shape: a
++ * 66-byte frame behind the register byte. The hall command's fixed payload is
++ * 20 80 80 e1 01 followed by one byte carrying both hall levels, hall_n in the
++ * high nibble and hall_s in the low. It is pushed whenever a switch changes
++ * and again after resume or a bridge reset. The bridge does not gate the folio
++ * on that byte - measured 2026-10-08: thirteen pushes against a folded
++ * keyboard, every key still delivered - so the driver gates the reports
++ * itself, and the command serves the bridge's own bookkeeping. It doubles as
++ * the presence probe, which ignores its contents.
++ */
++#define NANOSIC_HALL_COMMAND_LEN	NANOSIC_VERSION_COMMAND_LEN
++#define NANOSIC_HALL_LEVEL_OFFSET	9
++#define NANOSIC_HALL_RETRIES		2
++#define NANOSIC_HALL_ATTACH_DELAY_MS	1000
++
++/*
++ * Folio presence. The hall line reads the same with the keyboard deployed and
++ * with the folio removed, and so does every line level and every I2C probe -
++ * the bridge is on the tablet side and answers either way (measured
++ * 2026-10-09).  What does separate the two states is the bridge's own data
++ * interrupt: with the keypad attached it fires roughly once a second even when
++ * idle, and it stops within seconds of the keypad coming off (77 s of silence
++ * observed).  Presence is therefore a liveness window over that interrupt,
++ * checked on the hall IRQ and on a timer because neither attach nor detach has
++ * an interrupt of its own.
++ */
++#define NANOSIC_FOLIO_POLL_MS		5000
++#define NANOSIC_FOLIO_DEBOUNCE_MS	50
++#define NANOSIC_FOLIO_IDLE_MS		15000
++
++static const u8 nanosic_hall_command[NANOSIC_HALL_COMMAND_LEN] = {
++	0x4c, 0x32, 0x00, 0x4f, 0x20, 0x80, 0x80, 0xe1, 0x01,
 +};
 +
 +/* Report IDs, which double as the framing's subpacket tags. */
@@ -588,6 +629,7 @@ Merged from: bring-up patches 0002, 0003
 +	NANOSIC_I2C_DATA_READ,
 +	NANOSIC_I2C_VERSION_WRITE,
 +	NANOSIC_I2C_VERSION_READ,
++	NANOSIC_I2C_HALL_WRITE,
 +};
 +
 +struct nanosic {
@@ -596,6 +638,26 @@ Merged from: bring-up patches 0002, 0003
 +	struct gpio_desc *reset_gpio;
 +	struct gpio_desc *wake_gpio;
 +	struct hid_device *hid[NANOSIC_HID_COUNT];
++
++	/* The gpio-keys device whose lid switch feeds the bridge command. */
++	struct input_dev *hall_dev;
++	struct input_handler *hall_handler;
++	struct input_handle *hall_handle;
++	struct delayed_work hall_work;
++
++	/*
++	 * The folio-folded hall, owned here, and the switch derived from it
++	 * plus the bridge's presence.
++	 */
++	struct gpio_desc *tablet_mode_gpio;
++	int tablet_mode_irq;
++	struct delayed_work tablet_work;
++	struct input_dev *folio_dev;
++	unsigned int folio_folded;
++	unsigned int folio_present;
++	unsigned int tablet_mode;
++	unsigned long last_irq;
++	u64 folio_irq_count;
 +
 +	/* Serialises the wake line, the awake flag and the I2C buffers. */
 +	struct mutex lock;
@@ -615,6 +677,7 @@ Merged from: bring-up patches 0002, 0003
 +	u64 reset_recovery_count;
 +	u64 bad_magic_count;
 +	u64 valid_report_count;
++	u64 hall_send_count;
 +	int last_i2c_errno;
 +	enum nanosic_i2c_operation last_i2c_operation;
 +
@@ -688,6 +751,8 @@ Merged from: bring-up patches 0002, 0003
 +		return "version-write";
 +	case NANOSIC_I2C_VERSION_READ:
 +		return "version-read";
++	case NANOSIC_I2C_HALL_WRITE:
++		return "hall-write";
 +	default:
 +		return "none";
 +	}
@@ -755,6 +820,306 @@ Merged from: bring-up patches 0002, 0003
 +				    NANOSIC_I2C_VERSION_WRITE);
 +}
 +
++/*
++ * Hall handling. The lid hall belongs to gpio-keys, and its state is read from
++ * the bitmap the input core keeps for that device - the sw bitmap, which is
++ * where EV_SW state lives; the key bitmap only ever holds EV_KEY. The
++ * folio-folded hall is owned by this driver and folded into the switch it
++ * reports (tablet_mode): the line alone cannot separate "keyboard deployed"
++ * from "folio removed". The level byte the bridge receives carries both.
++ */
++static unsigned int nanosic_hall_level(struct nanosic *nano)
++{
++	struct input_dev *dev = nano->hall_dev;
++	unsigned int lid = test_bit(SW_LID, dev->sw) ? 1 : 0;
++
++	return ((!lid) << 4) | nano->tablet_mode;
++}
++
++/*
++ * In tablet mode the switch's own semantic is "no keyboard attached", and the
++ * folio's keys and touchpad are physically out of reach behind the tablet.
++ * The vendor stack gates the folio on that state; this bridge does not, so
++ * the input reports are dropped here.
++ */
++static bool nanosic_input_muted(struct nanosic *nano)
++{
++	return nano->tablet_mode;
++}
++
++static int nanosic_write_hall_command(struct nanosic *nano)
++{
++	struct i2c_client *client = nano->client;
++	u8 command[NANOSIC_HALL_COMMAND_LEN];
++	struct i2c_msg msg = {
++		.addr = client->addr,
++		.len = sizeof(command),
++		.buf = command,
++	};
++	int ret;
++
++	lockdep_assert_held(&nano->lock);
++
++	/* The bridge takes its own slave address as the register byte. */
++	if (client->addr != nanosic_hall_command[0])
++		return -ENXIO;
++
++	memcpy(command, nanosic_hall_command, sizeof(command));
++	command[NANOSIC_HALL_LEVEL_OFFSET] = nanosic_hall_level(nano);
++
++	ret = nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_HALL_WRITE);
++	if (!ret)
++		nano->hall_send_count++;
++
++	return ret;
++}
++
++static void nanosic_hall_work(struct work_struct *work)
++{
++	struct nanosic *nano = container_of(work, struct nanosic,
++					    hall_work.work);
++	bool was_awake;
++	unsigned int attempt;
++	int ret;
++
++	guard(mutex)(&nano->lock);
++
++	if (nano->suspended || !nano->hall_dev)
++		return;
++
++	/*
++	 * After a dropped wake line the bridge needs its I2C back; the vendor
++	 * measured up to 25 ms for that, the same as the version request.
++	 */
++	was_awake = nano->awake;
++	nanosic_wake(nano);
++	if (!was_awake)
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++
++	for (attempt = 0; attempt < NANOSIC_HALL_RETRIES; attempt++) {
++		ret = nanosic_write_hall_command(nano);
++		if (!ret)
++			return;
++
++		/* Retry only an observed failure, like the frame read path. */
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++	}
++
++	dev_dbg(&nano->client->dev, "hall command failed: %d\n", ret);
++}
++
++static void nanosic_hall_push(struct nanosic *nano, unsigned int delay_ms)
++{
++	mod_delayed_work(system_wq, &nano->hall_work, msecs_to_jiffies(delay_ms));
++}
++
++/*
++ * Liveness: the bridge stops raising its data line when the keypad comes off,
++ * and any interrupt - even one that only reports "nothing happened" - refreshes
++ * the window.
++ */
++static bool nanosic_folio_present(struct nanosic *nano)
++{
++	lockdep_assert_held(&nano->lock);
++
++	return time_before(jiffies,
++			   nano->last_irq + msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS));
++}
++
++static void nanosic_folio_report(struct nanosic *nano)
++{
++	unsigned int value = nano->folio_folded || !nano->folio_present;
++
++	if (value == nano->tablet_mode)
++		return;
++
++	nano->tablet_mode = value;
++	input_report_switch(nano->folio_dev, SW_TABLET_MODE, value);
++	input_sync(nano->folio_dev);
++
++	/* The bridge sees the same state any other switch change would push. */
++	nanosic_hall_push(nano, 0);
++}
++
++static void nanosic_tablet_work(struct work_struct *work)
++{
++	struct nanosic *nano = container_of(to_delayed_work(work),
++					    struct nanosic, tablet_work);
++
++	guard(mutex)(&nano->lock);
++
++	if (nano->suspended)
++		return;
++
++	nano->folio_folded = gpiod_get_value_cansleep(nano->tablet_mode_gpio);
++	/* Folded is attached by construction - a magnet needs a folio. */
++	nano->folio_present = nano->folio_folded || nanosic_folio_present(nano);
++
++	nanosic_folio_report(nano);
++
++	/*
++	 * Neither attach nor detach has an interrupt of its own (the hall line
++	 * only moves when the folio is folded), so the probe repeats.
++	 */
++	mod_delayed_work(system_wq, &nano->tablet_work,
++			 msecs_to_jiffies(NANOSIC_FOLIO_POLL_MS));
++}
++
++static irqreturn_t nanosic_tablet_irq(int irq, void *data)
++{
++	struct nanosic *nano = data;
++
++	nano->folio_irq_count++;
++	mod_delayed_work(system_wq, &nano->tablet_work,
++			 msecs_to_jiffies(NANOSIC_FOLIO_DEBOUNCE_MS));
++
++	return IRQ_HANDLED;
++}
++
++static int nanosic_folio_input_create(struct nanosic *nano)
++{
++	struct device *dev = &nano->client->dev;
++	struct input_dev *input;
++
++	input = devm_input_allocate_device(dev);
++	if (!input)
++		return -ENOMEM;
++
++	input->name = "liuqin-folio";
++	input->phys = "liuqin-folio/input0";
++	input->id.bustype = BUS_I2C;
++	input_set_capability(input, EV_SW, SW_TABLET_MODE);
++
++	nano->folio_dev = input;
++	nano->tablet_mode = nano->folio_folded ? 1 : 0;
++	input_report_switch(input, SW_TABLET_MODE, nano->tablet_mode);
++
++	return input_register_device(input);
++}
++
++static void nanosic_tablet_put(void *data)
++{
++	struct nanosic *nano = data;
++
++	cancel_delayed_work_sync(&nano->tablet_work);
++}
++
++/*
++ * The board's gpio-keys device is the only source of the lid switch, and the
++ * bitmaps are the whole criterion: input_match_device() stops its id walk at a
++ * zero entry and checks every bitmap unconditionally, so a capability entry
++ * needs no match() callback. (A NULL or empty table would be dereferenced or
++ * end the walk before anything is attached.)
++ */
++static const struct input_device_id nanosic_hall_ids[] = {
++	{
++		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
++			 INPUT_DEVICE_ID_MATCH_SWBIT,
++		.evbit = { BIT_MASK(EV_SW) },
++		.swbit = { BIT_MASK(SW_LID) },
++	},
++	{ }
++};
++
++static int nanosic_hall_connect(struct input_handler *handler,
++				struct input_dev *dev,
++				const struct input_device_id *id)
++{
++	struct nanosic *nano = handler->private;
++	struct input_handle *handle;
++	int ret;
++
++	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
++	if (!handle)
++		return -ENOMEM;
++
++	handle->private = nano;
++	handle->dev = dev;
++	handle->handler = handler;
++	handle->name = "hid-nanosic-hall";
++
++	ret = input_register_handle(handle);
++	if (ret)
++		goto free_handle;
++
++	ret = input_open_device(handle);
++	if (ret)
++		goto unregister_handle;
++
++	nano->hall_dev = dev;
++	nano->hall_handle = handle;
++
++	/*
++	 * The bridge is still booting under this freshly probed folio, and the
++	 * driver never talks I2C at probe for that reason; give it the same
++	 * application-ready window the reset path uses before the first push.
++	 */
++	nanosic_hall_push(nano, NANOSIC_HALL_ATTACH_DELAY_MS);
++
++	return 0;
++
++unregister_handle:
++	input_unregister_handle(handle);
++free_handle:
++	kfree(handle);
++
++	return ret;
++}
++
++static void nanosic_hall_disconnect(struct input_handle *handle)
++{
++	struct nanosic *nano = handle->private;
++
++	nano->hall_dev = NULL;
++	nano->hall_handle = NULL;
++	input_close_device(handle);
++	input_unregister_handle(handle);
++	kfree(handle);
++}
++
++static void nanosic_hall_event(struct input_handle *handle, unsigned int type,
++			       unsigned int code, int value)
++{
++	struct nanosic *nano = handle->private;
++
++	if (type != EV_SW || code != SW_LID)
++		return;
++
++	nanosic_hall_push(nano, 0);
++}
++
++static void nanosic_hall_handler_put(void *data)
++{
++	struct nanosic *nano = data;
++
++	input_unregister_handler(nano->hall_handler);
++	cancel_delayed_work_sync(&nano->hall_work);
++}
++
++static int nanosic_hall_handler_get(struct nanosic *nano)
++{
++	struct device *dev = &nano->client->dev;
++	int ret;
++
++	nano->hall_handler = devm_kzalloc(dev, sizeof(*nano->hall_handler),
++					  GFP_KERNEL);
++	if (!nano->hall_handler)
++		return -ENOMEM;
++
++	nano->hall_handler->name = "hid-nanosic-hall";
++	nano->hall_handler->id_table = nanosic_hall_ids;
++	nano->hall_handler->connect = nanosic_hall_connect;
++	nano->hall_handler->disconnect = nanosic_hall_disconnect;
++	nano->hall_handler->event = nanosic_hall_event;
++	nano->hall_handler->private = nano;
++
++	ret = input_register_handler(nano->hall_handler);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register hall handler\n");
++
++	return devm_add_action_or_reset(dev, nanosic_hall_handler_put, nano);
++}
++
 +static void nanosic_reset_bridge(struct nanosic *nano)
 +{
 +	lockdep_assert_held(&nano->lock);
@@ -765,6 +1130,9 @@ Merged from: bring-up patches 0002, 0003
 +	gpiod_set_value_cansleep(nano->reset_gpio, 0);
 +	msleep(NANOSIC_RESET_READY_MS);
 +	nano->reset_recovery_count++;
++
++	/* The bridge reboots with the reset and needs the levels again. */
++	nanosic_hall_push(nano, 0);
 +}
 +
 +static bool nanosic_version_error_needs_reset(int ret)
@@ -879,7 +1247,7 @@ Merged from: bring-up patches 0002, 0003
 +		}
 +		nano->valid_report_count++;
 +
-+		if (pkt->dest >= 0) {
++		if (pkt->dest >= 0 && !nanosic_input_muted(nano)) {
 +			ret = hid_input_report(nano->hid[pkt->dest],
 +					       HID_INPUT_REPORT, p,
 +					       pkt->report_len, 1);
@@ -973,6 +1341,7 @@ Merged from: bring-up patches 0002, 0003
 +
 +	guard(mutex)(&nano->lock);
 +	nano->irq_count++;
++	nano->last_irq = jiffies;
 +
 +	if (READ_ONCE(nano->suspended)) {
 +		nano->data_pending = true;
@@ -1029,14 +1398,41 @@ Merged from: bring-up patches 0002, 0003
 +			     (unsigned long long)nano->bad_magic_count);
 +	len += sysfs_emit_at(buf, len, "valid_reports=%llu\n",
 +			     (unsigned long long)nano->valid_report_count);
++	len += sysfs_emit_at(buf, len, "hall_sends=%llu\n",
++			     (unsigned long long)nano->hall_send_count);
++	len += sysfs_emit_at(buf, len, "folio_irqs=%llu\n",
++			     (unsigned long long)nano->folio_irq_count);
++	len += sysfs_emit_at(buf, len, "folio_folded=%u\n", nano->folio_folded);
++	len += sysfs_emit_at(buf, len, "folio_present=%u\n", nano->folio_present);
++	len += sysfs_emit_at(buf, len, "tablet_mode=%u\n", nano->tablet_mode);
 +
 +	return len;
 +}
 +static DEVICE_ATTR_RO(bridge_health);
 +
++static ssize_t folio_present_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct nanosic *nano = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%u\n", nano->folio_present);
++}
++static DEVICE_ATTR_RO(folio_present);
++
++static ssize_t tablet_mode_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct nanosic *nano = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%u\n", nano->tablet_mode);
++}
++static DEVICE_ATTR_RO(tablet_mode);
++
 +static struct attribute *nanosic_attrs[] = {
 +	&dev_attr_firmware_version.attr,
 +	&dev_attr_bridge_health.attr,
++	&dev_attr_folio_present.attr,
++	&dev_attr_tablet_mode.attr,
 +	NULL
 +};
 +
@@ -1236,6 +1632,12 @@ Merged from: bring-up patches 0002, 0003
 +
 +	nano->data_irq = ret;
 +
++	ret = fwnode_irq_get_byname(dev_fwnode(dev), "tablet-mode");
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "failed to get tablet-mode irq\n");
++
++	nano->tablet_mode_irq = ret;
++
 +	return 0;
 +}
 +
@@ -1262,10 +1664,12 @@ Merged from: bring-up patches 0002, 0003
 +		return ret;
 +
 +	INIT_DELAYED_WORK(&nano->idle_work, nanosic_idle_work);
++	INIT_DELAYED_WORK(&nano->hall_work, nanosic_hall_work);
++	INIT_DELAYED_WORK(&nano->tablet_work, nanosic_tablet_work);
 +
 +	/*
-+	 * Only these two lines and the rail. The hall GPIOs stay with
-+	 * gpio-keys; see the file header before adding any.
++	 * Only these three lines and the rail: the lid hall is read from the
++	 * hall input handler instead; see the file header before adding more.
 +	 */
 +	nano->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 +	if (IS_ERR(nano->reset_gpio))
@@ -1276,6 +1680,15 @@ Merged from: bring-up patches 0002, 0003
 +	if (IS_ERR(nano->wake_gpio))
 +		return dev_err_probe(dev, PTR_ERR(nano->wake_gpio),
 +				     "failed to get wake gpio\n");
++
++	nano->tablet_mode_gpio = devm_gpiod_get(dev, "tablet-mode", GPIOD_IN);
++	if (IS_ERR(nano->tablet_mode_gpio))
++		return dev_err_probe(dev, PTR_ERR(nano->tablet_mode_gpio),
++				     "failed to get tablet-mode gpio\n");
++
++	nano->folio_folded = gpiod_get_value_cansleep(nano->tablet_mode_gpio);
++	/* Before the first interrupt arrives the folio counts as absent. */
++	nano->last_irq = jiffies - msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS + 1000);
 +
 +	nano->vdd = devm_regulator_get(dev, "vdd");
 +	if (IS_ERR(nano->vdd))
@@ -1317,6 +1730,35 @@ Merged from: bring-up patches 0002, 0003
 +	if (ret)
 +		return ret;
 +
++	/*
++	 * Hall changes are pushed to the bridge from here on; the handler
++	 * connects to gpio-keys and claims nothing exclusively (see below).
++	 */
++	ret = nanosic_hall_handler_get(nano);
++	if (ret)
++		return ret;
++
++	/*
++	 * The switch device has to exist before the first probe reports into
++	 * it, and the bridge needs its application-ready window before I2C, so
++	 * the first probe rides the same delay as the first hall push.
++	 */
++	ret = nanosic_folio_input_create(nano);
++	if (ret)
++		return ret;
++
++	ret = devm_request_irq(dev, nano->tablet_mode_irq, nanosic_tablet_irq, 0,
++			       "nanosic-tablet-mode", nano);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request tablet-mode irq\n");
++
++	ret = devm_add_action_or_reset(dev, nanosic_tablet_put, nano);
++	if (ret)
++		return ret;
++
++	mod_delayed_work(system_wq, &nano->tablet_work,
++			 msecs_to_jiffies(NANOSIC_HALL_ATTACH_DELAY_MS));
++
 +	/* Attribute reads are the only path which issues a version request. */
 +	return sysfs_create_group(&dev->kobj, &nanosic_attr_group);
 +}
@@ -1343,6 +1785,8 @@ Merged from: bring-up patches 0002, 0003
 +		nano->awake = false;
 +	}
 +	cancel_delayed_work_sync(&nano->idle_work);
++	cancel_delayed_work_sync(&nano->hall_work);
++	cancel_delayed_work_sync(&nano->tablet_work);
 +
 +	if (!device_may_wakeup(dev))
 +		return 0;
@@ -1387,6 +1831,10 @@ Merged from: bring-up patches 0002, 0003
 +			nanosic_receive_frame(nano);
 +		}
 +	}
++
++	/* The bridge has not seen the halls since before suspend. */
++	nanosic_hall_push(nano, 0);
++	mod_delayed_work(system_wq, &nano->tablet_work, 0);
 +
 +	return ret;
 +}
@@ -5713,7 +6161,7 @@ Merged from: bring-up patches 0002, 0003
 +};
 --- /dev/null
 +++ b/tools/testing/selftests/hid/nanosic-static.py
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,537 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: GPL-2.0
 +"""Host-only regression tests for the WN8030 transport and power model."""
@@ -6023,12 +6471,162 @@ Merged from: bring-up patches 0002, 0003
 +        self.assertEqual(BINDING.count("minItems: 2"), 2)
 +        self.assertRegex(DTS, r"&soc\s*\{[\s\S]*?keyboard_vdd_regulator:")
 +        keyboard = DTS.split("keyboard@4c {", 1)[1].split("\n\t};", 1)[0]
-+        self.assertNotIn("hall-", keyboard.replace("hall-*-gpios", ""))
-+        self.assertIn('interrupt-names = "data", "wakeup";', keyboard)
++        # No second DT reference to the hall lines: on 7.2.5 the shared-GPIO
++        # proxy path then breaks gpio-keys' own probe with -EBUSY.
++        self.assertNotIn("hall-n-gpios", DTS)
++        self.assertNotIn("hall-s-gpios", DTS)
++        self.assertNotIn("hall-", BINDING)
++        self.assertIn('interrupt-names = "data", "wakeup", "tablet-mode";',
++                      keyboard)
 +        self.assertIn("wakeup-source;", keyboard)
 +        self.assertRegex(keyboard,
 +                         r"interrupts-extended\s*=\s*<&tlmm 50[^>]*>,\s*"
-+                         r"<&tlmm 46[^>]*>;")
++                         r"<&tlmm 46[^>]*>,\s*<&tlmm 23[^>]*>;")
++        # The folio-folded hall is owned by the bridge driver, active-low.
++        self.assertIn("tablet-mode-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;", keyboard)
++        gpio_keys = DTS.split("gpio-keys {", 1)[1].split("\n\t};", 1)[0]
++        self.assertNotIn("event-hall-tablet-mode", gpio_keys)
++        self.assertNotIn("linux,code = <SW_TABLET_MODE>", gpio_keys)
++
++    def test_hall_command_is_the_vendor_uplink_frame(self):
++        command = DRIVER.split("nanosic_hall_command[", 1)[1].split("};", 1)[0]
++        self.assertIn(
++            "0x4c, 0x32, 0x00, 0x4f, 0x20, 0x80, 0x80, 0xe1, 0x01",
++            command,
++        )
++        self.assertRegex(DRIVER, r"#define NANOSIC_HALL_LEVEL_OFFSET\t9")
++        write = function_body("nanosic_write_hall_command")
++        self.assertIn(
++            "command[NANOSIC_HALL_LEVEL_OFFSET] = nanosic_hall_level(nano)",
++            write,
++        )
++        level = function_body("nanosic_hall_level")
++        self.assertIn("test_bit(SW_LID, dev->sw)", level)
++        # EV_SW state lives in the sw bitmap; key would read all zero and
++        # silently pin the switch to 0. The tablet nibble is the switch the
++        # driver derives and reports, not a bitmap read.
++        self.assertNotIn("dev->key", level)
++        self.assertIn("((!lid) << 4) | nano->tablet_mode", level)
++        self.assertIn(
++            "nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_HALL_WRITE)",
++            write,
++        )
++        self.assertIn("hall_send_count++", write)
++
++    def test_hall_handler_uses_the_gpio_keys_switch_states(self):
++        # The lines stay with gpio-keys; a second DT reference would trip the
++        # shared-GPIO proxy path that breaks that device's probe.
++        self.assertNotIn("nanosic_hall_gpios_get", DRIVER)
++        self.assertNotIn("hall-n-gpios", DTS)
++        self.assertNotIn("hall-s-gpios", DTS)
++        connect = function_body("nanosic_hall_connect")
++        self.assertNotIn("gpiod", connect)
++        self.assertIn("nano->hall_dev = dev;", connect)
++        self.assertIn("handler->private", connect)
++        self.assertIn("input_open_device(handle)", connect)
++        self.assertIn("nanosic_hall_push(nano, NANOSIC_HALL_ATTACH_DELAY_MS)",
++                      connect)
++        handler = function_body("nanosic_hall_handler_get")
++        self.assertIn("input_register_handler", handler)
++        self.assertIn("nanosic_hall_handler_put", handler)
++        # input_match_device() stops its id walk at a zero entry and checks
++        # every bitmap unconditionally: the entry must carry non-zero flags
++        # and the capability bitmaps, and no match() callback is needed.
++        self.assertIn("id_table = nanosic_hall_ids", handler)
++        ids = DRIVER.split("nanosic_hall_ids[] = {", 1)[1].split("};", 1)[0]
++        self.assertIn("INPUT_DEVICE_ID_MATCH_EVBIT", ids)
++        self.assertIn("INPUT_DEVICE_ID_MATCH_SWBIT", ids)
++        self.assertIn("evbit = { BIT_MASK(EV_SW) }", ids)
++        # Only the lid hall remains in gpio-keys; the folio-folded hall is
++        # reported by this driver.
++        self.assertIn("swbit = { BIT_MASK(SW_LID) },", ids)
++        self.assertNotIn("driver_info", ids)
++        self.assertNotIn(".match", handler)
++        probe = function_body("nanosic_probe")
++        self.assertIn("nanosic_hall_handler_get(nano)", probe)
++
++    def test_folio_input_is_muted_in_tablet_mode(self):
++        muted = function_body("nanosic_input_muted")
++        self.assertIn("return nano->tablet_mode;", muted)
++        parse = function_body("nanosic_parse_frame")
++        self.assertIn("pkt->dest >= 0 && !nanosic_input_muted(nano)", parse)
++
++    def test_tablet_mode_hall_is_owned_by_the_bridge(self):
++        # Measured 2026-10-08 on the unit: gpio23 reads low with the folio
++        # folded onto the back (tablet posture) and high with the keyboard
++        # deployed in front *and* with the folio removed. The hall alone
++        # cannot express "no keyboard attached", so the driver owns the line
++        # and derives the switch from it plus the bridge's presence.
++        report = function_body("nanosic_folio_report")
++        self.assertIn("nano->folio_folded || !nano->folio_present", report)
++        self.assertIn(
++            "input_report_switch(nano->folio_dev, SW_TABLET_MODE, value)",
++            report,
++        )
++
++    def test_folio_switch_needs_the_bridge_liveness(self):
++        # The hall reads the same with the keyboard deployed and with the
++        # folio removed, and so does every I2C probe - the bridge is on the
++        # tablet side and answers either way (measured 2026-10-09).  Its data
++        # interrupt, however, stops within seconds of the keypad coming off,
++        # so presence is a liveness window over that interrupt.
++        data_irq = function_body("nanosic_data_irq")
++        self.assertIn("nano->last_irq = jiffies;", data_irq)
++        present = function_body("nanosic_folio_present")
++        self.assertIn(
++            "nano->last_irq + msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS)",
++            present,
++        )
++        work = function_body("nanosic_tablet_work")
++        self.assertIn("nano->folio_folded || nanosic_folio_present(nano)", work)
++        self.assertIn("NANOSIC_FOLIO_POLL_MS", work)
++        self.assertIn("NANOSIC_FOLIO_DEBOUNCE_MS",
++                      function_body("nanosic_tablet_irq"))
++        # No I2C during probe: the bridge's boot-to-application time is not
++        # fixed, so the first probe rides the attach delay instead, and the
++        # window starts out stale so a folio-less boot is tablet mode.
++        irqs = function_body("nanosic_irqs_get")
++        self.assertIn('fwnode_irq_get_byname(dev_fwnode(dev), "tablet-mode")',
++                      irqs)
++        probe_fn = function_body("nanosic_probe")
++        self.assertIn("devm_request_irq(dev, nano->tablet_mode_irq,", probe_fn)
++        self.assertIn("NANOSIC_HALL_ATTACH_DELAY_MS", probe_fn)
++        self.assertIn("nano->last_irq = jiffies - ", probe_fn)
++
++    def test_folio_input_device_and_attributes(self):
++        create = function_body("nanosic_folio_input_create")
++        self.assertIn('input->name = "liuqin-folio";', create)
++        self.assertIn("input_set_capability(input, EV_SW, SW_TABLET_MODE)",
++                      create)
++        self.assertIn(
++            "input_report_switch(input, SW_TABLET_MODE, nano->tablet_mode)",
++            create,
++        )
++        self.assertIn("input_register_device(input)", create)
++        self.assertIn("&dev_attr_folio_present.attr,", DRIVER)
++        self.assertIn("&dev_attr_tablet_mode.attr,", DRIVER)
++
++    def test_hall_state_is_pushed_on_events_and_after_power_transitions(self):
++        work = function_body("nanosic_hall_work")
++        self.assertIn("guard(mutex)(&nano->lock)", work)
++        self.assertIn("nano->suspended", work)
++        self.assertIn("nanosic_wake(nano)", work)
++        self.assertIn("attempt < NANOSIC_HALL_RETRIES", work)
++        event = function_body("nanosic_hall_event")
++        self.assertIn("SW_LID", event)
++        self.assertNotIn("SW_TABLET_MODE", event)
++        self.assertIn("nanosic_hall_push(nano, 0)", event)
++        suspend = function_body("nanosic_suspend")
++        self.assertIn("cancel_delayed_work_sync(&nano->hall_work)", suspend)
++        self.assertIn("cancel_delayed_work_sync(&nano->tablet_work)", suspend)
++        resume = function_body("nanosic_resume")
++        self.assertIn("nanosic_hall_push(nano, 0)", resume)
++        self.assertIn("mod_delayed_work(system_wq, &nano->tablet_work, 0)",
++                      resume)
++        reset = function_body("nanosic_reset_bridge")
++        self.assertIn("nanosic_hall_push(nano, 0)", reset)
++        self.assertIn("cancel_delayed_work_sync(&nano->hall_work)",
++                      function_body("nanosic_hall_handler_put"))
 +
 +    def test_diagnostics_are_on_demand_bounded_and_lock_serialised(self):
 +        show = function_body("firmware_version_show")
@@ -6072,7 +6670,7 @@ Merged from: bring-up patches 0002, 0003
 +        parse = function_body("nanosic_parse_frame")
 +        irq = function_body("nanosic_data_irq")
 +        for field in ("irq", "i2c_transfers", "i2c_errors", "bad_magic",
-+                      "valid_reports", "last_i2c_errno",
++                      "valid_reports", "hall_sends", "last_i2c_errno",
 +                      "last_i2c_operation", "last_i2c_error_transfer",
 +                      "reset_recoveries"):
 +            self.assertIn(field, health)
@@ -6086,7 +6684,7 @@ Merged from: bring-up patches 0002, 0003
 +
 +    def test_read_only_diagnostics_are_removed_before_devm_teardown(self):
 +        remove = function_body("nanosic_remove")
-+        self.assertEqual(DRIVER.count("DEVICE_ATTR_RO("), 2)
++        self.assertEqual(DRIVER.count("DEVICE_ATTR_RO("), 4)
 +        self.assertNotRegex(DRIVER, r"DEVICE_ATTR_(?:RW|WO)\(")
 +        self.assertIn("sysfs_remove_group", remove)
 +        self.assertIn(".remove = nanosic_remove", DRIVER)

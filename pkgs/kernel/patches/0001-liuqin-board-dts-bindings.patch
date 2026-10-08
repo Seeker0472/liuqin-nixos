@@ -220,7 +220,7 @@ Merged from: bring-up patches 0001
  			reg = <0 0x0aaf0000 0 0x10000>;
 --- /dev/null
 +++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
-@@ -0,0 +1,1517 @@
+@@ -0,0 +1,1509 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
 +
@@ -374,34 +374,20 @@ Merged from: bring-up patches 0001
 +		pinctrl-names = "default";
 +
 +		/*
-+		 * Two hall switches, plain TLMM GPIOs (vendor hall_key/hall_key1,
-+		 * abl-final-fdt.dts gpio_keys): gpio10 closes with the folio lid,
-+		 * gpio23 signals tablet-mode.  SW_LID lets logind blank on close;
-+		 * SW_TABLET_MODE drives GNOME's on-screen-keyboard decision.  The
-+		 * nanosic keyboard MCU reads the same magnets separately; these
-+		 * switches do not depend on it.
++		 * One hall switch, a plain TLMM GPIO (vendor hall_key,
++		 * abl-final-fdt.dts gpio_keys): gpio10 closes with the folio lid.
++		 * SW_LID lets logind blank on close.  The second hall (vendor
++		 * hall_key1, gpio23, the folio-folded line) belongs to keyboard@4c
++		 * instead: that bridge driver owns the line and reports
++		 * SW_TABLET_MODE from it plus the bridge's presence, which a plain
++		 * switch node here cannot express - the line reads the same with
++		 * the keyboard deployed and with the folio removed.
 +		 */
 +		event-hall-lid {
 +			label = "Hall Lid";
 +			linux,input-type = <EV_SW>;
 +			linux,code = <SW_LID>;
 +			gpios = <&tlmm 10 GPIO_ACTIVE_LOW>;
-+			debounce-interval = <150>;
-+			wakeup-source;
-+		};
-+
-+		event-hall-tablet-mode {
-+			label = "Hall Tablet Mode";
-+			linux,input-type = <EV_SW>;
-+			linux,code = <SW_TABLET_MODE>;
-+			/*
-+			 * GNOME semantics: SW_TABLET_MODE=1 means "no keyboard attached".
-+			 * This hall pin is pulled up when no magnet (keyboard/folio) is
-+			 * near, so active-high maps detached -> tablet mode and attached
-+			 * -> laptop mode -- the latter additionally gates GNOME's
-+			 * on-screen keyboard.
-+			 */
-+			gpios = <&tlmm 23 GPIO_ACTIVE_HIGH>;
 +			debounce-interval = <150>;
 +			wakeup-source;
 +		};
@@ -889,8 +875,9 @@ Merged from: bring-up patches 0001
 +		 *           dedicated wake IRQ; hid-nanosic owns only the data IRQ.
 +		 */
 +		interrupts-extended = <&tlmm 50 IRQ_TYPE_EDGE_RISING>,
-+				      <&tlmm 46 IRQ_TYPE_EDGE_RISING>;
-+		interrupt-names = "data", "wakeup";
++				      <&tlmm 46 IRQ_TYPE_EDGE_RISING>,
++				      <&tlmm 23 IRQ_TYPE_EDGE_BOTH>;
++		interrupt-names = "data", "wakeup", "tablet-mode";
 +
 +		vdd-supply = <&keyboard_vdd_regulator>;
 +
@@ -905,20 +892,25 @@ Merged from: bring-up patches 0001
 +		wake-gpios = <&tlmm 42 GPIO_ACTIVE_HIGH>;
 +
 +		pinctrl-0 = <&kb_data_irq_default>, <&kb_wakeup_irq_default>,
-+			    <&kb_reset_default>, <&kb_wake_default>;
++			    <&kb_reset_default>, <&kb_wake_default>, <&hall_default>;
 +		pinctrl-names = "default";
 +
 +		wakeup-source;
 +
 +		/*
-+		 * Deliberately no hall-*-gpios. The vendor node lists
-+		 * hall_n_pin gpio10 and hall_s_pin gpio23, but those two are
-+		 * already claimed above as gpio-keys SW_LID / SW_TABLET_MODE,
-+		 * which is what logind and GNOME consume. A second consumer
-+		 * would take this node's probe down with -EBUSY, and would gain
-+		 * nothing: the vendor driver only forwarded those levels to a
-+		 * Xiaomi userspace daemon that does not exist here.
++		 * The folio-folded hall (vendor hall_key1).  Measured 2026-10-08
++		 * on the unit: the pin reads low with the folio folded onto the
++		 * back (the tablet posture) and high with the keyboard deployed in
++		 * front - and with the folio removed, which is why the switch is
++		 * derived here.  GNOME's semantics are "SW_TABLET_MODE=1 means no
++		 * keyboard attached", so the driver reports folded-or-absent.
++		 * The line has exactly one DT consumer: a second reference trips
++		 * the shared-GPIO proxy path and makes gpio-keys' probe fail with
++		 * -EBUSY (observed on the unit 2026-10-08).
 +		 */
++		tablet-mode-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;
++
++		/* The lid hall stays with gpio-keys. */
 +	};
 +};
 +

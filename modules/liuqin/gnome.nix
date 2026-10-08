@@ -18,9 +18,71 @@ let
       $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas/
     glib-compile-schemas $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
   '';
+
+  # Seeded mutter display configuration: the built-in panel's fixed rotation
+  # for the laptop posture (the option description carries the semantics).
+  monitorsXml = pkgs.writeText "liuqin-monitors.xml" ''
+    <monitors version="2">
+      <configuration>
+        <logicalmonitor>
+          <x>0</x>
+          <y>0</y>
+          <scale>2</scale>
+          <primary>yes</primary>
+          <transform>
+            <rotation>${cfg.desktop.gnome.panelOrientation}</rotation>
+          </transform>
+          <monitor>
+            <connector>DSI-1</connector>
+            <vendor>unknown</vendor>
+            <product>unknown</product>
+            <serial>unknown</serial>
+          </monitor>
+        </logicalmonitor>
+      </configuration>
+    </monitors>
+  '';
+
+  sessionHome =
+    config.users.users.${cfg.desktop.gnome.sessionUser}.home
+    or "/home/${cfg.desktop.gnome.sessionUser}";
 in
 {
-  options.hardware.liuqin.desktop.gnome.enable = lib.mkEnableOption "liuqin GNOME desktop policy";
+  options.hardware.liuqin.desktop.gnome = {
+    enable = lib.mkEnableOption "liuqin GNOME desktop policy";
+
+    sessionUser = lib.mkOption {
+      type = lib.types.str;
+      default = "liuqin";
+      description = ''
+        Session user whose home receives the seeded ``monitors.xml``.
+      '';
+    };
+
+    panelOrientation = lib.mkOption {
+      type = lib.types.enum [ "normal" "left" "right" "upside-down" ];
+      default = "right";
+      description = ''
+        Fixed rotation for the built-in panel, seeded into
+        ``~/.config/monitors.xml`` as the mutter display configuration.  The
+        panel is natively portrait (1800x2880), while the keyboard folio
+        stands the tablet in landscape, so the laptop posture - keyboard
+        deployed in front, which the tablet-mode hall reports as
+        SW_TABLET_MODE=0 - needs an explicit transform to stand upright;
+        "right" is the landscape pose measured on the unit.
+
+        Tablet mode keeps GNOME in charge: while the keyboard is folded onto
+        the back (SW_TABLET_MODE=1, "no keyboard attached" in the switch's
+        own semantics) mutter manages the orientation from the
+        accelerometer and this transform does not apply, so rotation follows
+        gravity there.
+
+        The file is seeded once and never overwritten - a later change made
+        by the user, or written by GNOME's own display settings, wins over
+        the next activation.
+      '';
+    };
+  };
 
   config = lib.mkIf (cfg.enable && cfg.desktop.gnome.enable) {
     services.desktopManager.gnome.enable = lib.mkDefault true;
@@ -172,6 +234,31 @@ in
           '')
         ];
       }
+    ];
+
+    # Mutter neither restores the configured transform when tablet mode ends
+    # (the panel keeps whatever the accelerometer last produced) nor re-claims
+    # the accelerometer after a laptop-posture interlude; the loop repairs
+    # both from the driver's derived folio switch.  See pkgs/panel-posture.nix.
+    systemd.user.services.liuqin-panel-posture = {
+      description = "Keep the panel transform right across folio postures";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.liuqinPanelPosture}/bin/liuqin-panel-posture";
+        Restart = "on-failure";
+        RestartSec = 2;
+      };
+    };
+
+    # Seed ~/.config/monitors.xml for the session user.  `d` with mode `-`
+    # leaves the existing ~/.config ownership and mode alone; `C` copies the
+    # file only when it is absent, so a configuration the user changed later
+    # (or one mutter rewrote itself) is never clobbered by an activation.
+    systemd.tmpfiles.rules = [
+      "d ${sessionHome}/.config - ${cfg.desktop.gnome.sessionUser} users -"
+      "C ${sessionHome}/.config/monitors.xml 0644 ${cfg.desktop.gnome.sessionUser} users - ${monitorsXml}"
     ];
   };
 }
