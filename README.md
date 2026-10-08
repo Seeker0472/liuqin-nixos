@@ -365,3 +365,30 @@ The `data/liuqin-*.tar.zst` archives and the two `pkgs/bootimg/stock-*.tar.zst`
 archives are gitignored operator payloads; see `.gitignore` for registration
 instructions. The device has no UART; for
 bring-up use the framebuffer console and fastboot/U-Boot diagnostics.
+
+## Acknowledgements
+
+This port stands on other people's work — in particular the Xiaomi Pad 6 Pro
+community:
+
+- [yzddmr6/xiaomipad-6pro-mainline](https://github.com/yzddmr6/xiaomipad-6pro-mainline)
+  is *Ubuntu for Xiaomi Pad 6 Pro*, the community Ubuntu port that mapped this
+  board out first. The power-key daemon and the ALSA UCM card files come from
+  it, the fingerprint userspace is vendored from it (PR #11, from the
+  yuzelingsha fork) under `pkgs/fingerprint/fpc-oem-src/`, and the knowledge
+  behind this tree's provisioning model (partition geometry, ABL behaviour,
+  systemd ordering) was extracted from its work.
+- [yzddmr6/linux-sm8450-liuqin](https://github.com/yzddmr6/linux-sm8450-liuqin)
+  — the community liuqin kernel tree (patch 0017 is ported from its PR #7),
+  forking the community SM8450 mainline effort
+  [sm8450-mainline/linux](https://github.com/sm8450-mainline/linux).
+- [sm8450-mainline/u-boot](https://github.com/sm8450-mainline/u-boot) — the
+  U-Boot fork (`caleb/rbx-integration`) the bootloader packaging starts from.
+
+Thanks also to the upstream projects this port patches or vendors: U-Boot and
+the Linux kernel; libcamera (the autofocus IPA is a port of Raspberry Pi's
+CDAF implementation, BSD-2-Clause); iio-sensor-proxy, alsa-ucm-conf,
+[hexagonrpc](https://github.com/linux-msm/hexagonrpc),
+[QCBOR](https://github.com/laurencelundblade/QCBOR) and
+[qsee-supplicant](https://github.com/wrobelda/qsee-supplicant) (vendored);
+and [NixOS/nixpkgs](https://github.com/NixOS/nixpkgs), which builds all of it.
