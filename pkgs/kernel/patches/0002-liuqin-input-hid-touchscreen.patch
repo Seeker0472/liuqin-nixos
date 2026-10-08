@@ -137,7 +137,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,1838 @@
+@@ -0,0 +1,1867 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -274,6 +274,29 @@ Merged from: bring-up patches 0002, 0003
 + * report is the payload.
 + */
 +#define NANOSIC_OUTPUT_MAX		8
++
++/*
++ * CapsLock LED.  The keypad does not act on the HID output report - the
++ * vendor kernel builds that report and then refuses to write it ("would not
++ * write i2c cmd -> [[[0502]]]", captured from stock Android 2026-10-09) - it
++ * takes a management command instead, sent by Android's userspace once per
++ * toggle:
++ *
++ *	32 00 4e 31 80 38 26 01 01 5f   caps on
++ *	32 00 4e 31 80 38 26 01 00 5e   caps off
++ *
++ * The declared register byte and the shape match the version and hall
++ * commands; only the CapsLock bit of the report is honoured, because the
++ * other LED usages were not captured.
++ */
++#define NANOSIC_LED_COMMAND_LEN		NANOSIC_VERSION_COMMAND_LEN
++#define NANOSIC_LED_STATE_OFFSET	9
++#define NANOSIC_LED_COMPANION_OFFSET	10
++#define NANOSIC_LED_COMPANION_BASE	0x5e
++
++static const u8 nanosic_led_command[NANOSIC_LED_COMMAND_LEN] = {
++	0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0x26, 0x01,
++};
 +
 +static const u8 nanosic_hall_command[NANOSIC_HALL_COMMAND_LEN] = {
 +	0x4c, 0x32, 0x00, 0x4f, 0x20, 0x80, 0x80, 0xe1, 0x01,
@@ -640,7 +663,7 @@ Merged from: bring-up patches 0002, 0003
 +	NANOSIC_I2C_VERSION_WRITE,
 +	NANOSIC_I2C_VERSION_READ,
 +	NANOSIC_I2C_HALL_WRITE,
-+	NANOSIC_I2C_REPORT_WRITE,
++	NANOSIC_I2C_LED_WRITE,
 +};
 +
 +struct nanosic {
@@ -768,8 +791,8 @@ Merged from: bring-up patches 0002, 0003
 +		return "version-read";
 +	case NANOSIC_I2C_HALL_WRITE:
 +		return "hall-write";
-+	case NANOSIC_I2C_REPORT_WRITE:
-+		return "report-write";
++	case NANOSIC_I2C_LED_WRITE:
++		return "led-write";
 +	default:
 +		return "none";
 +	}
@@ -959,45 +982,51 @@ Merged from: bring-up patches 0002, 0003
 +}
 +
 +/*
-+ * Send one output report. The lock is held by the caller: the request hook
-+ * takes it itself, the folio work already has it.
++ * Send the CapsLock state as the management command the keypad acts on. The
++ * lock is held by the caller: the request hook takes it itself, the folio
++ * work already has it. data is the rendered output report - "05 <bitmap>".
 + */
-+static int nanosic_send_output_report_locked(struct nanosic *nano,
-+					     const u8 *data, size_t len)
++static int nanosic_send_led_command_locked(struct nanosic *nano,
++					   const u8 *data, size_t len)
 +{
-+	u8 frame[NANOSIC_OUTPUT_MAX + 1];
++	u8 command[NANOSIC_LED_COMMAND_LEN];
 +	struct i2c_msg msg = {
 +		.addr = nano->client->addr,
-+		.len = len + 1,
-+		.buf = frame,
++		.len = sizeof(command),
++		.buf = command,
 +	};
++	u8 caps;
 +	bool was_awake;
 +
 +	lockdep_assert_held(&nano->lock);
 +
-+	if (len == 0 || len > NANOSIC_OUTPUT_MAX)
++	if (len < 2)
 +		return -EINVAL;
 +
-+	/* The bridge takes its own slave address as the register byte. */
-+	frame[0] = nano->client->addr;
-+	memcpy(&frame[1], data, len);
++	/* CapsLock is bit 1 of the LED bitmap in the last report byte. */
++	caps = data[len - 1] & 0x02 ? 1 : 0;
++
++	memcpy(command, nanosic_led_command, sizeof(command));
++	command[NANOSIC_LED_STATE_OFFSET] = caps;
++	command[NANOSIC_LED_COMPANION_OFFSET] =
++		NANOSIC_LED_COMPANION_BASE + caps;
 +
 +	was_awake = nano->awake;
 +	nanosic_wake(nano);
 +	if (!was_awake)
 +		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
 +
-+	return nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_REPORT_WRITE);
++	return nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_LED_WRITE);
 +}
 +
 +/*
 + * The keyboard's LEDs. hid-input sends the LED state through
 + * ll_driver->request(HID_REQ_SET_REPORT) when the transport has one; without
 + * it the core falls back to hid_hw_output_report() and then to
-+ * raw_request() - and this transport had none of the three, which is why the
-+ * CapsLock light never lit and why the classdevs toggling was all that ever
-+ * happened. The report is remembered so the state can be restored when a
-+ * removed folio comes back (its LEDs have been dark since it lost power).
++ * raw_request() - and this transport had none of the three. The state is
++ * translated into the keypad's own management command (see
++ * nanosic_led_command) and remembered, so a folio that returns gets it back;
++ * its LED has been dark since it lost power.
 + */
 +static void nanosic_hid_request(struct hid_device *hid, struct hid_report *report,
 +				int reqtype)
@@ -1029,12 +1058,12 @@ Merged from: bring-up patches 0002, 0003
 +		memcpy(nano->last_output, buf, len);
 +		nano->last_output_len = len;
 +
-+		ret = nanosic_send_output_report_locked(nano, buf, len);
++		ret = nanosic_send_led_command_locked(nano, buf, len);
 +	}
 +
 +	if (ret)
 +		dev_dbg(&nano->client->dev,
-+			"output report failed: %d\n", ret);
++			"led command failed: %d\n", ret);
 +}
 +
 +static void nanosic_tablet_work(struct work_struct *work)
@@ -1058,8 +1087,8 @@ Merged from: bring-up patches 0002, 0003
 +	 * hand it the state it missed.
 +	 */
 +	if (!was_present && nano->folio_present && nano->last_output_len)
-+		nanosic_send_output_report_locked(nano, nano->last_output,
-+						  nano->last_output_len);
++		nanosic_send_led_command_locked(nano, nano->last_output,
++						nano->last_output_len);
 +
 +	nanosic_folio_report(nano);
 +
@@ -6269,7 +6298,7 @@ Merged from: bring-up patches 0002, 0003
 +};
 --- /dev/null
 +++ b/tools/testing/selftests/hid/nanosic-static.py
-@@ -0,0 +1,563 @@
+@@ -0,0 +1,571 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: GPL-2.0
 +"""Host-only regression tests for the WN8030 transport and power model."""
@@ -6701,30 +6730,38 @@ Merged from: bring-up patches 0002, 0003
 +        self.assertIn("NANOSIC_HALL_ATTACH_DELAY_MS", probe_fn)
 +        self.assertIn("nano->last_irq = jiffies - ", probe_fn)
 +
-+    def test_keyboard_leds_leave_as_output_reports(self):
-+        # hid-input sends the LED state through ll_driver->request
-+        # (HID_REQ_SET_REPORT); with no request, no output_report and a
-+        # read-only raw_request the CapsLock light never lit.  The vendor
-+        # kernel driver's own SET_REPORT path builds no frame bytes - it
-+        # queues the report itself - so the output direction mirrors the
-+        # input framing: the report behind the bridge's slave address.
++    def test_capslock_led_uses_the_keypads_management_command(self):
++        # The keypad ignores the HID output report - the vendor kernel builds
++        # it and then refuses to write it ("would not write i2c cmd ->
++        # [[[0502]]]", captured from stock Android 2026-10-09) - and takes a
++        # management command instead, captured once per toggle:
++        #   32 00 4e 31 80 38 26 01 01 5f   caps on
++        #   32 00 4e 31 80 38 26 01 00 5e   caps off
++        cmd = DRIVER.split("nanosic_led_command[", 1)[1].split("};", 1)[0]
++        self.assertIn("0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0x26, 0x01",
++                      cmd)
++        self.assertRegex(DRIVER, r"#define NANOSIC_LED_STATE_OFFSET\t9")
++        self.assertRegex(DRIVER, r"#define NANOSIC_LED_COMPANION_OFFSET\t10")
++        self.assertRegex(DRIVER, r"#define NANOSIC_LED_COMPANION_BASE\t0x5e")
++        send = function_body("nanosic_send_led_command_locked")
++        self.assertIn("data[len - 1] & 0x02", send)
++        self.assertIn("command[NANOSIC_LED_STATE_OFFSET] = caps", send)
++        self.assertIn("NANOSIC_LED_COMPANION_BASE + caps", send)
++        self.assertIn("NANOSIC_I2C_LED_WRITE", send)
 +        req = function_body("nanosic_hid_request")
 +        self.assertIn("static void nanosic_hid_request", DRIVER)
 +        self.assertIn("HID_REQ_SET_REPORT", req)
 +        self.assertIn("HID_OUTPUT_REPORT", req)
 +        self.assertIn("hid_output_report(report, buf)", req)
 +        self.assertIn("nano->hid[NANOSIC_HID_KEYBOARD]", req)
-+        send = function_body("nanosic_send_output_report_locked")
-+        self.assertIn("frame[0] = nano->client->addr", send)
-+        self.assertIn("memcpy(&frame[1], data, len)", send)
-+        self.assertIn("NANOSIC_I2C_REPORT_WRITE", send)
++        self.assertIn("nanosic_send_led_command_locked(nano, buf, len)", req)
 +        ll = DRIVER.split("nanosic_hid_ll_driver = {", 1)[1].split("};", 1)[0]
 +        self.assertIn(".request = nanosic_hid_request", ll)
 +        # A folio that comes back gets the state it missed while unpowered.
 +        work = function_body("nanosic_tablet_work")
 +        self.assertIn("was_present = nano->folio_present;", work)
 +        self.assertIn("!was_present && nano->folio_present", work)
-+        self.assertIn("nanosic_send_output_report_locked(nano, nano->last_output",
++        self.assertIn("nanosic_send_led_command_locked(nano, nano->last_output",
 +                      work)
 +
 +    def test_folio_input_device_and_attributes(self):

@@ -182,29 +182,25 @@ port's own blank/unblank workarounds.
   the accelerometer itself and follows `AccelerometerOrientation` directly -
   `right-up` is the 270 deg landscape pose, `normal` the native portrait -
   until the posture changes back.
-- **The keyboard LEDs cannot be lit by anything this port can control.**
-  `hid-input` sends the LED state through `ll_driver->request(HID_REQ_SET_REPORT)`
-  and falls back to `hid_hw_output_report()` and then
-  `hid_hw_raw_request(SET_REPORT)`; this transport implemented none of the
-  three, so the classdevs (`input5::capslock` and friends) toggled while the
-  keypad stayed dark.  It now implements `.request`: the report is rendered
-  with `hid_output_report()` and sent behind the bridge's slave address, and
-  the write does reach the wire - four LED toggles produce exactly four I2C
-  transfers (measured 2026-10-09).  The keypad still ignores it, and the
-  stock vendor stack refuses the *same* thing: on stock Android the vendor
-  kernel builds the identical report (`0502` on a CapsLock press, its
-  `Nanosic_input_set_report` path) and then logs
-  `would not write i2c cmd -> [[[0502]]]`, while its userspace sends no LED
-  command at all.  The only management frames the stock device does emit are
-  screen-state ones - `32 00 4e 31 80 38 26 01 <state> <checksum>`, with the
-  state/checksum pair flipping `01 5f`/`00 5e` on screen on/off (captured
-  2026-10-09 with the vendor module's `_rawdata_` logging turned up through
-  `/sys/devices/virtual/nanodev/nanodev0/_debuglevel`).  The CapsLock light is
-  therefore a bridge/keypad firmware gap, not a driver bug; `.request` is kept
-  because it matches the vendor byte for byte and would work the day the
-  bridge accepts it.  Only the keyboard HID device may set reports, and the
-  last report is re-sent when a removed folio comes back (its LEDs have been
-  dark since it lost power).
+- **The keypad's CapsLock LED takes its own management command.**  `hid-input`
+  sends the LED state through `ll_driver->request(HID_REQ_SET_REPORT)`, which
+  this transport did not implement at all (no `.request`, no
+  `output_report()`, a read-only `raw_request`); it does now, and translates
+  the CapsLock bit of the rendered report into the command the keypad acts on,
+  captured from stock Android with the vendor module's `_rawdata_`/`write cmd`
+  logging turned up through
+  `/sys/devices/virtual/nanodev/nanodev0/_debuglevel` (2026-10-09):
+
+      32 00 4e 31 80 38 26 01 01 5f   caps on
+      32 00 4e 31 80 38 26 01 00 5e   caps off
+
+  The bare HID output report is *not* the wire format: the vendor kernel
+  builds it and then refuses to write it (`would not write i2c cmd ->
+  [[[0502]]]`), and forwarding it unchanged (this port's first attempt) leaves
+  the LED dark.  Only the CapsLock bit is honoured so far - the other LED
+  usages were not captured - and only the keyboard HID device may set reports;
+  the last state is re-sent when a removed folio comes back, since its LED has
+  been dark while it was unpowered.
 - Touch resume repeatedly retries the firmware download and can end in
   `resume failed closed`; the input device reappears after recovery.  The
   installer does not ship the touchscreen firmware payload (its panel is
