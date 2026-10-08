@@ -11,7 +11,7 @@ github:Seeker0472/liuqin-nixos` produces exactly these files.
 
 `configuration.nix` is the file to edit. At minimum:
 
-- the user: `users.users.demo` (name, `initialPassword`, your SSH public key);
+- the user: `users.users.liuqin` (name, `initialPassword`, your SSH public key);
   `services.displayManager.autoLogin.user` and `nix.settings.trusted-users`
   all name the same account;
 - `networking.hostName` and `time.timeZone`;

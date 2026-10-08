@@ -77,7 +77,7 @@ from DHCP, so discover it from the router or the host's neighbor table rather
 than assuming the address used during bring-up.
 
 ```sh
-ssh -o IdentitiesOnly=yes -i ~/.ssh/id_liuqin demo@<tablet-ip>
+ssh -o IdentitiesOnly=yes -i ~/.ssh/id_liuqin liuqin@<tablet-ip>
 
 # current boot and kernel messages
 journalctl -b --no-pager
@@ -237,11 +237,11 @@ root on the device.  Measured 2026-10-06: 360 MB in ~10 s over the USB link.
 ```sh
 # host
 comm -13 \
-  <(ssh demo@192.168.7.2 'nix-store -qR /run/current-system' | sort -u) \
+  <(ssh liuqin@192.168.7.2 'nix-store -qR /run/current-system' | sort -u) \
   <(nix-store -qR "$(readlink -f result)" "$LOADER" | sort -u) \
   > /var/tmp/liuqin-delta.txt
 nix-store --export $(cat /var/tmp/liuqin-delta.txt) > /var/tmp/liuqin-delta.nar
-scp /var/tmp/liuqin-delta.nar demo@192.168.7.2:/var/tmp/
+scp /var/tmp/liuqin-delta.nar liuqin@192.168.7.2:/var/tmp/
 ```
 
 ```sh

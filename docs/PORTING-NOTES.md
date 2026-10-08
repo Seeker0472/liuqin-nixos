@@ -801,9 +801,9 @@ The same update works over Wi-Fi: substitute the tablet's DHCP address for
 192.168.7.2, and either serve the binary cache on an address the tablet can
 reach or use the delta transfer (`nix-store --export`/`--import`, measured
 2026-10-06: 360 MB in ~10 s over the USB link) instead; `docs/INSTALL.md` §4
-lays both out.  `config/demo/configuration.nix` marks the demo user a
-trusted user, which
-is what direct `nix copy --to ssh-ng://demo@<tablet-ip>` deployments rely on.
+lays both out.  `config/demo/configuration.nix` marks the machine user a
+trusted user, which is what direct `nix copy --to ssh-ng://liuqin@<tablet-ip>`
+deployments rely on.
 
 ### 3.3 Kernel module probe method (dp-dump)
 

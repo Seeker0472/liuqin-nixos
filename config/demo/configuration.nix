@@ -67,25 +67,25 @@
     };
   };
 
-  # ssh-ng:// deployments (lq-deploy-direct) need the demo user to be
+  # ssh-ng:// deployments (lq-deploy-direct) need the machine user to be
   # trusted by the remote daemon; the legacy ssh:// store did not.
-  nix.settings.trusted-users = [ "root" "demo" ];
+  nix.settings.trusted-users = [ "root" "liuqin" ];
 
   networking.hostName = "liuqin";
   networking.networkmanager.enable = true;
   time.timeZone = "Asia/Shanghai";
 
-  # GDM signs the demo user in without a prompt. The password is a placeholder:
+  # GDM signs the user in without a prompt. The password is a placeholder:
   # set a real one before using this on a network you do not control.
   services.displayManager.autoLogin = {
     enable = true;
-    user = "demo";
+    user = "liuqin";
   };
-  users.users.demo = {
+  users.users.liuqin = {
     isNormalUser = true;
-    description = "liuqin demo user";
+    description = "liuqin user";
     extraGroups = [ "wheel" "networkmanager" "video" "input" "audio" ];
-    initialPassword = "demo";
+    initialPassword = "liuqin";
     openssh.authorizedKeys.keys = [
       # /home/seeker/.ssh/id_liuqin.pub
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmzXtiVemck1Ox+0QAL59sntUP4EULCZdHif4oDo7IX seeker@liuqin"
@@ -105,7 +105,7 @@
   services.blueman.enable = true;
 
   # Wi-Fi SSH is the supported debug channel (this tablet has no UART). The
-  # liuqin deployment key is enrolled above; the demo password is refused
+  # liuqin deployment key is enrolled above; the account password is refused
   # by SSH anyway.
   services.openssh = {
     settings.PasswordAuthentication = false;
