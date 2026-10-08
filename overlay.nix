@@ -60,10 +60,9 @@ final: prev:
   # The bootloader this device boots, built here rather than in a sibling
   # checkout: Qualcomm's U-Boot fork plus the liuqin port (pkgs/u-boot/patches
   # for the files it shares with its base, pkgs/u-boot/files for the ones it
-  # adds; pkgs/u-boot/verify-port.sh proves the three reproduce the dev tree
-  # byte for byte). The boot.img is packaged by pkgs/bootimg/default.nix, the
-  # same ABL pipeline as the
-  # kernel image. buildPackages is the x86_64 set that runs the host tools.
+  # adds). The boot.img is packaged by pkgs/bootimg/default.nix, the same ABL
+  # pipeline as the kernel image. buildPackages is the x86_64 set that runs the
+  # host tools.
   liuqinUboot = final.callPackage ./pkgs/u-boot { hostPkgs = final.buildPackages; };
 
   # --- Device packages ---

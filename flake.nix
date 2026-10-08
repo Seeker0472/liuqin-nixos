@@ -268,11 +268,11 @@
             touch $out
           '';
 
-      # pkgs/u-boot/port.manifest pins the bytes of pkgs/u-boot/{patches,files} so a
-      # hand edit that bypasses verify-port.sh --write fails here, without
-      # the liuqin-dualboot dev tree the full verify-port check compares
-      # against. New files must be staged for the flake source to carry them
-      # (the check says so when the manifest itself is missing).
+      # pkgs/u-boot/port.manifest pins the bytes of pkgs/u-boot/{patches,files} so
+      # any hand edit there is caught here; regenerate it in the same commit (the
+      # recipe is in pkgs/u-boot/default.nix). New files must be staged for the
+      # flake source to carry them (the check says so when the manifest itself is
+      # missing).
       checks.x86_64-linux.liuqin-uboot-port-manifest =
         pkgsHost.runCommand "liuqin-uboot-port-manifest"
           { nativeBuildInputs = [ pkgsHost.coreutils ]; }
@@ -290,7 +290,7 @@
             if [ -n "$different" ]; then
               echo "pkgs/u-boot/{patches,files} and port.manifest disagree on the file set:" >&2
               echo "$different" >&2
-              echo "re-run pkgs/u-boot/verify-port.sh --write" >&2
+              echo "regenerate pkgs/u-boot/port.manifest (recipe in pkgs/u-boot/default.nix)" >&2
               exit 1
             fi
             # ... and every pinned hash must match.

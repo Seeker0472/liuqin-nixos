@@ -9,11 +9,10 @@
 # release tag names it and its Makefile still says 2024.10. This is the port's
 # historical base: every file the port touches the tree already contains, so the
 # port transfers as a plain patch series, with no hunk-level adaptation and no
-# symbol renamed out from under it: this builds the same sources with the same
-# configuration as the liuqin-dualboot dev tree (verify-port.sh proves the
-# former byte for byte, $out/uboot.config the latter). The machine code still
-# follows the toolchain - this package pins its own nixpkgs, the dev tree builds
-# in the root flake's dev shell - so the two agree in behaviour, not in bytes.
+# symbol renamed out from under it. This package builds those sources from this
+# repo alone (pinned baseline + patches/ + files/), with the configuration the
+# downstream build used; $out/uboot.config records it. The machine code follows
+# the toolchain, so this packaging is the reference build.
 #
 #   patches/  the port's changes to files the baseline has, grouped by topic.
 #             The groups are file-disjoint, so they apply cleanly in any order
@@ -22,10 +21,10 @@
 #             board/qualcomm/liuqin/ (the board), the two device trees and
 #             cmd/partlog.c. Copied over the baseline.
 #
-# Both are cut from liuqin-dualboot/u-boot/source by ./verify-port.sh, which also
-# re-checks that baseline + patches + files reproduces that tree byte for byte.
-# The dev tree stays the place to hack and measure on hardware; this packaging
-# adds nothing to it.
+# port.manifest pins the bytes of every file under patches/ and files/; the
+# liuqin-uboot-port-manifest check compares it against the working tree, so any
+# change there must regenerate it in the same commit:
+#   (cd pkgs/u-boot && find files patches -type f | LC_ALL=C sort | xargs sha256sum > port.manifest)
 #
 # Why this baseline rather than a release: each thing the port had to re-add on
 # a newer tree is a silent failure mode on a board with no UART, where a lost
@@ -56,10 +55,10 @@
 # inert sink, base 0 / kernel_offset 0x8000 / dtb_offset 0x1f00000, the 8 MiB
 # payload padding and the empty newc ramdisk) lives in exactly one place.
 #
-# Maintaining this: change the dev tree, then run ./verify-port.sh to re-cut
-# patches/ and files/ and watch it prove the round trip. A change to a file the
-# baseline has belongs in patches/ (add a patch or extend the matching one); a
-# change to one of the port's own files is made in files/.
+# Maintaining this: a change to a file the baseline has belongs in patches/ (add
+# a patch or extend the matching one); a change to one of the port's own files is
+# made in files/. Both are plain files in this repo - edit them directly, then
+# regenerate port.manifest as above.
 { lib
 , stdenv
 , stdenvNoCC
