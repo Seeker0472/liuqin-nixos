@@ -178,7 +178,7 @@ and `installer-dtb` expose its kernel and DTB separately for inspection.
 `bootimg-kernel-only` is a low-level bring-up artifact with an empty ramdisk
 and no `init=` command line; it is not a normal bootable NixOS system image.
 `demo-bootimg` is the ABL RAM-boot image for the demo configuration
-(`examples/demo`). `uboot` and `uboot-bootimg`
+(`config/demo`). `uboot` and `uboot-bootimg`
 are the bootloader itself and its ABL boot.img, built entirely here (see
 `pkgs/u-boot/default.nix` for where the sources come from). The U-Boot path needs no
 `/boot` artifact: NixOS installs its own extlinux generation list into the
@@ -231,7 +231,7 @@ payloads in `data/`.
 }
 ```
 
-`examples/demo/` is a complete consumer flake and the repository's only
+`config/demo/` is a complete consumer flake and the repository's only
 machine configuration; the BSP builds the very same `configuration.nix` as its
 `demo` target. Copy it (`nix flake init -t <this repo>`) and edit
 `configuration.nix` for users, hostname and timezone; use the BSP's
@@ -348,7 +348,7 @@ build fetches from a third-party release asset.
 ```text
 flake.nix                 package and image outputs
 config/installer.nix      RAM-only live installer
-examples/demo/            the demo machine: consumer flake + configuration.nix
+config/demo/              the demo machine: consumer flake + configuration.nix
                           (the BSP's own `demo` target, single source)
 modules/liuqin/           installed-system hardware and initrd modules
 pkgs/kernel/              Linux configuration and installer profile; the 7.2.5

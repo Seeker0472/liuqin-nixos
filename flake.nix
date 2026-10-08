@@ -188,7 +188,7 @@
           };
           power-keyd = pkgsArm.liuqinPowerKeyd;
           mippsd = pkgsArm.liuqinMippsd;
-          # Boot image for the DEMO configuration (examples/demo). Your own
+          # Boot image for the DEMO configuration (config/demo). Your own
           # configuration: use lib.mkLiuqinBootImages instead.
           demo-bootimg = demoImages.bootimg;
           # Full NixOS live installer: kernel plus a netboot squashfs/root
@@ -209,7 +209,7 @@
       nixosModules.liuqin = import ./modules/liuqin;
 
       # The demo system: the machine configuration users copy and the BSP's
-      # own target. It is a plain NixOS module (examples/demo/configuration.nix)
+      # own target. It is a plain NixOS module (config/demo/configuration.nix)
       # and the single machine file in the repository; the consumer flake next
       # to it is the same module wired through a separate flake.nix.
       #
@@ -225,7 +225,7 @@
       nixosConfigurations.demo = self.lib.mkLiuqinSystem {
         crossBuild = false;
         injectFrom = pkgsArm;
-        modules = [ ./examples/demo/configuration.nix ];
+        modules = [ ./config/demo/configuration.nix ];
       };
 
       # RAM-only NixOS installation environment. It deliberately does not
@@ -237,11 +237,11 @@
 
       # Starting point for a machine configuration:
       #   nix flake init -t <this repo>
-      # copies examples/demo (flake.nix + configuration.nix) into the current
+      # copies config/demo (flake.nix + configuration.nix) into the current
       # directory; point inputs.liuqin.url at this repository and edit
       # configuration.nix.
       templates.default = {
-        path = ./examples/demo;
+        path = ./config/demo;
         description = "liuqin machine configuration (Xiaomi Pad 6 Pro)";
       };
 

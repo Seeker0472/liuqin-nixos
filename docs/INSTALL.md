@@ -41,7 +41,7 @@ DRM master exists) — verified on the unit 2026-10-07: the console lights at
   `hardware.liuqin.usbShell.enable` can still override it.  SSH defaults
   `PasswordAuthentication` off, so enroll an authorized key before relying
   on it.  The demo target forces `"both"`
-  (`examples/demo/configuration.nix`), keeping Wi-Fi SSH while exposing the
+  (`config/demo/configuration.nix`), keeping Wi-Fi SSH while exposing the
   USB deploy link.
 - **Binary cache for pushes.**  A plain `python3 -m http.server 8137 --bind
   192.168.7.12` serving `/var/tmp/liuqin-cache` (reference host process name
@@ -69,7 +69,7 @@ DRM master exists) — verified on the unit 2026-10-07: the console lights at
 The demo configuration sets `hardware.liuqin.debugTransport = "both"`.  The
 deployment key is `~/.ssh/id_liuqin`; its
 public half is embedded in the `openssh.authorizedKeys.keys` list of
-`examples/demo/configuration.nix`.  To use your own
+`config/demo/configuration.nix`.  To use your own
 key, generate one (`ssh-keygen -t ed25519 -f ~/.ssh/id_liuqin`) or extract
 the public half of an existing private key (`ssh-keygen -y -f
 ~/.ssh/id_liuqin`) and replace that string.  The tablet's WLAN address comes
