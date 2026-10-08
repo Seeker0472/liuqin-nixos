@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 #
 # One blank/unblank of the framebuffer makes fbcon redraw its whole console
-# buffer - scrollback included - into the memory the panel scans. The installed
-# system (modules/liuqin/display.nix) and the RAM installer
-# (config/installer.nix) used to carry verbatim twins of this script.
+# buffer - scrollback included - into the memory the panel scans. The RAM
+# installer runs it once during boot (config/installer.nix); the installed
+# system's unit is gone (modules/liuqin/display.nix).
 #
 # `--graphics-dir` exists so the blank sequence can be exercised against a
-# fake sysfs tree; both units use the default.
+# fake sysfs tree; the unit uses the default.
 { writeShellApplication, coreutils }:
 
 writeShellApplication {

@@ -40,8 +40,8 @@ let
   # The root marker: a real regular file (not an environment.etc symlink).
   # The guard verifies content, ownership, mode and size, mirroring the
   # downstream init's marker contract (regular file, 644 root:root, exact
-  # sha256).  The bytes live in lib/liuqin-root-marker.nix, shared with the
-  # RAM installer that writes the file straight after nixos-install.
+  # sha256).  The bytes have exactly one source, lib/liuqin-root-marker.nix,
+  # and exactly one writer, the activation below.
   marker = import ../../lib/liuqin-root-marker.nix { inherit lib; };
   markerContent = marker.content;
   markerSha256 = marker.sha256;
@@ -57,10 +57,11 @@ in
       description = ''
         Exact content (with trailing newline) of /etc/liuqin-nixos-root, the
         identity marker the initrd storage guard requires on the rootfs.
-        config/installer.nix writes the same bytes after nixos-install, from
-        its own literal: the two are independent and must agree, since a
-        mismatch makes the guard fail the first boot before tmpfiles can
-        repair the file.
+        The bytes come from lib/liuqin-root-marker.nix and are written by this
+        module's activation: nixos-install runs the target's activation inside
+        the target, so the installed system provisions the marker itself. The
+        guard checks it, so a mismatch would fail the first boot before the
+        tmpfiles rule below can repair the file.
       '';
     };
 
