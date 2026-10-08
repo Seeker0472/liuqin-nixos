@@ -115,7 +115,7 @@ final: prev:
   # AP-side Xiaomi MiPPS authentication coordinator.  It is intentionally
   # separate from qcom-battmgr: the ADSP owns PD and the daemon only consumes
   # the narrow qcom-battery ABI.  Runtime key files are never part of Nix.
-  liuqinMippsd = final.callPackage ./pkgs/mipps-daemon.nix { };
+  liuqinMippsd = final.callPackage ./pkgs/mipps-daemon { };
 
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc { };
   liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };

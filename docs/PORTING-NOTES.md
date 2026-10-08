@@ -603,7 +603,7 @@ root=fstab loglevel=7 lsm=landlock,yama,bpf cpuidle.governor=teo
 
 MiPPS (Xiaomi 67 W) authentication is driven by `/vendor/bin/batterysecret`
 on the stock system, **not** by the kernel.  This tree reproduces that state
-machine in `pkgs/mipps-daemon.c` on top of the `qcom-battmgr` sysfs ABI
+machine in `pkgs/mipps-daemon/mipps-daemon.c` on top of the `qcom-battmgr` sysfs ABI
 (patch 0005).
 
 ### 2.1 Where the keys come from (extraction, no device needed)
