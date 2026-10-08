@@ -2,8 +2,10 @@
  * SPDX-License-Identifier: MIT
  *
  * Automatic Brightness — a Quick Settings tile for the desktop's
- * ambient-light automatic screen brightness, laid out like the Wi-Fi and
- * Bluetooth tiles.
+ * ambient-light automatic screen brightness, in the Wi-Fi/Bluetooth row.
+ *
+ * A plain toggle: the switch is the whole interface and the lux reading rides
+ * in the subtitle, so there is no second-level menu (and no menu arrow).
  *
  * The tile binds gnome-settings-daemon's own switch,
  * org.gnome.settings-daemon.plugins.power ambient-enabled — the key
@@ -56,7 +58,7 @@ const SENSOR_INTERFACE_INFO = Gio.DBusNodeInfo.new_for_xml(`
 `).interfaces[0];
 
 const AutoBrightnessToggle = GObject.registerClass(
-class AutoBrightnessToggle extends QuickSettings.QuickMenuToggle {
+class AutoBrightnessToggle extends QuickSettings.QuickToggle {
     _init() {
         super._init({
             title: 'Automatic Brightness',
