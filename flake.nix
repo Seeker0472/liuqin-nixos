@@ -237,9 +237,9 @@
 
       # Starting point for a machine configuration:
       #   nix flake init -t github:Seeker0472/liuqin-nixos
-      # copies config/demo (flake.nix + configuration.nix) into the current
-      # directory; the copied flake consumes this BSP as a flake input and only
-      # configuration.nix needs editing.
+      # copies config/demo (flake.nix + configuration.nix + README.md) into the
+      # current directory; the copied flake consumes this BSP as a flake input
+      # and only configuration.nix needs editing.
       templates.default = {
         path = ./config/demo;
         description = "liuqin machine configuration (Xiaomi Pad 6 Pro)";
