@@ -69,6 +69,7 @@ in
     liuqinSensorCheck = "bounded manual sensor-acceptance client, not in any unit";
     liuqinAlsaUcm = "data-only leaf (UCM2 files)";
     liuqinGnomeFlashlight = "data-only leaf (GNOME Shell extension files)";
+    liuqinGnomeAutoBrightness = "data-only leaf (GNOME Shell extension files)";
     # OEM FPC1264 fingerprint stack.
     liuqinFpcOemLibfprintTod = fpcReason;
     liuqinFpcOemSrc = "vendored OEM component source tree (a path, not a package)";

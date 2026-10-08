@@ -455,7 +455,28 @@ is the udev `ACCEL_MOUNT_MATRIX=-1,0,0;0,-1,0;0,0,1` on `fastrpc-sdsp` that
 Sensor claims are polkit-gated to `subject.local` sessions, so
 `monitor-sensor --accel` and `ClaimLight` are denied from an SSH session by
 design, and `LightLevel` only advances while a local client holds the claim
-(GNOME never claims the light sensor, so it reads 0).
+(read from an SSH session it therefore shows whatever the last claimant
+left — 0 on a boot where gsd-power's light claim never landed).
+`systemd-run --user --scope monitor-sensor --light` is admitted, and 20 s of
+it on this unit returned 7.8–29.3 lux through the proxy.
+
+**The light claim is one-shot per event** (measured 2026-10-09, this unit,
+gnome-settings-daemon 50.1).  `gsd-power` claims the light sensor only when
+`iio_proxy_maybe_claim_light()` runs: an `ambient-enabled` change, a screen
+blank/unblank cycle, a session-active change, or the SensorProxy name
+appearing after the claim objects exist.  At session start it is a no-op —
+gsd creates its `org.gnome.Shell.Brightness` proxy before gnome-shell owns
+that name, so `shell_brightness_has_control()` is false for the first
+attempt, and nothing re-evaluates when `HasBrightnessControl` later flips
+true (gsd subscribes only to `BrightnessChanged` on that proxy).  And
+`iio_proxy_vanished_cb()` clears the proxy but not the `light_claimed` flag,
+so the proxy restarts `liuqin-sensor-proxy-refresh` performs leave gsd
+believing it holds a claim it has lost.  Observed: `LightLevel` frozen at
+10.9 for minutes with the screen on, unlocked and the user active; then
+`ambient-enabled` false→true and the reading advanced 10.9 → 8 → 7.1 within
+seconds.  That key change is exactly what the Quick Settings tile's switch
+performs, which is why the tile — not the key's stored value — is what puts
+this loop into service.
 
 **Claim lifetime** (measured 2026-10-08).  The proxy polls a sensor only
 while a client holds its claim, and mutter's orientation manager is a
@@ -483,10 +504,20 @@ fresh shell can give mutter its own claim back.
 - **The gyroscope has no userspace consumer.**  Real samples arrive through
   the gate, but `iio-sensor-proxy` 3.9 exposes no gyro API and nothing else
   in the image reads `/dev/fastrpc-sdsp` directly.
-- **Ambient light: bridged, unclaimed, uncalibrated.**  CCT/RGB is **not
-  implemented** (the stock calibration records have no API in nixpkgs'
-  `libssc`), and the light check does not distinguish the front TCS3701 from
-  the rear TSL2522 — only the default ambient-light instance is used.
+- **Ambient light: bridged, toggleable, uncalibrated.**  The Automatic
+  Brightness Quick Settings tile (`pkgs/gnome-autobrightness`) drives
+  `org.gnome.settings-daemon.plugins.power ambient-enabled`; gsd-power then
+  steers the shell's brightness manager, which applies
+  `clamp(target + slider - 0.5, 0, 1)` — the slider is a bias, not the
+  value.  The claim lifetime above is why the tile's switch, not the key's
+  stored value, is what starts that loop.  Calibration is the open part:
+  CCT/RGB is **not implemented** (the stock calibration records have no API
+  in nixpkgs' `libssc`), the light check does not distinguish the front
+  TCS3701 from the rear TSL2522 (only the default ambient-light instance is
+  used), and gsd's mapping is relative — the first reading after a claim
+  anchors it at 1.5×, a 66.7 % baseline, with no absolute lux curve.
+  docs/TODO/AUTOMATIC-BRIGHTNESS.md records the measured behaviour and the
+  replacement work.
 - **No fusion.**  The Android-derived gravity/rotation-vector/step/tilt/
   motion behaviours are not implemented; only the accelerometer, gyroscope
   and light instances are opened.  `ssc-compass` sits in the udev

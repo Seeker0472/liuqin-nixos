@@ -1,0 +1,7 @@
+{
+  "uuid": "liuqin-autobrightness@liuqin",
+  "name": "Automatic Brightness",
+  "description": "Toggle the desktop's ambient-light automatic screen brightness from the Quick Settings menu.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1
+}

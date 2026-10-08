@@ -150,6 +150,10 @@ final: prev:
   # and a copied-out configuration keeps working.
   liuqinGnomeFlashlight = final.callPackage ./pkgs/gnome-flashlight { };
 
+  # Automatic Brightness Quick Settings tile (data-only: shell JS + icon),
+  # same convention as the flashlight above.
+  liuqinGnomeAutoBrightness = final.callPackage ./pkgs/gnome-autobrightness { };
+
   # Firmware tree assembled from requireFile placeholders (operator-supplied
   # stock-ROM payloads); see pkgs/firmware.nix.
   liuqinFirmware = final.callPackage ./pkgs/firmware.nix { };

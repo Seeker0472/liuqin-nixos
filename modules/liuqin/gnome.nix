@@ -193,6 +193,11 @@ in
     # delegation of the power button to liuqin-power-keyd (both the user
     # profile and the gdm greeter profile).
     #
+    # TODO(automatic-brightness): when the ambient loop moves into our own
+    # session service, pin org.gnome.settings-daemon.plugins.power
+    # ambient-enabled=false here so gsd-power stops claiming the light sensor
+    # and steering brightness - docs/TODO/AUTOMATIC-BRIGHTNESS.md.
+    #
     # These go through programs.dconf.profiles: nixpkgs' dconf module turns
     # /etc/dconf into a symlink to the generated dconf-system-config store
     # path, so environment.etc."dconf/db/..." entries both fail to build

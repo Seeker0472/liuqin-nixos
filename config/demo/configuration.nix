@@ -12,10 +12,16 @@
 #
 # Scope: the "everything the downstream community port has" target - GNOME,
 # touch (including the magnetic keyboard cover), rotation, audio, Bluetooth,
-# Wi-Fi, the SSC sensor stack and the camera stack (three sensors through
+# Wi-Fi, the SSC sensor stack, the ambient-light automatic brightness the
+# Quick Settings tile toggles, and the camera stack (three sensors through
 # libcamera's software ISP) - not a hardened system. See the BSP README for
 # what the hardware does not support (microphones, USB 3.x OTG, fast
-# charging, automatic brightness).
+# charging).
+#
+# Automatic brightness is GNOME's own ambient mapping (gnome-settings-daemon)
+# over the SSC light instance the sensor stack bridges.  The sensor is
+# uncalibrated and that mapping is relative; docs/TODO/AUTOMATIC-BRIGHTNESS.md
+# records both and the replacement work.
 #
 # Per-device data this file cannot carry, all operator-supplied:
 #   - the SSC sensor registry archive: point hardware.liuqin.sensors.sscConfig
@@ -119,6 +125,9 @@
     # Flashlight Quick Settings toggle + brightness slider for the rear flash
     # LED (overlay package, see pkgs/gnome-flashlight).
     pkgs.liuqinGnomeFlashlight
+    # Automatic-brightness Quick Settings toggle over gnome-settings-daemon's
+    # ambient switch (overlay package, see pkgs/gnome-autobrightness).
+    pkgs.liuqinGnomeAutoBrightness
   ];
 
   # Hand the flash LED's brightness attribute to the video group (the camera
@@ -129,12 +138,17 @@
     SUBSYSTEM=="leds", KERNEL=="white:flash", RUN+="${pkgs.coreutils}/bin/chgrp video /sys/class/leds/white:flash/brightness", RUN+="${pkgs.coreutils}/bin/chmod 0664 /sys/class/leds/white:flash/brightness"
   '';
 
-  # Enable the flashlight extension for the user; the LED itself is the only
-  # state it has, so nothing else needs configuring.
+  # Enable the Quick Settings extensions for the user: the flashlight's state
+  # is the LED itself, and the automatic-brightness tile drives
+  # gnome-settings-daemon's own ambient switch, so neither needs more
+  # configuration.
   programs.dconf.profiles.user.databases = [
     {
       settings."org/gnome/shell" = {
-        enabled-extensions = [ "liuqin-flashlight@liuqin" ];
+        enabled-extensions = [
+          "liuqin-flashlight@liuqin"
+          "liuqin-autobrightness@liuqin"
+        ];
       };
     }
   ];
