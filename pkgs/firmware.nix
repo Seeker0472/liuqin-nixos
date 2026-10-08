@@ -160,11 +160,12 @@ runCommand "liuqin-firmware" { nativeBuildInputs = [ zstd ]; } ''
   # WLAN: boot the vendor ath11k set, not the release's compressed one.  The
   # firmware loader expands "updates/" only under its hardcoded
   # /lib/firmware* entries (drivers/base/firmware_loader/main.c, fw_path[]),
-  # and the custom firmware_class.path that liuqin-firmware-path installs has
-  # no such sibling - so without the copies below the loader's plain sweep
-  # finds no amss/board-2/m3/regdb at the requested paths, falls back to the
-  # compressed ath11k/WCN6855/hw2.x/*.zst set, and the 5 GHz link then cannot
-  # see APs the vendor set hears at -64..-78 dBm (measured 2026-10-07; ch161
+  # and the union the loader is pointed at (run-firmware.mount, see
+  # modules/liuqin/firmware.nix) has no such sibling - so without the copies
+  # below the loader's plain sweep finds no amss/board-2/m3/regdb at the
+  # requested paths, falls back to the compressed ath11k/WCN6855/hw2.x/*.zst
+  # set, and the 5 GHz link then cannot see APs the vendor set hears at
+  # -64..-78 dBm (measured 2026-10-07; ch161
   # ran -86..-88 dBm with 50 % loss there, against -48 dBm / 0 % loss under
   # this vendor set).  The four files must stay a set: the vendor board-2
   # with a compressed-set amss dies in `qmi failed to load bdf file` ->

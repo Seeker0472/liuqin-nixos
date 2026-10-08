@@ -60,9 +60,6 @@ in
             inherit (cfg.firmware) vpu cs35l41;
             releaseBootImg = cfg.firmware.bootImg;
           };
-      firmwarePath = pkgs.liuqinFirmwarePath.override {
-        liuqinFirmware = firmwareTree;
-      };
     in
     {
       # TODO(touch-drift): with an external display connected the touchscreen is
@@ -102,30 +99,64 @@ in
 
       # The firmware loader reads exactly one directory (firmware_class.path;
       # fw_path_para is a single char[256] with no ':') and /lib/firmware does
-      # not exist on NixOS, so point it at an overlay of the three trees the
-      # board needs: the vendor CS35L41 payloads (they must shadow
-      # linux-firmware's same-named files in the system tree), the system
-      # firmware tree and the per-device calibration records under
-      # /var/lib/firmware.  See pkgs/firmware-path.nix; the unit only warns
-      # when the persist data is absent, so a device without calibration still
-      # boots.
-      systemd.services.liuqin-firmware-path = {
-        description = "Firmware union (overlay of vendor, system and calibration trees)";
-        wantedBy = [ "sound.target" ];
-        before = [ "sound.target" ];
-        after = [ "liuqin-persist-provision.service" "local-fs.target" ];
-        # A re-provision (e.g. after repairing the persist partition) must be
-        # followed by a fresh mount: the overlay reads its lower layers only
-        # once, so the union restarts together with the provisioner instead of
-        # keeping the previous calibration view.
-        partOf = [ "liuqin-persist-provision.service" ];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${firmwarePath}/bin/liuqin-firmware-path";
-          ExecStop = "-${pkgs.util-linux}/bin/umount /run/firmware";
-        };
-      };
+      # not exist on NixOS, so the board gets one union of the three trees it
+      # needs: the vendor CS35L41 payloads (they must shadow linux-firmware's
+      # same-named files in the system tree), the system firmware tree and the
+      # per-device calibration records under /var/lib/firmware.  Both halves are
+      # declarative - the union is a mount unit, and the loader parameter is a
+      # tmpfiles write of the same string, byte for byte (tmpfiles does not
+      # append a newline, which a char[256] parameter would keep).  The write is
+      # deliberately unordered with respect to the mount: the value is the same
+      # path either way, and a request_firmware() that loses the race fails the
+      # way it already does while the parameter is still empty.  The parameter
+      # itself is compiled in (CONFIG_FW_LOADER, asserted from vmlinux in
+      # pkgs/kernel/default.nix), so /sys/module/firmware_class always exists
+      # and a `w` typo would fail the tmpfiles unit instead of silently
+      # leaving every load to the default path.
+      #
+      # The mount keeps the ordering the board needs: before sound.target (the
+      # CS35L41 protection firmware is requested during the first DAPM
+      # power-up) and after the provisioner that writes the calibration
+      # records.  A re-provision (e.g. after repairing the persist partition)
+      # must be followed by a fresh mount: the overlay reads its lower layers
+      # only once, so the union is PartOf the provisioner instead of keeping
+      # the previous calibration view.  A missing store tree fails the mount
+      # and with it every consumer in that transaction; the calibration records
+      # are the provisioner's own fail-closed check (pkgs/persist-provision.nix
+      # requires the stock crus_calr.bin before it writes them).
+      systemd.mounts = [
+        {
+          description = "Firmware union (vendor, system and calibration trees)";
+          what = "overlay";
+          where = "/run/firmware";
+          type = "overlay";
+          options = "ro,lowerdir=${firmwareTree}/lib/firmware:/run/current-system/firmware:/var/lib/firmware";
+          wantedBy = [ "sound.target" ];
+          before = [ "sound.target" ];
+          after = [ "liuqin-persist-provision.service" ];
+          partOf = [ "liuqin-persist-provision.service" ];
+          # A mount unit normally counts as a local file system: systemd adds
+          # an implicit Before=local-fs.target.  That cycles here - the
+          # provisioner this mount follows writes into /var/lib and is itself
+          # After=local-fs.target - and systemd resolves such a cycle by
+          # deleting a start job from it.  Take the default dependencies out
+          # and state what this mount actually needs: the file system holding
+          # the calibration lowerdir must be mounted (RequiresMountsFor pulls
+          # the root mount in, which the initrd already did), and the union
+          # must be stopped during shutdown, which is the automatic
+          # umount.target relation a mount unit would otherwise get.
+          # `systemd-analyze verify` on the generated unit is clean.
+          unitConfig = {
+            DefaultDependencies = false;
+            RequiresMountsFor = "/var/lib/firmware";
+            Conflicts = [ "umount.target" ];
+            Before = [ "umount.target" ];
+          };
+        }
+      ];
+      systemd.tmpfiles.rules = [
+        "w /sys/module/firmware_class/parameters/path - - - - /run/firmware"
+      ];
     }
   );
 }

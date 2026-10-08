@@ -163,8 +163,8 @@ EOF
     # The kernel requests cirrus/cs35l41-liuqin-<ch>-calr.bin through the
     # firmware loader; the blobs land in <firmware-dir>/cirrus/ (with the
     # exact 16-byte check).  <firmware-dir> is one of the lowerdirs of the
-    # firmware overlay that liuqin-firmware-path mounts (pkgs/firmware-path.nix)
-    # because per-device data cannot live in the store.
+    # firmware union (run-firmware.mount, modules/liuqin/firmware.nix) because
+    # per-device data cannot live in the store.
     calr_size=$(wc -c < "$mnt/audio/crus_calr.bin" | tr -d ' ')
     [ "$calr_size" = 16 ]
     install -d -m 0755 "$firmware_dir/cirrus"

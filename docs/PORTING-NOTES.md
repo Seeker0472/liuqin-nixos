@@ -214,13 +214,14 @@ this board's Halo payloads.
 - The amplifiers load the vendor's Halo payloads
   (`cirrus/cs35l41-dsp1-spk-prot-10251826.*`, extracted from the stock vendor
   partition and registered as a `requireFile` payload), and
-  `pkgs/firmware-path.nix` mounts an overlay of the vendor payloads, the
+  `modules/liuqin/firmware.nix` declares the union of the vendor payloads, the
   system firmware tree and the per-device calibration records under
-  `/var/lib/firmware` and points the loader at it - without the calibration
-  the CS35L41 protection gate stays closed.  The overlay reads its lower
-  layers once at mount, so `liuqin-firmware-path` is `PartOf=` the
-  provisioner and a `systemctl restart liuqin-persist-provision` rebuilds
-  the union.  `POST_PMU: * Main AMP event failed: -13` can still print at
+  `/var/lib/firmware` as a mount unit (`run-firmware.mount`) and points the
+  loader at it with a tmpfiles write of `firmware_class.path` - without the
+  calibration the CS35L41 protection gate stays closed.  The overlay reads its
+  lower layers once at mount, so the mount is `PartOf=` the provisioner and a
+  `systemctl restart liuqin-persist-provision` rebuilds the union.
+  `POST_PMU: * Main AMP event failed: -13` can still print at
   probe; playback is audible regardless.
 
 ### Fingerprint (FPC1264)
@@ -471,7 +472,7 @@ synthesized when absent).
   2026-10-06).  The controller is unconfigured on every boot (volatile
   address), so `liuqin-bt-preconfigure`'s Set Public Address re-runs the whole
   QCA setup and its firmware download; the unit is therefore ordered after
-  `liuqin-firmware-path`, without which that download finds no `qca` file
+  `run-firmware.mount`, without which that download finds no `qca` file
   (the stage-2 root has calibration only) and Bluetooth never starts.
 - The WCN6855 RF rails are pinned to the stock DTB's `qcom,init-voltage`
   values (`pm8350_s11` 952 mV, `pm8350_s12` 1256 mV, `pm8350c_s1` 1880 mV).
@@ -590,7 +591,10 @@ root=fstab loglevel=7 lsm=landlock,yama,bpf cpuidle.governor=teo
 - `firmware_class.path=` takes **exactly one** directory (`fw_path_para` is a
   single `char[256]`, no `:` splitting).  A second `:`-joined path
   invalidates the parameter and every `request_firmware()` fails with `-2`.
-  Both call sites point at `/var/lib/firmware`.
+  Both call sites point at `/var/lib/firmware` (the installer's initrd
+  injection); the installed system re-points the parameter at the union
+  `run-firmware.mount` mounts, from a tmpfiles `w` line
+  (`modules/liuqin/firmware.nix`).
 - Three config inputs: `pkgs/kernel/config.nix` (structured answers),
   `pkgs/kernel/liuqin-firstboot.config` and `pkgs/kernel/installer.config` (raw
   fragments appended in `postConfigure` before one `make olddefconfig`, then

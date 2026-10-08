@@ -57,13 +57,14 @@ in
       systemd.services.liuqin-persist-provision = {
         description = "Provision liuqin per-device data from the persist partition";
         wantedBy = [ "multi-user.target" "sound.target" ];
-        # The per-device calr blobs must exist before liuqin-firmware-path
-        # builds the firmware union, and the union before anything starts a
-        # stream on the CS35L41s (the protection firmware's calibration lookup
-        # runs inside the first DAPM power-up).  Both stay on sound.target's
-        # dependency chain - pinning them to sysinit.target creates an ordering
-        # cycle, because sound.target is reached well after it.
-        before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "liuqin-firmware-path.service" "sound.target" ];
+        # The per-device calr blobs must exist before the firmware union
+        # (run-firmware.mount) is mounted, and the union before anything starts
+        # a stream on the CS35L41s (the protection firmware's calibration
+        # lookup runs inside the first DAPM power-up).  Both stay on
+        # sound.target's dependency chain - pinning them to sysinit.target
+        # creates an ordering cycle, because sound.target is reached well after
+        # it.
+        before = [ "liuqin-wlan-mac.service" "liuqin-bt-preconfigure.service" "run-firmware.mount" "sound.target" ];
         after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ];
         serviceConfig = {
           Type = "oneshot";

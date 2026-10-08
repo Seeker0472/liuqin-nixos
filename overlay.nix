@@ -78,7 +78,6 @@ final: prev:
   liuqinPersistProvision = final.callPackage ./pkgs/persist-provision.nix { };
   # persistent-root identity guard, run by modules/liuqin/initrd-guard.nix
   liuqinStorageGuard = final.callPackage ./pkgs/storage-guard.nix { };
-  liuqinFirmwarePath = final.callPackage ./pkgs/firmware-path.nix { };
   liuqinWlanMac = final.callPackage ./pkgs/wlan-mac.nix { };
   liuqinBtPublicAddr = final.callPackage ./pkgs/bt-public-addr.nix { };
   liuqinBtNv = final.callPackage ./pkgs/bt-nv { };
