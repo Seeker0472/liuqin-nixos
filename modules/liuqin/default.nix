@@ -248,13 +248,12 @@ in
       # last - once its countdown runs out; the timeout is what the loader
       # module writes into extlinux.conf.
       #
-      # 100, not 10: extlinux's TIMEOUT counts tenths of a second (U-Boot's
-      # boot/pxe_utils.c divides it by 10 before menu_create(), which takes
-      # seconds - common/menu.c), and the loader module passes
-      # boot.loader.timeout through verbatim. 10 would therefore be a
-      # one-second countdown, not enough to pick a generation with the volume
-      # and power buttons.
-      boot.loader.timeout = lib.mkIf (cfg.boot.loader == "uboot") (lib.mkDefault 100);
+      # 5 s: boot.loader.timeout is in seconds, and extlinux-conf-builder.sh
+      # converts it with timeout=$((OPTARG * 10)) - TIMEOUT counts tenths of
+      # a second, and U-Boot's boot/pxe_utils.c divides it by 10 before
+      # menu_create(), which takes seconds (common/menu.c). 5 therefore
+      # becomes TIMEOUT 50.
+      boot.loader.timeout = lib.mkIf (cfg.boot.loader == "uboot") (lib.mkDefault 5);
 
       # The loader copies each generation's <toplevel>/dtbs into /boot, and that
       # tree holds every device tree the kernel builds. Only this board's
