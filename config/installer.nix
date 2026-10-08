@@ -112,6 +112,70 @@ let
     echo "liuqin-plant-sysroot-init: /sysroot/init -> $(${pkgs.coreutils}/bin/readlink /sysroot/init)"
   '';
 
+  # The USB control channel: the gadget, its DHCP server and the rescue shell
+  # run in the initrd and again, after switch_root has stopped them, in the
+  # live stage, so a display failure never removes the only practical
+  # diagnostic and control channel. The units are the same in both stages;
+  # `wantedBy` is the only functional difference and `stage` only labels the
+  # descriptions (the two instances share the unit names, and journald keeps
+  # both). Written once so the copies cannot drift, and built on the packages
+  # the installed system's debug channel also uses (pkgs/usb-gadget.nix,
+  # pkgs/usb-login.nix).
+  #
+  # Callers merge the result with `//`: Nix rejects a whole-attribute
+  # definition next to path-style ones (services.foo.bar) inside one attribute
+  # set, so each stage's own units travel in the same expression.
+  mkUsbChannelServices =
+    { wantedBy, stage }:
+    {
+      liuqin-usb-gadget = {
+        description = "Create the liuqin USB NCM/ECM gadget (${stage})";
+        inherit wantedBy;
+        path = with pkgs; [ coreutils iproute2 util-linux ];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${usbGadgetSetup}/bin/liuqin-usb-gadget";
+          RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = "1s";
+        };
+      };
+
+      liuqin-usb-dhcp = {
+        description = "Serve DHCP on the liuqin USB network (${stage})";
+        inherit wantedBy;
+        requires = [ "liuqin-usb-gadget.service" ];
+        after = [ "liuqin-usb-gadget.service" ];
+        path = with pkgs; [ busybox coreutils ];
+        serviceConfig = {
+          Type = "simple";
+          ExecStartPre = [
+            "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready"
+            "${pkgs.coreutils}/bin/touch /run/liuqin-usb-udhcpd.leases"
+          ];
+          ExecStart = "${pkgs.busybox}/bin/busybox udhcpd -f -S ${usbDhcpConfig}";
+          # Recover from a daemon crash for as long as this stage runs.
+          Restart = "on-failure";
+          RestartSec = "1s";
+        };
+      };
+
+      liuqin-usb-shell = {
+        description = "Provide the liuqin USB rescue shell (${stage})";
+        inherit wantedBy;
+        requires = [ "liuqin-usb-gadget.service" ];
+        after = [ "liuqin-usb-gadget.service" ];
+        path = with pkgs; [ busybox coreutils ];
+        serviceConfig = {
+          Type = "simple";
+          ExecStartPre = "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready";
+          ExecStart = "${pkgs.busybox}/bin/busybox telnetd -F -S -b 192.168.7.2:2323 -l ${usbShellLogin}/bin/liuqin-usb-login";
+          Restart = "on-failure";
+          RestartSec = "1s";
+        };
+      };
+    };
+
 in
 {
   imports = [
@@ -211,66 +275,25 @@ in
 
   # The downstream first-boot image brings up the USB gadget before the live
   # root is handed over. Do the same here so a display failure does not also
-  # remove the only practical diagnostic/control channel. The initrd services
-  # are stopped during switch_root; the stage-2 copies below recreate the same
-  # channel for the actual installation shell.
-  boot.initrd.systemd.services.liuqin-usb-gadget = {
-    description = "Create the liuqin USB NCM/ECM gadget in the initrd";
-    wantedBy = [ "initrd.target" ];
-    path = with pkgs; [ coreutils iproute2 util-linux ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${usbGadgetSetup}/bin/liuqin-usb-gadget";
-      RemainAfterExit = true;
-      Restart = "on-failure";
-      RestartSec = "1s";
+  # remove the only practical diagnostic/control channel; the stage-2 copies
+  # (systemd.services below) recreate the same channel after switch_root.
+  boot.initrd.systemd.services =
+    mkUsbChannelServices {
+      wantedBy = [ "initrd.target" ];
+      stage = "initrd";
+    }
+    // {
+      # The two stage-1 lookups below decide which closure this image boots
+      # and where its etc image lives. Both resolve init= inside /sysroot, and
+      # ABL's trailing init=/init makes that /sysroot/init, which a netboot
+      # tmpfs root does not carry. Plant the marker first; without it both
+      # units fail and the live system never starts, which also removes the
+      # USB channel it provides.
+      initrd-find-nixos-closure.serviceConfig = {
+        ExecStartPre = [ "${plantSysrootInit}" ];
+      };
+      initrd-find-etc.serviceConfig.ExecStartPre = [ "${plantSysrootInit}" ];
     };
-  };
-
-  boot.initrd.systemd.services.liuqin-usb-dhcp = {
-    description = "Serve DHCP on the liuqin initrd USB network";
-    wantedBy = [ "initrd.target" ];
-    requires = [ "liuqin-usb-gadget.service" ];
-    after = [ "liuqin-usb-gadget.service" ];
-    path = with pkgs; [ busybox coreutils ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStartPre = [
-        "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready"
-        "${pkgs.coreutils}/bin/touch /run/liuqin-usb-udhcpd.leases"
-      ];
-      ExecStart = "${pkgs.busybox}/bin/busybox udhcpd -f -S ${usbDhcpConfig}";
-      # switch_root stops initrd services; the stage-2 copies recreate the
-      # channel. During the initrd lifetime, recover from a daemon crash.
-      Restart = "on-failure";
-      RestartSec = "1s";
-    };
-  };
-
-  boot.initrd.systemd.services.liuqin-usb-shell = {
-    description = "Provide the liuqin initrd USB rescue shell";
-    wantedBy = [ "initrd.target" ];
-    requires = [ "liuqin-usb-gadget.service" ];
-    after = [ "liuqin-usb-gadget.service" ];
-    path = with pkgs; [ busybox coreutils ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStartPre = "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready";
-      ExecStart = "${pkgs.busybox}/bin/busybox telnetd -F -S -b 192.168.7.2:2323 -l ${usbShellLogin}/bin/liuqin-usb-login";
-      Restart = "on-failure";
-      RestartSec = "1s";
-    };
-  };
-
-  # The two stage-1 lookups below decide which closure this image boots and
-  # where its etc image lives. Both resolve init= inside /sysroot, and ABL's
-  # trailing init=/init makes that /sysroot/init, which a netboot tmpfs root
-  # does not carry. Plant the marker first; without it both units fail and the
-  # live system never starts, which also removes the USB channel it provides.
-  boot.initrd.systemd.services.initrd-find-nixos-closure.serviceConfig =
-    { ExecStartPre = [ "${plantSysrootInit}" ]; };
-
-  boot.initrd.systemd.services.initrd-find-etc.serviceConfig.ExecStartPre = [ "${plantSysrootInit}" ];
 
   # The panel is the only channel that survives a USB failure, and it starts
   # out showing nothing the console drew before the DRM fbdev took over: that
@@ -278,66 +301,30 @@ in
   # console buffer (its scrollback included) into the framebuffer the panel
   # scans, so the complete boot log ends up visible. Per-draw flushing is
   # handled in the kernel by 0003-liuqin-display-panel-msm.patch (the msm
-  # dirtyfb fix) and needs nothing from userspace. The
-  # command is shared with the installed system (pkgs/screen-refresh.nix).
-  systemd.services.liuqin-screen-refresh = {
-    description = "Redraw the console into the panel framebuffer";
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = "${pkgs.liuqinScreenRefresh}/bin/liuqin-screen-refresh";
-    };
-  };
-
+  # dirtyfb fix) and needs nothing from userspace. Only the RAM installer runs
+  # this blank, where it lands before any DRM master exists; on the installed
+  # system the same late blank is refused by the DRM master and left the panel
+  # dark, so that unit is gone (modules/liuqin/display.nix).
+  #
   # initrd systemd stops its own services at switch_root. Recreate the same
   # gadget/control channel in the live NixOS stage so the operator can keep
   # using the USB cable while preparing /mnt and running nixos-install.
-  systemd.services.liuqin-usb-gadget = {
-    description = "Create the liuqin USB NCM/ECM gadget";
-    wantedBy = [ "multi-user.target" ];
-    path = with pkgs; [ coreutils iproute2 util-linux ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${usbGadgetSetup}/bin/liuqin-usb-gadget";
-      RemainAfterExit = true;
-      Restart = "on-failure";
-      RestartSec = "1s";
+  systemd.services =
+    mkUsbChannelServices {
+      wantedBy = [ "multi-user.target" ];
+      stage = "stage 2";
+    }
+    // {
+      liuqin-screen-refresh = {
+        description = "Redraw the console into the panel framebuffer";
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.liuqinScreenRefresh}/bin/liuqin-screen-refresh";
+        };
+      };
     };
-  };
-
-  systemd.services.liuqin-usb-dhcp = {
-    description = "Serve DHCP on the liuqin USB network";
-    wantedBy = [ "multi-user.target" ];
-    requires = [ "liuqin-usb-gadget.service" ];
-    after = [ "liuqin-usb-gadget.service" ];
-    path = with pkgs; [ busybox coreutils ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStartPre = [
-        "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready"
-        "${pkgs.coreutils}/bin/touch /run/liuqin-usb-udhcpd.leases"
-      ];
-      ExecStart = "${pkgs.busybox}/bin/busybox udhcpd -f -S ${usbDhcpConfig}";
-      Restart = "on-failure";
-      RestartSec = "1s";
-    };
-  };
-
-  systemd.services.liuqin-usb-shell = {
-    description = "Provide the liuqin USB rescue shell";
-    wantedBy = [ "multi-user.target" ];
-    requires = [ "liuqin-usb-gadget.service" ];
-    after = [ "liuqin-usb-gadget.service" ];
-    path = with pkgs; [ busybox coreutils ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStartPre = "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready";
-      ExecStart = "${pkgs.busybox}/bin/busybox telnetd -F -S -b 192.168.7.2:2323 -l ${usbShellLogin}/bin/liuqin-usb-login";
-      Restart = "on-failure";
-      RestartSec = "1s";
-    };
-  };
 
   networking.hostName = "liuqin-installer";
   networking.networkmanager.enable = true;
