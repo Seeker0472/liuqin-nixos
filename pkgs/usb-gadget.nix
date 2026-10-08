@@ -14,6 +14,10 @@
 #                  /run/liuqin-usb-ready for its udhcpd/telnetd units to wait
 #                  on; the installed system leaves usb0 to systemd-networkd and
 #                  this script binds the gadget only.
+#
+# The binary also owns the teardown: `--unbind` detaches the UDC for the
+# installed system's ExecStop, so the configfs layout is known in exactly one
+# place instead of once here and once in a module-side one-liner.
 { lib, writeShellApplication, coreutils, iproute2, util-linux }:
 
 { product
@@ -52,6 +56,22 @@ writeShellApplication {
     configfs=/sys/kernel/config
     gadget=$configfs/usb_gadget/liuqin
     ready=/run/liuqin-usb-ready
+
+    # `--unbind` is the stop side of the installed system's debug unit
+    # (modules/liuqin/usb-shell.nix): detach the UDC and leave the rest of the
+    # gadget in place, so a later start rebinds the same function. The RAM
+    # installer never stops its gadget - switch_root replaces the whole stage -
+    # so nothing calls this there.
+    if [ "$#" -gt 0 ] && [ "$1" = --unbind ]; then
+      [ "$#" -eq 1 ] || {
+        echo "usage: liuqin-usb-gadget [--unbind]" >&2
+        exit 2
+      }
+      if [ -w "$gadget/UDC" ]; then
+        printf '\n' >"$gadget/UDC"
+      fi
+      exit 0
+    fi
 
     log() {
       echo "liuqin-usb: $*"${lib.optionalString logToConsole " >/dev/console 2>/dev/null || true"}

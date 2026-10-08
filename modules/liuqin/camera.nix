@@ -27,12 +27,6 @@
 
 let
   cfg = config.hardware.liuqin.camera;
-
-  # Bounded retry for the sensor-module load (see liuqin-camera-probe below).
-  # A single line on purpose: systemd parses the ExecStart value and there is
-  # no need to lean on multi-line quoting.  No `$`, so systemd's ExecStart
-  # variable expansion has nothing to mangle.
-  cameraProbeRetry = "for _ in 1 2 3; do ${pkgs.kmod}/bin/modprobe qcom_liuqin_sensors && exit 0; echo \"liuqin-camera-probe: modprobe failed; retrying\" >&2; sleep 5; done; exit 1";
 in
 {
   options.hardware.liuqin.camera.enable = lib.mkEnableOption ''
@@ -100,17 +94,28 @@ in
       # oneshot once the system is up - the same probe then succeeds reliably.
       #
       # The late load can still lose the probe roulette on a flaky attempt, so
-      # the oneshot retries it three times with a pause; if all three fail the
-      # unit fails visibly instead of silently leaving no cameras.
+      # the oneshot retries it: systemd's own restart logic (three attempts,
+      # five seconds apart, then the unit fails visibly instead of silently
+      # leaving no cameras) rather than a shell loop - Restart= is honoured
+      # for Type=oneshot, and StartLimitBurst bounds the attempts the way the
+      # loop did. A later manual `systemctl start` needs `reset-failed` first
+      # (or the StartLimitIntervalSec window to pass), which is how the
+      # other retrying units in this tree behave.
       boot.blacklistedKernelModules = [ "qcom_liuqin_sensors" ];
       systemd.services.liuqin-camera-probe = {
         description = "load the camera sensor module once the system settled";
         wantedBy = [ "multi-user.target" ];
         after = [ "multi-user.target" ];
+        unitConfig = {
+          StartLimitIntervalSec = "60s";
+          StartLimitBurst = 3;
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg cameraProbeRetry}";
+          ExecStart = "${pkgs.kmod}/bin/modprobe qcom_liuqin_sensors";
+          Restart = "on-failure";
+          RestartSec = 5;
         };
       };
 

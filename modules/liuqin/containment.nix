@@ -24,7 +24,9 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /run/liuqin-empty";
+        # systemd creates the bind-mount source before ExecStart and removes it
+        # once the unit has stopped, so there is no ExecStartPre mkdir.
+        RuntimeDirectory = "liuqin-empty";
         ExecStart = "${pkgs.util-linux}/bin/mount --bind /run/liuqin-empty /sys/firmware/devicetree/base/hypervisor";
         ExecStop = "${pkgs.util-linux}/bin/umount /sys/firmware/devicetree/base/hypervisor";
       };

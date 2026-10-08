@@ -26,7 +26,7 @@
 # a first boot: the 2026-09-20 stock dump's MANIFEST has no `linux` partition,
 # and Android's userdata is f2fs, which cannot be shrunk in place - see the
 # installation section of README.md for what that implies.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 
 let
   cfg = config.hardware.liuqin;
@@ -95,7 +95,10 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.e2fsprogs}/bin/resize2fs ${cfg.storage.rootDevice}";
+          # systemd splits the ExecStart line itself, so a device path with a
+          # space or % would become another argument or expand; the same rule
+          # the initrd guard follows (modules/liuqin/initrd-guard.nix).
+          ExecStart = "${pkgs.e2fsprogs}/bin/resize2fs ${utils.escapeSystemdExecArg cfg.storage.rootDevice}";
           ExecStartPost = [ "${pkgs.coreutils}/bin/touch /var/lib/liuqin/growfs-done-${cfg.storage.layout}" ];
         };
       };

@@ -36,11 +36,6 @@ let
     requestDeviceRole = false;
     superSpeed = true;
   };
-  unbindGadget = pkgs.writeShellScript "liuqin-usb-gadget-unbind" ''
-    if [ -w /sys/kernel/config/usb_gadget/liuqin/UDC ]; then
-      echo "" > /sys/kernel/config/usb_gadget/liuqin/UDC
-    fi
-  '';
 in
 {
   options.hardware.liuqin.usbShell.enable = lib.mkEnableOption ''
@@ -57,15 +52,18 @@ in
     environment.systemPackages = with pkgs; [ pciutils usbutils ];
 
     # Bind the UDC only; the address and the DHCP server come from networkd.
+    # The gadget binary runs directly (no NixOS `script` wrapper) and owns the
+    # teardown too: `--unbind` detaches the UDC the same way the wrapper here
+    # used to, from the package that knows the configfs layout.
     systemd.services.liuqin-usb-gadget = {
       description = "liuqin USB2 debug gadget (NCM, ECM fallback)";
       wantedBy = [ "multi-user.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStop = unbindGadget;
+        ExecStart = "${gadget}/bin/liuqin-usb-gadget";
+        ExecStop = "${gadget}/bin/liuqin-usb-gadget --unbind";
       };
-      script = "${gadget}/bin/liuqin-usb-gadget";
     };
 
     systemd.network.enable = true;
