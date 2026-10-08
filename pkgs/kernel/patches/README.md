@@ -6,14 +6,15 @@
 last.  Each patch carries a prose header above its diff; keep that header
 when editing one.
 
-The 20 patches are grouped by subsystem.  The first 14 were merged down from
+The 21 patches are grouped by subsystem.  The first 14 were merged down from
 a 33-patch bring-up series (the merge provenance is in each patch header);
 the merged set produces a byte-identical tree, so that part is a pure
 re-grouping.  0015 adds the WCD9385 SoundWire capture graph on top of the
 board DTS the other patches build, 0016 names the four CS35L41 amplifiers so
 the driver selects this board's firmware, 0017-0019 add the fingerprint
 series (the QSEECOM TEE transport, the FPC1264 control interface and its board
-DT node), and 0020 pins the WCN6855 RF rail voltages to the stock DTB.
+DT node), 0020 pins the WCN6855 RF rail voltages to the stock DTB, and 0021
+declares the three cameras' orientation.
 
 ## The series
 
@@ -39,6 +40,7 @@ DT node), and 0020 pins the WCN6855 RF rail voltages to the stock DTB.
 | 0018 | misc-fpc1020 | FPC1264 power/reset/IRQ control (/dev/fpc1020), no SPI (trustlet owns the bus) |
 | 0019 | dts-fpc1264 | fingerprint control node: GPIO40/41 + LDO9; QUP SE10 stays reserved/disabled |
 | 0020 | wcn6855-rfa-rail-voltages | pin the WCN6855 RF rail voltages to the stock DTB's init voltages |
+| 0021 | camera-orientation | declare each camera's `orientation` (s5kjn1 rear, imx596 front, sc202cs rear) so the sensor drivers report the location the camera stack needs |
 
 0017-0019 are the fingerprint (FPC1264/QSEECOM) series.  0017 and 0018 apply in
 sequence with the rest and 0019 (the board DT node) applies there as well: it

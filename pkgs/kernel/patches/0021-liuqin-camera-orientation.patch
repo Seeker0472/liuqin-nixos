@@ -1,3 +1,10 @@
+arm64: dts: qcom: liuqin: declare the camera orientations
+
+Mark the location of each camera on the board: the rear-facing s5kjn1 and
+sc202cs nodes get orientation = <1>, the front-facing imx596 gets
+orientation = <0>.  The camera stack derives each camera's Location from the
+property, so libcamera reports front/rear instead of leaving it unknown.
+
 diff --git a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
 --- a/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts
