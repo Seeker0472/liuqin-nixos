@@ -210,7 +210,7 @@ payloads in `data/`.
 
 ```nix
 {
-  inputs.liuqin.url = "git+file:///path/to/liuqin-nixos";
+  inputs.liuqin.url = "github:Seeker0472/liuqin-nixos";
 
   outputs = { self, liuqin }:
     let
@@ -233,7 +233,8 @@ payloads in `data/`.
 
 `config/demo/` is a complete consumer flake and the repository's only
 machine configuration; the BSP builds the very same `configuration.nix` as its
-`demo` target. Copy it (`nix flake init -t <this repo>`) and edit
+`demo` target. Copy it with
+`nix flake init -t github:Seeker0472/liuqin-nixos` and edit
 `configuration.nix` for users, hostname and timezone; use the BSP's
 `installer-bootimg` for the first install.
 

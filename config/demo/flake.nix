@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: MIT
 #
 # Demo system for the Xiaomi Pad 6 Pro (liuqin), built as a *consumer* of the
-# BSP: this subdirectory is a flake of its own that takes ../.. as an input.
+# BSP: this subdirectory is a flake of its own that takes the BSP as an input.
 #
 # liuqin-nixos is a hardware-support layer (BSP): kernel, firmware, device
 # packages, the NixOS module and the image assembly. It deliberately carries no
 # site configuration. This flake is the other half - the machine configuration -
 # and it is what the BSP's README calls "Use from your own flake". To make it
-# your own system, copy this directory elsewhere, change `inputs.liuqin.url`
-# from the `path:` below to wherever your BSP checkout lives (`git+https://...`
-# once it is published), and edit configuration.nix.
+# your own system, copy this directory elsewhere and edit configuration.nix;
+# the input below points at the published BSP. To build against a local
+# checkout instead, override it: --override-input liuqin path:/your/liuqin-nixos
 #
 # There is deliberately no nixpkgs input of our own: the BSP's lock is the one
 # source of truth, so this flake builds exactly the closure liuqin-nixos was
@@ -37,7 +37,7 @@
 {
   description = "liuqin demo machine configuration (consumer of liuqin-nixos)";
 
-  inputs.liuqin.url = "path:../..";
+  inputs.liuqin.url = "github:Seeker0472/liuqin-nixos";
 
   outputs = { self, liuqin }:
     let

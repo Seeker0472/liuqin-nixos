@@ -7,8 +7,8 @@
 # This is a normal NixOS module and the only machine file in the repository.
 # The BSP builds this very file as its `demo` target (flake.nix,
 # nixosConfigurations.demo), so it is exercised by the BSP's own checks and
-# there is no second copy to keep in sync. `nix flake init -t <this repo>`
-# copies the whole directory.
+# there is no second copy to keep in sync.
+# `nix flake init -t github:Seeker0472/liuqin-nixos` copies the whole directory.
 #
 # Scope: the "everything the downstream community port has" target - GNOME,
 # touch (including the magnetic keyboard cover), rotation, audio, Bluetooth,
