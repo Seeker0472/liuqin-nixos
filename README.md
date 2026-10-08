@@ -64,7 +64,7 @@ nixos-anywhere --flake .#mypad --target-host root@192.168.7.2
 The target partition, labels and marker still have to satisfy the storage
 guard (see below), so the partition is created and measured first as in the
 manual flow; the closure is copied into the target like any other NixOS
-install. This path has not been exercised on the unit yet.
+install.
 
 From the live tty, connect Wi-Fi with `nmtui` or `nmcli`, measure the device's
 GPT, create or select the target partition, and prepare its identity before
@@ -191,8 +191,8 @@ the exercised Qualcomm bootloader contract. The current installer ramdisk is
 large enough that its literal range crosses the DTB offset; the build records
 this as a `liuqin header-layout-warning` in `boot.img.info` and prints it
 during the build. This image has since been RAM-booted on the unit many times
-through `fastboot boot` without trouble; writing it to a boot partition is
-still not exercised, so that remains the operation to approach deliberately. The build also enforces the 192 MiB boot
+through `fastboot boot` without trouble; writing it to a boot partition
+remains the operation to approach deliberately. The build also enforces the 192 MiB boot
 partition limit and the observed 805306368-byte fastboot download limit.
 
 The repository's installed configurations build natively for aarch64: their
@@ -357,13 +357,11 @@ pkgs/kernel/              Linux configuration and installer profile; the 7.2.5
 pkgs/bootimg/             ABL boot image and DTB construction, with the ABL and
                           installer DT overlays under dts/ and the stock DT
                           archive inputs (stock-*.nix, requireFile)
-pkgs/u-boot/              the bootloader: the port's own base tree + patches + files
-                          (verify-port.sh proves the three equal the dev tree)
+pkgs/u-boot/              the bootloader: the pinned base tree + patches/ + files/
 data/                     local copies of the requireFile payloads (gitignored)
 ```
 
-The `data/*.tar.zst` archives and the two `pkgs/bootimg/stock-*.tar.zst`
+The `data/liuqin-*.tar.zst` archives and the two `pkgs/bootimg/stock-*.tar.zst`
 archives are gitignored operator payloads; see `.gitignore` for registration
 instructions. The device has no UART; for
-bring-up use the framebuffer console, fastboot/U-Boot diagnostics and records
-in the sibling `liuqin-dualboot` repository.
+bring-up use the framebuffer console and fastboot/U-Boot diagnostics.

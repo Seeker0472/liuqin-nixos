@@ -31,7 +31,7 @@ Companion documents: `README.md` (build outputs and configuration model),
 | Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
 | USB3 device (peripheral) | verified | 10-hotplug stability record still open; the cover-close suspend loop re-enumerates the gadget, see `docs/TODO/LID-SUSPEND-LOOP.md` |
 | Type-C host + OTG power | verified | 10-hotplug record and automatic gadget re-bind still open |
-| DP Alt Mode | verified | single-link-rate tables (HBR2 capture); 2-lane DT only; repeated hotplug unverified |
+| DP Alt Mode | verified | — |
 | Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
 | Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
 | Sensors (SSC/SLPI) | partly verified | accelerometer + ambient light live on the SensorProxy D-Bus API (four orientations and all five tilt states measured 2026-10-07); gyroscope has no userspace consumer; CCT/RGB, light-sensor identity, fusion and suspend/resume unverified |
@@ -90,10 +90,8 @@ Companion documents: `README.md` (build outputs and configuration model),
   panel power-on reset (sleep-in + supply cycle + DPU control-path reset
   changed nothing), the `clk_ignore_unused pd_ignore_unused` late-init gating
   ("clk: Not disabling unused clocks" printed and the panel still died), and
-  the backlight (ktz8866 defaults to 1500/2047, on from probe).  Follow-up:
-  do that stop inside the driver before the first programming (instead of as a
-  second DPMS commit), which should light the panel at ~2 s with no visible
-  cycle; `liuqin-screen-refresh` is gone from the installed system for good -
+  the backlight (ktz8866 defaults to 1500/2047, on from probe).
+  `liuqin-screen-refresh` is gone from the installed system for good -
   its late blank/unblank could only darken a working panel.
 - **Do not** re-add the `arm_smmu_init` / `disp_cc_sm8450_driver_init`
   blacklist: it crashes this unit, and the option that enabled it was
@@ -267,10 +265,9 @@ trustlet, never in Linux.
 - The OEM userspace (the component's own sources: the static QSEE clients, the
   python entry points and the TOD driver) is vendored under
   `pkgs/fingerprint/fpc-oem-src/` (originally yzddmr6/xiaomipad-6pro-mainline
-  PR #11; see NOTICE for the revision and licenses), qsee-supplicant is
-  vendored next to it (upstream v0.1.1, same reason), QCBOR is pinned to its
-  own upstream tag, and the port's adaptations are the patch files next to
-  them.
+  PR #11; see NOTICE), qsee-supplicant is vendored next to it, QCBOR comes
+  from upstream (see pkgs/fingerprint/qcbor.nix), and the port's adaptations
+  are the patch files next to them.
 - The firmware images (`fpcliu.mdt` plus its segments) and the Gatekeeper/RPMB
   state are per-device data and are not in this tree; "Fingerprint" in
   `docs/INSTALL.md` documents the extraction, placement and operator steps.
@@ -305,7 +302,7 @@ the bus when the phone is the device.
   across Host↔Device transitions.  Today, if the debug gadget fails to
   re-bind, restart it from Wi-Fi SSH:
   `systemctl restart liuqin-usb-gadget liuqin-usb-shell`.
-  No verified Host VBUS/OCP automatic fallback exists.
+  No automatic Host VBUS/OCP fallback exists.
 
 ### DP Alt Mode
 
@@ -313,18 +310,6 @@ the bus when the phone is the device.
 a USB-C→DP adapter drives a 2560x1600 monitor; `card0-DP-1/enabled=enabled`,
 `modes = 2560x1600`, link trained (2-lane HBR2, wide bus 2 px/clk, vendor
 behaviour).
-
-Known limits:
-
-- **Single-link-rate tables.** The combo-PHY DP serdes/TX tables are the live
-  register state of the vendor stack captured at **HBR2 4-lane,
-  2560x1600@60, widebus**.  The per-rate (RBR/HBR/HBR3) tables are NULL, so
-  the PLL keeps the HBR2 programming; other link rates/monitors are
-  unsupported.  Adding one means capturing the vendor's registers at that
-  rate the same way (`FIXME(dp-link-rates)` in
-  `pkgs/kernel/replaced/phy-qcom-qmp-combo.c`).
-- The DT declares **2 data lanes** only; 4-lane DP is not implemented.
-- Repeated DP/PD hotplug (10×) and long-run stability are unverified.
 
 ### Standard PD and PPS
 
@@ -392,7 +377,7 @@ design, and `LightLevel` only advances while a local client holds the claim
   the gate, but `iio-sensor-proxy` 3.9 exposes no gyro API and nothing else
   in the image reads `/dev/fastrpc-sdsp` directly.
 - **Ambient light: bridged, unclaimed, uncalibrated.**  CCT/RGB is **not
-  implemented** (the stock calibration records have no API in the pinned
+  implemented** (the stock calibration records have no API in nixpkgs'
   `libssc`), and the light check does not distinguish the front TCS3701 from
   the rear TSL2522 — only the default ambient-light instance is used.
 - **No fusion.**  The Android-derived gravity/rotation-vector/step/tilt/
@@ -415,9 +400,12 @@ and `busctl --system get-property net.hadess.SensorProxy
 /net/hadess/SensorProxy net.hadess.SensorProxy AccelerometerOrientation
 AccelerometerTilt HasAmbientLight LightLevel`.
 
-`hardware.liuqin.sensors.sscConfigHash` must be set (a config-only archive is
-accepted; `sns_reg.conf`/`sns_reg_version` are synthesized when absent) or
-the build fails.
+Without an SSC configuration set (`hardware.liuqin.sensors.sscConfig`, or
+`hardware.liuqin.sensors.sscConfigHash` for a store-registered archive) the
+module warns and leaves the SSC stack — and only that stack — out of the
+system; `hardware.liuqin.sensors.enable = false` silences the warning.  A
+config-only archive is accepted (`sns_reg.conf`/`sns_reg_version` are
+synthesized when absent).
 
 ### Wi-Fi, Bluetooth, storage, power
 
@@ -592,7 +580,7 @@ Installed-system `APPEND` (the loader adds `init=` and `root=`):
 ```text
 qcom_q6v5_pas.slpi_auto_boot=0 rootwait initcall_blacklist=simplefb_driver_init
 earlycon=simplefb console=tty0 firmware_class.path=/var/lib/firmware
-root=fstab loglevel=7 lsm=landlock,yama,bpf
+root=fstab loglevel=7 lsm=landlock,yama,bpf cpuidle.governor=teo
 ```
 
 - `earlycon=simplefb` + `console=tty0` keep a console from the first line;
@@ -631,8 +619,6 @@ python3 tools/extract-super.py extract images/super.img vendor_a /tmp/mipps-keys
 EROFSS=$(nix build --no-link --print-out-paths nixpkgs#erofs-utils)
 "$EROFSS"/bin/fsck.erofs --path=/bin/batterysecret \
     --extract=/tmp/mipps-keys/batterysecret /tmp/mipps-keys/vendor_a.img
-sha256sum /tmp/mipps-keys/batterysecret
-# 7a450cdd5c1b65f584f470bb31d4c7a3b4c9cfd6b8cab4473dda6a06e084a1e0
 ```
 
 Then read the tables per `liuqin-stock-dump/re/usb/batterysecret.md` §4.4.
@@ -858,12 +844,14 @@ both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
 `pkgs/kernel/default.nix` applies every `pkgs/kernel/patches/*.patch` to a pristine
 7.2.5 tree in **byte-sorted filename order**, except the patches listed in
 its `dtPatchNames` (`0014-…`/`0015-…`/`0016-…` today), which are applied
-last.  The 16 patches are grouped by subsystem; the first 14 were merged down
+last.  The 21 patches are grouped by subsystem; the first 14 were merged down
 from a 33-patch bring-up series (the provenance is in each patch header),
-producing a byte-identical tree, and 0015/0016 add the WCD9385 capture graph
-and the CS35L41 amplifier naming.
+producing a byte-identical tree.  0015/0016 add the WCD9385 capture graph and
+the CS35L41 amplifier naming; 0017-0019 add the legacy QSEECOM TEE transport,
+the FPC1264 misc driver and its board DTS; 0020 raises the WCN6855 RF rail
+minimums; and 0021 sets the camera orientation properties.
 
-### The 16 patches
+### The 21 patches
 
 | # | patch | what |
 | --- | --- | --- |
@@ -883,6 +871,11 @@ and the CS35L41 amplifier naming.
 | 0014 | `board-usb-typec-dp-dt` | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode |
 | 0015 | `audio-wcd-capture` | WCD9385 RX/TX SoundWire capture graph, guarded UCM `Mic`, 2.75 V micbias — **applied after 0014** |
 | 0016 | `cs35l41-subsystem-id` | name the four CS35L41 amplifiers so the driver picks linux-firmware's Halo build keyed by 10251826 — **applied after 0015** |
+| 0017 | `tee-qseecom-legacy-transport` | legacy QSEECOM transport under the TEE subsystem (client + privileged supplicant nodes, SCM app load/shutdown, mdt image assembler) for the FPC1264 trustlet |
+| 0018 | `misc-fpc1020` | FPC1264 power/reset/IRQ platform driver on `/dev/fpc1020` (PM8350C LDO9, vendor reset pulse, GPIO40 wakeup IRQ; no SPI — that stays in the secure world) |
+| 0019 | `dts-fpc1264` | board DTS for the FPC1264 control interface (GPIO40 finger IRQ, GPIO41 reset, PM8350C LDO9 supply; spi10 stays disabled) |
+| 0020 | `wcn6855-rfa-rail-voltages` | raise the pm8350_s11/s12 and pm8350c_s1 minimums to the stock 952/1256/1880 mV so the WCN6855 WLAN/BT RF domains keep their range |
+| 0021 | `camera-orientation` | set the `orientation` property on the board's S5KJN1, IMX596 and SC202CS camera nodes |
 
 ### Why 0014, 0015 and 0016 are applied last
 

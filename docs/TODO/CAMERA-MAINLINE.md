@@ -6,7 +6,7 @@
 
 ## 我们做了什么（真机实测）
 
-**内核（补丁 0018-0025）**
+**内核（补丁 0012、0013、0021）**
 - CAMSS SM8475 资源表 + 三颗模组驱动：宽 S5KJN1（csiphy3）、前 IMX596（csiphy2）、
   景深 SC202CS（csiphy1），含板级媒体图、供电/时钟/pinctrl；GDSC 用 vendor wait 值。
 - sensor 模块晚加载 + 3 次重试（之间给 reset 脉冲），绕开早期 autoload 的 probe 抽卡。
@@ -21,8 +21,9 @@
   `enable_streams`/`disable_streams` 里按 DT `lens-focus` 引用带它一起；`runtime_resume`
   不再对芯片说话（open 时模块还没电，必然 -110）。2026-10-07 冷启动实测：重启后的
   **第一路流**就直接锁定（DAC 534/Focused；修复前 3/3 失败），dmesg 无 `-110`。
-- 唯一标注为 downstream bring-up 的是 0024（titan_top/IFE GDSC 常开 + GCC camera AXI 常开），
-  待最小集 bisect；其余补丁都是修 bug。
+- 唯一标注为 downstream bring-up（`Kept on only for bring-up`）的工作并进 0013：
+  titan_top/IFE GDSC 常开 + GCC camera AXI 常开，待最小集 bisect；0013 其余内容
+  （s5kjn1 vendor 模式表/vflip、gt9764 VCM 驱动）是常规功能改动。
 
 **用户态**
 - libcamera 0.7.2 `simple` pipeline + 软件 ISP：`cam` 出成品帧；
@@ -70,7 +71,7 @@
 | 闪光灯联动 | LED 可用（/sys/class/leds），strobe 与 sensor 的 V4L2 flash 联动未接 |
 | JPEG/录像编码 | 无 ISP/编码路径 |
 | UVC gadget | 暂缓 |
-| 0024 最小集 | titan_top/IFE GDSC + GCC AXI 哪些真的必要，待 bisect |
+| 0013 最小集 | titan_top/IFE GDSC + GCC AXI 哪些真的必要，待 bisect |
 | EGL debayer FOM 绝对值 | 2026-10-07 复测：加了读回同步后 EGL 的 `focusFoM` 能跟踪对焦（离焦 1248 → 合焦 4261，同一场景 3.4×），AF 可用、CPU pin 已删除；但它的绝对值比同帧离线度量（0.00186）高约 2.3 倍，读回是否严格对应当前帧仍未查清（AF 只用比值，不受影响） |
 | FOM 的早期帧 | 流的前 ~2 秒 FOM 会随 ISP 收敛整体漂移（暗场景下 AGC 数字增益爬升，gamma 编码下最多 4×；曝光本身不变）⇒ `skip_frames` 必须盖过它（现 240 帧 ≈4 s@60fps，见 tuning 注释）；流的**第一帧**还会读到 3–10× 的尖峰（疑似读到未渲染完的缓冲），目前靠 skip 绕开、未修 |
 | V 曲线标定 | `map`（屈光度↔DAC）与 `ranges/speeds` 目前是暂定值：capture script（`--script` 逐 DAC 设 `LensPosition` + 读 `FocusFoM`）已备好，待合适的场景/环境下再跑；或从 stock `actuatorDriver`/EEPROM 提取。此前唯一实测点是 30 cm @ DAC 536 |
@@ -154,5 +155,5 @@
 - CCI/EEPROM 单次读不超过 8 字节。
 - 两份 libcamera：`cam` 是 stock；AF 补丁版只进 pipewire/wireplumber，命令行用 `cam-af`。
 - 不要读 camss 的 debugfs `regs`：历史补丁的 CAMNOC/VFE 窗口读取会硬挂（补丁已删除，别再加载）。
-- vendor 派生数据（0018/0019/0020 内嵌寄存器/模式表）来自 MIUI blob；
+- vendor 派生数据（0012/0013 内嵌寄存器/模式表）来自 MIUI blob；
   再分发限制见 `NOTICE`。

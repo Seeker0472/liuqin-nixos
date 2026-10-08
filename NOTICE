@@ -15,25 +15,23 @@ This repository is MIT-licensed overall (see LICENSE), except:
   alsa-ucm-conf; the liuqin card files originate from the downstream
   project.
 * pkgs/fingerprint/fpc-oem-src/ is the vendored source of the OEM FPC1264
-  userspace component: originally yzddmr6/xiaomipad-6pro-mainline PR #11,
-  head 17c534bdc41cc7ce76d402990530809978069b73 of the yuzelingsha fork, and
-  byte-identical to that revision's sparse checkout of
-  device/fingerprint/oem/src/fingerprint/{oem,libfprint-tod,fprintd-oem}.  Its
+  userspace component: originally yzddmr6/xiaomipad-6pro-mainline PR #11
+  (yuzelingsha fork).  It is the sparse checkout of
+  device/fingerprint/oem/src/fingerprint/{oem,libfprint-tod,fprintd-oem}; its
   file headers carry the licenses: BSD-2-Clause for the QSEE/Keymaster
   clients, LGPL-2.1-or-later for the libfprint TOD driver, MIT for the Python
   entry points, GPL-2.0-or-later for the fprintd include
   (fprintd-oem/oem-update.inc); the remaining data/prose files (README.md,
   *.conf, the pam.d entry, the fprintd patch) carry no header and follow the
   component's terms.  It is vendored rather than fetched so the tree does not
-  depend on an unmerged PR branch; re-sync with
-  `git sparse-checkout set device/fingerprint/oem/src/fingerprint/{oem,libfprint-tod,fprintd-oem}`
-  at that revision.
-* pkgs/fingerprint/qsee-supplicant-src/ is qsee-supplicant v0.1.1 vendored
-  (BSD-2-Clause per every source header; the repository is a single-author
-  project created 2026-08-08 with no larger upstream, so a pinned rev could
-  disappear).  It carries src/, include/, LICENSES/ and README.md
-  byte-identical to the v0.1.1 tag; this device's UFS RPMB provider and its
-  liuqin main() are the patch next to it.
+  depend on an unmerged PR branch.
+* pkgs/fingerprint/qsee-supplicant-src/ is the vendored qsee-supplicant
+  source: BSD-2-Clause per every source header except
+  include/qsee_protocol.h, which is BSD-3-Clause-Clear (its text is the one
+  under LICENSES/).  The repository is a single-author project created
+  2026-08-08 with no larger upstream, so a pinned rev could disappear.  It
+  carries src/, include/, LICENSES/, debian/copyright and README.md; this
+  device's UFS RPMB provider and its liuqin main() are the patch next to it.
 * pkgs/hexagonrpc/patches/*.patch and pkgs/iio-sensor-proxy/patches/*.patch
   are patches to hexagonrpc (GPL-2.0) and iio-sensor-proxy (GPL-3.0 / LGPL);
   they retain their downstream headers.
@@ -44,8 +42,9 @@ This repository is MIT-licensed overall (see LICENSE), except:
   itself carries no vendor binary. That includes the downstream v0.3.1
   release image whose ramdisk carries the bulk firmware tree - it is an
   operator input too, so no build reaches for a third-party release asset.
-  The data/*.tar.zst working copies, data/release-v0.3.1/boot.img and the
-  two stock DT archives are listed in .gitignore.
+  The data/liuqin-*.tar.zst working copies, data/release-v0.3.1/boot.img
+  (matched by the `*.img` rule) and the two pkgs/bootimg/stock-*.tar.zst
+  archives are listed in .gitignore.
   History note: stock-dtbo-entries.tar.zst and stock-base-dtbs.tar.zst were
   tracked in earlier commits; those commits still contain them. Publishing
   from that history needs a rewrite

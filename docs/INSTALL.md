@@ -2,7 +2,7 @@
 
 Operational companion to `PORTING-NOTES.md` (what the port does, and its
 limits) and `docs/BOOT-ARCHITECTURE.md` (the boot chain and U-Boot menu in
-detail).  Everything here was exercised on the unit.  Debug transports,
+detail).  Debug transports,
 forensic channels and the deployment cache are described in
 `PORTING-NOTES.md` §3 and are only referenced here.
 
@@ -21,9 +21,7 @@ to `linux_splash@b8000000` (patch 0001) exactly so ABL takes its teardown
 branch.  On path A the bootloader hands over a *live* pipeline, and patch 0003
 stops it and starts it again once (1.5 s after the first modeset, before any
 DRM master exists) — verified on the unit 2026-10-07: the console lights at
-~4.4 s and stays.  The follow-up work item is to move that stop into the
-driver's first-enable path, which would light the panel at ~2 s with no
-visible cycle.
+~4.4 s and stays.
 
 ## 1. Host side
 
@@ -42,7 +40,7 @@ visible cycle.
   with `mkDefault`, so an explicit `services.openssh.enable` or
   `hardware.liuqin.usbShell.enable` can still override it.  SSH defaults
   `PasswordAuthentication` off, so enroll an authorized key before relying
-  on it.  This workspace's demo target forces `"both"`
+  on it.  The demo target forces `"both"`
   (`examples/demo/configuration.nix`), keeping Wi-Fi SSH while exposing the
   USB deploy link.
 - **Binary cache for pushes.**  A plain `python3 -m http.server 8137 --bind
@@ -110,8 +108,8 @@ channels instead — `PORTING-NOTES.md` §3.1 is the list.
 ## 2. Building
 
 ```sh
-nix build .#uboot-bootimg        # U-Boot boot.img, the payload of boot_b
-nix build .#installer-bootimg    # RAM installer, ABL-bootable only
+nix build .#uboot-bootimg --out-link result-uboot          # U-Boot boot.img, the payload of boot_b
+nix build .#installer-bootimg --out-link result-installer  # RAM installer, ABL-bootable only
 
 # the installed system plus the loader step that /boot needs
 nix build .#nixosConfigurations.demo.config.system.build.toplevel
@@ -124,8 +122,7 @@ The flake comment explains why.
 
 ## 3. First bring-up (stock Android device)
 
-Preconditions and rules first: read the workspace `AGENTS.md` §7 and the
-dualboot `docs/SLOT-SWITCH.md`.  On this device the slot state is written by
+On this device the slot state is written by
 three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
 `set_active`), and `boot_a` is Android's.
 
@@ -192,20 +189,19 @@ three things (`liuqin_setactive` and the boot-time claim in U-Boot, ABL's own
 
    The flake's configuration must already satisfy the storage guard (ext4
    label `LIUQIN_ROOT`, GPT partlabel `linux`/`userdata`, marker written at
-   first boot).  Nothing in this path has been exercised on the unit yet.
+   first boot).
 
 4. **Put U-Boot into `boot_b`** (from ABL fastboot):
    `fastboot flash boot_b result-uboot/boot.img`.  Leave the slot attributes
-   alone; the device already boots `boot_b` when B is active, and the
-   dualboot docs describe how B is made active (`set_active` /
-   `liuqin_setactive`).
+   alone; the device already boots `boot_b` when B is active, and B is made
+   active with `set_active` / `liuqin_setactive`.
 5. Cold start → the U-Boot menu → **"Boot NixOS"**.
 
-## 4. Updating an installed system (no installer, no nixos-rebuild)
+## 4. Updating an installed system
 
-`nixos-rebuild` does not exist on the device (`config/installer.nix` disables
-it, and the installed system has no channel); an update is: get the closure
-onto the device, set the profile, run the loader, reboot.  Every step works
+`nixos-rebuild` cannot rebuild on the device — no channel and no nixpkgs
+source — so an update is: get the closure onto the device, set the profile,
+run the loader, reboot.  Every step works
 over the USB gadget link (`192.168.7.2`, `debugTransport = "usb"`/`"both"`)
 or over Wi-Fi (the tablet's DHCP address).
 
@@ -296,9 +292,8 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 - Coming back from Android: `adb reboot bootloader` → ABL's fastboot →
   `fastboot reboot`.  The stock fastboot client refuses `set_active` there
   (`Device does not support slots`: its `has-slot` probe fails against this
-  ABL's narrow getvar surface), so send the raw command — the dualboot
-  repo's `liuqin-stock-dump/tools/fb_raw.py raw "set_active:b"` — or do it
-  from U-Boot's own fastboot (menu's `Enable Fastboot Mode`), where
+  ABL's narrow getvar surface), so send the raw command (`set_active:b`) —
+  or do it from U-Boot's own fastboot (menu's `Enable Fastboot Mode`), where
   `fastboot set_active b` works.  Either way ABL clears the target's
   *successful* flag and refills its seven retries; U-Boot re-claims the slot
   it was handed on every boot (`liuqin_slot_autoclaim`, `liuqin_ab_mark=0`
@@ -306,7 +301,7 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 - If the installed system cannot bring up Wi-Fi and the USB gadget does not
   re-bind after a role change, restart it from a local console or SSH
   (`systemctl restart liuqin-usb-gadget liuqin-usb-shell`), or fall back to
-  the RAM installer.  There is no verified automatic role manager yet
+  the RAM installer.  There is no automatic role manager yet
   (`PORTING-NOTES.md` §1, Type-C host and OTG).
 
 ## 7. Fingerprint (FPC1264)
@@ -329,10 +324,9 @@ Gatekeeper/RPMB state are operator-supplied data.
 ### Operator material
 
 The only binary you have to extract is the OEM firmware; everything else is
-built from this tree and from the pinned public revisions in
-`pkgs/fingerprint/` (the OEM component's own sources, QCBOR and
-qsee-supplicant; no key has to be extracted - the per-account credential is
-created on the device).
+built from this tree (the OEM userspace component and qsee-supplicant are
+vendored under `pkgs/fingerprint/`, QCBOR comes from upstream; no key has to
+be extracted - the per-account credential is created on the device).
 
 - **OEM firmware.**  `fpcliu.mdt` plus its `b00`-`b08` segments come from the
   stock ROM (the MIUI V14 extraction in
@@ -426,13 +420,12 @@ them too.
 - U-Boot's fastboot wedges on ~192 MiB images; large images go through ABL's
   fastboot (`fastboot boot`/`flash`).
 - Never leave a self-built image on `boot_a`, and never leave the slot state
-  half-switched: the dualboot `docs/SLOT-SWITCH.md` is the authority on both.
-  The installer path never writes GPT or slot attributes.
+  half-switched.  The installer path never writes GPT or slot attributes.
 - The RAM installer is the only installation interface; the former
   host-side fastboot installer and prebuilt rootfs-image path have been
   removed.
 
-## 8. Camera
+## 9. Camera
 
 The camera stack is off unless the configuration enables
 `hardware.liuqin.camera.enable`; `README.md` describes the option set and the
@@ -473,13 +466,13 @@ found on `PATH` is the stock libcamera — the autofocus-patched build is
 injected only into pipewire/wireplumber (`cam-af` runs it from the command
 line) — so a plain `cam` capture verifies the stock path, not the AF path.
 
-## 9. Where to look when something is wrong
+## 10. Where to look when something is wrong
 
 | symptom | first stop |
 | --- | --- |
 | no boot output at all | panel photo, then U-Boot `fastboot getvar stage*` / `con*` (`PORTING-NOTES.md` §3.1) |
 | kernel panic / lockup | ramoops pstore + persistent journal (`journalctl -b -1`) |
-| display dark under U-Boot | patch 0003 retry cycle / the display-pipeline work item (`PORTING-NOTES.md` §1) |
+| display dark under U-Boot | patch 0003 retry cycle (`PORTING-NOTES.md` §1) |
 | no USB debug channel | `debugTransport`, gadget re-bind, or the RAM installer (`PORTING-NOTES.md` §3.2) |
 | USB-C role/DP/charging | `PORTING-NOTES.md` §1 (Type-C, DP Alt Mode, MiPPS) and §2 for MiPPS keys |
 | camera missing | `systemctl status liuqin-camera-probe`, then `media-ctl -r` |

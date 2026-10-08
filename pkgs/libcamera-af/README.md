@@ -19,15 +19,18 @@ standalone package `liuqinLibcameraAf` (plus per-sensor soft-IPA tuning files):
   `V4L2_CID_FOCUS_ABSOLUTE` range as the core `LensPosition`/`AfMode`/
   `AfTrigger`/`AfState` controls; the IPA forwards requested moves
   (`activeState.af.lensMove`) and the pipeline handler applies them to the
-  `CameraLens` it owns.  This patch also adds the shared `activeState` fields
-  the AGC, AWB and AF algorithms coordinate on (`af.hold`, `agc.converged`,
-  `awb.converged`, the AGC digital gain).
-- `0003-ipa-simple-agc`: AGC convergence reporting, `AeEnable`, freezing
-  during an AF scan (`af.hold`), and the ISP digital gain stage (on the way
-  up: exposure, analogue gain, digital gain; down: the reverse), reported as
-  `DigitalGain` metadata.
+  `CameraLens` it owns.  This patch also adds the shared state the later
+  algorithms use: the AGC digital gain (`agc.dgain`, with a session-config
+  cap `dgainMax`), the AE on/off switch (`agc.aeEnable`) and the pending
+  lens move (`af.lensMove`).
+- `0003-ipa-simple-agc`: the `AeEnable` control (`AeEnable=false` freezes the
+  exposure at its current values) and the ISP digital-gain stage (on the way
+  up: exposure, analogue gain, digital gain; down: the reverse).  The digital
+  gain rides on top of the AWB channel gains and is reported as `DigitalGain`
+  metadata.
 - `0004-ipa-simple-awb`: grey-world gains bounded by a tuning parameter
-  (`max-gain`), convergence reporting, and freezing during an AF scan.
+  (`max-gain`, clamped to [1, 16], default 4.0), so a colour-dominant scene
+  keeps its colour instead of being neutralised.
 - `0005-ipa-simple-af`: contrast-detection autofocus as a simple-IPA
   algorithm (`src/ipa/simple/algorithms/af.{h,cpp}`), ported from the CDAF
   half of the RPi IPA's `Af` algorithm (BSD-2-Clause, Raspberry Pi Ltd):
