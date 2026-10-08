@@ -336,5 +336,56 @@
       # building the package here is what makes `nix flake check` execute them.
       checks.x86_64-linux.liuqin-storage-guard =
         pkgsHost.callPackage ./pkgs/storage-guard.nix { };
+
+      # `nix run .#unit-verify`: systemd's own dependency analysis over the demo
+      # system's generated units. It catches an ordering cycle - e.g. a mount
+      # unit, which implicitly gets Before=local-fs.target, ordered after a
+      # service that is itself After=local-fs.target - which systemd resolves by
+      # *deleting* a start job. That is silent in the boot log and reorders the
+      # boot, so it is worth a command. An app rather than a check: the analyzer
+      # creates /run/systemd, which a Nix build sandbox cannot, so a check would
+      # pass vacuously. Verification happens inside a root of its own, so the
+      # host's own unit files never enter the analysis.
+      apps.x86_64-linux.unit-verify =
+        let
+          units = lib.filterAttrs (_: u: u.enable) self.nixosConfigurations.demo.config.systemd.units;
+          # Each unit's store output is a directory holding the unit file
+          # itself; the analyzer wants the files.
+          unitFiles = lib.mapAttrsToList (name: u: "${u.unit}/${name}") units;
+          unitNames = builtins.attrNames units;
+          verifier = pkgsHost.writeShellApplication {
+            name = "liuqin-unit-verify";
+            runtimeInputs = [ pkgsHost.systemd pkgsHost.coreutils pkgsHost.gnugrep ];
+            text = ''
+              root=$(mktemp -d)
+              trap 'rm -rf "$root"' EXIT
+              mkdir -p "$root/etc/systemd/system" "$root/run" "$root/nix/store"
+              # The framework units (sysinit.target, local-fs.target, ...) come
+              # from the systemd package, which the analyzer looks up under the
+              # same absolute store path inside that root.
+              ln -s ${pkgsHost.systemd} "$root/nix/store/$(basename ${pkgsHost.systemd})"
+              cp -L ${lib.escapeShellArgs unitFiles} "$root/etc/systemd/system/"
+
+              # `--` because the root mount is named "-.mount", which the
+              # option parser would otherwise take for a flag. The analyzer's
+              # exit status also reflects unrelated findings (unit files it
+              # cannot reach inside the root), so only a cycle is fatal here.
+              if ! systemd-analyze --root="$root" verify -- ${lib.escapeShellArgs unitNames} >"$root/verify.log" 2>&1; then
+                :
+              fi
+              if grep -q "ordering cycle" "$root/verify.log"; then
+                echo "ordering cycle in the demo system's units:" >&2
+                grep -B2 -A6 "ordering cycle" "$root/verify.log" >&2
+                exit 1
+              fi
+              echo "no ordering cycle in ${toString (builtins.length unitFiles)} units"
+            '';
+          };
+        in
+        {
+          type = "app";
+          program = "${verifier}/bin/liuqin-unit-verify";
+          meta.description = "systemd ordering analysis over the demo system's generated units";
+        };
     };
 }

@@ -169,6 +169,7 @@ nix build .#installer-bootimg
 nix build .#uboot            # the bootloader (u-boot-nodtb.bin + DTB)
 nix build .#uboot-bootimg    # its ABL boot.img (RAM boot it first)
 nix flake check
+nix run .#unit-verify        # systemd's ordering analysis over the demo units
 ```
 
 `installer-bootimg` is the installer artifact; its display profile keeps
