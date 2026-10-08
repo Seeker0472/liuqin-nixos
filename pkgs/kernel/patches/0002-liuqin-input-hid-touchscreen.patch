@@ -137,7 +137,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,1730 @@
+@@ -0,0 +1,1838 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -264,6 +264,16 @@ Merged from: bring-up patches 0002, 0003
 +#define NANOSIC_FOLIO_POLL_MS		5000
 +#define NANOSIC_FOLIO_DEBOUNCE_MS	50
 +#define NANOSIC_FOLIO_IDLE_MS		15000
++
++/*
++ * Output reports (the keyboard's five LEDs). The output direction mirrors the
++ * input framing: the report goes out verbatim behind the bridge's own slave
++ * address as the register byte, exactly like the vendor commands above. The
++ * vendor kernel driver's SET_REPORT path builds no frame bytes of its own -
++ * its disassembly queues the report itself and lets a timer flush it - so the
++ * report is the payload.
++ */
++#define NANOSIC_OUTPUT_MAX		8
 +
 +static const u8 nanosic_hall_command[NANOSIC_HALL_COMMAND_LEN] = {
 +	0x4c, 0x32, 0x00, 0x4f, 0x20, 0x80, 0x80, 0xe1, 0x01,
@@ -630,6 +640,7 @@ Merged from: bring-up patches 0002, 0003
 +	NANOSIC_I2C_VERSION_WRITE,
 +	NANOSIC_I2C_VERSION_READ,
 +	NANOSIC_I2C_HALL_WRITE,
++	NANOSIC_I2C_REPORT_WRITE,
 +};
 +
 +struct nanosic {
@@ -657,6 +668,10 @@ Merged from: bring-up patches 0002, 0003
 +	unsigned int folio_present;
 +	unsigned int tablet_mode;
 +	unsigned long last_irq;
++
++	/* Last keyboard output report, resent when a removed folio returns. */
++	u8 last_output[NANOSIC_OUTPUT_MAX];
++	size_t last_output_len;
 +	u64 folio_irq_count;
 +
 +	/* Serialises the wake line, the awake flag and the I2C buffers. */
@@ -753,6 +768,8 @@ Merged from: bring-up patches 0002, 0003
 +		return "version-read";
 +	case NANOSIC_I2C_HALL_WRITE:
 +		return "hall-write";
++	case NANOSIC_I2C_REPORT_WRITE:
++		return "report-write";
 +	default:
 +		return "none";
 +	}
@@ -941,19 +958,108 @@ Merged from: bring-up patches 0002, 0003
 +	nanosic_hall_push(nano, 0);
 +}
 +
++/*
++ * Send one output report. The lock is held by the caller: the request hook
++ * takes it itself, the folio work already has it.
++ */
++static int nanosic_send_output_report_locked(struct nanosic *nano,
++					     const u8 *data, size_t len)
++{
++	u8 frame[NANOSIC_OUTPUT_MAX + 1];
++	struct i2c_msg msg = {
++		.addr = nano->client->addr,
++		.len = len + 1,
++		.buf = frame,
++	};
++	bool was_awake;
++
++	lockdep_assert_held(&nano->lock);
++
++	if (len == 0 || len > NANOSIC_OUTPUT_MAX)
++		return -EINVAL;
++
++	/* The bridge takes its own slave address as the register byte. */
++	frame[0] = nano->client->addr;
++	memcpy(&frame[1], data, len);
++
++	was_awake = nano->awake;
++	nanosic_wake(nano);
++	if (!was_awake)
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++
++	return nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_REPORT_WRITE);
++}
++
++/*
++ * The keyboard's LEDs. hid-input sends the LED state through
++ * ll_driver->request(HID_REQ_SET_REPORT) when the transport has one; without
++ * it the core falls back to hid_hw_output_report() and then to
++ * raw_request() - and this transport had none of the three, which is why the
++ * CapsLock light never lit and why the classdevs toggling was all that ever
++ * happened. The report is remembered so the state can be restored when a
++ * removed folio comes back (its LEDs have been dark since it lost power).
++ */
++static void nanosic_hid_request(struct hid_device *hid, struct hid_report *report,
++				int reqtype)
++{
++	struct nanosic *nano = dev_get_drvdata(hid->dev.parent);
++	u8 buf[NANOSIC_OUTPUT_MAX];
++	unsigned int len;
++	int ret = 0;
++
++	if (reqtype != HID_REQ_SET_REPORT || report->type != HID_OUTPUT_REPORT)
++		return;
++
++	/* Only the keyboard carries LEDs; nothing else may be forwarded. */
++	if (hid != nano->hid[NANOSIC_HID_KEYBOARD])
++		return;
++
++	len = hid_report_len(report);
++	if (len == 0 || len > sizeof(buf))
++		return;
++
++	memset(buf, 0, len);
++	hid_output_report(report, buf);
++
++	scoped_guard(mutex, &nano->lock) {
++		if (nano->last_output_len == len &&
++		    !memcmp(nano->last_output, buf, len))
++			return;
++
++		memcpy(nano->last_output, buf, len);
++		nano->last_output_len = len;
++
++		ret = nanosic_send_output_report_locked(nano, buf, len);
++	}
++
++	if (ret)
++		dev_dbg(&nano->client->dev,
++			"output report failed: %d\n", ret);
++}
++
 +static void nanosic_tablet_work(struct work_struct *work)
 +{
 +	struct nanosic *nano = container_of(to_delayed_work(work),
 +					    struct nanosic, tablet_work);
++	bool was_present;
 +
 +	guard(mutex)(&nano->lock);
 +
 +	if (nano->suspended)
 +		return;
 +
++	was_present = nano->folio_present;
 +	nano->folio_folded = gpiod_get_value_cansleep(nano->tablet_mode_gpio);
 +	/* Folded is attached by construction - a magnet needs a folio. */
 +	nano->folio_present = nano->folio_folded || nanosic_folio_present(nano);
++
++	/*
++	 * A folio that comes back has had its LEDs dark since it lost power;
++	 * hand it the state it missed.
++	 */
++	if (!was_present && nano->folio_present && nano->last_output_len)
++		nanosic_send_output_report_locked(nano, nano->last_output,
++						  nano->last_output_len);
 +
 +	nanosic_folio_report(nano);
 +
@@ -1506,8 +1612,9 @@ Merged from: bring-up patches 0002, 0003
 +}
 +
 +/*
-+ * No output_report and no writable raw_request: the keyboard descriptor
-+ * declares the five boot-protocol LEDs, but no command for setting them is
++ * The keyboard descriptor declares the five boot-protocol LEDs; their state
++ * leaves through ll_driver->request above. No output_report and no writable
++ * raw_request: no second path is needed, and an earlier note here claimed
 + * known on the downstream side of the bridge, and the vendor driver never sent
 + * one either. Caps Lock therefore has no indicator; the alternative would be
 + * guessing at bytes to write onto the bus.
@@ -1519,6 +1626,7 @@ Merged from: bring-up patches 0002, 0003
 +	.close = nanosic_hid_close,
 +	.parse = nanosic_hid_parse,
 +	.raw_request = nanosic_hid_raw_request,
++	.request = nanosic_hid_request,
 +};
 +
 +static void nanosic_destroy_hid(void *data)
@@ -6161,7 +6269,7 @@ Merged from: bring-up patches 0002, 0003
 +};
 --- /dev/null
 +++ b/tools/testing/selftests/hid/nanosic-static.py
-@@ -0,0 +1,537 @@
+@@ -0,0 +1,563 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: GPL-2.0
 +"""Host-only regression tests for the WN8030 transport and power model."""
@@ -6592,6 +6700,32 @@ Merged from: bring-up patches 0002, 0003
 +        self.assertIn("devm_request_irq(dev, nano->tablet_mode_irq,", probe_fn)
 +        self.assertIn("NANOSIC_HALL_ATTACH_DELAY_MS", probe_fn)
 +        self.assertIn("nano->last_irq = jiffies - ", probe_fn)
++
++    def test_keyboard_leds_leave_as_output_reports(self):
++        # hid-input sends the LED state through ll_driver->request
++        # (HID_REQ_SET_REPORT); with no request, no output_report and a
++        # read-only raw_request the CapsLock light never lit.  The vendor
++        # kernel driver's own SET_REPORT path builds no frame bytes - it
++        # queues the report itself - so the output direction mirrors the
++        # input framing: the report behind the bridge's slave address.
++        req = function_body("nanosic_hid_request")
++        self.assertIn("static void nanosic_hid_request", DRIVER)
++        self.assertIn("HID_REQ_SET_REPORT", req)
++        self.assertIn("HID_OUTPUT_REPORT", req)
++        self.assertIn("hid_output_report(report, buf)", req)
++        self.assertIn("nano->hid[NANOSIC_HID_KEYBOARD]", req)
++        send = function_body("nanosic_send_output_report_locked")
++        self.assertIn("frame[0] = nano->client->addr", send)
++        self.assertIn("memcpy(&frame[1], data, len)", send)
++        self.assertIn("NANOSIC_I2C_REPORT_WRITE", send)
++        ll = DRIVER.split("nanosic_hid_ll_driver = {", 1)[1].split("};", 1)[0]
++        self.assertIn(".request = nanosic_hid_request", ll)
++        # A folio that comes back gets the state it missed while unpowered.
++        work = function_body("nanosic_tablet_work")
++        self.assertIn("was_present = nano->folio_present;", work)
++        self.assertIn("!was_present && nano->folio_present", work)
++        self.assertIn("nanosic_send_output_report_locked(nano, nano->last_output",
++                      work)
 +
 +    def test_folio_input_device_and_attributes(self):
 +        create = function_body("nanosic_folio_input_create")
