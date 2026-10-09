@@ -12,8 +12,8 @@
 #     stuck, PanelOrientationManaged still true).  A dead claim means no
 #     rotation at all while folded or with the folio removed.
 #
-# This loop watches the bridge driver's derived switch (tablet_mode, 1 = no
-# keyboard attached: folio folded or absent) and repairs both:
+# This loop watches the bridge driver's derived switch (tablet_mode: 1 = the
+# keyboard is folded onto the back) at 0.25 s and repairs both:
 #
 #   * entering the laptop posture: re-apply the rotation monitors.xml
 #     configures, as a temporary config so neither mutter's store nor the file
@@ -22,6 +22,10 @@
 #     accelerometer here and follow AccelerometerOrientation directly.
 #     Restarting the proxy cannot help - mutter does not resume consuming
 #     orientations once its own claim has failed.
+#
+# A posture change is the user's own action, so it is repaired at once; the
+# repairs no user action triggers (mutter's blank/lock reset, a fallback that
+# died) repeat every ~3 s.
 #
 # The transform table is the pair measured on the unit: right-up is the
 # landscape pose (270 deg), normal the native portrait.
@@ -113,7 +117,7 @@ writeShellApplication {
                 "[(0, 0, $3, uint32 $want, true, [('DSI-1', '$mode', {})])]" \
                 "{}" >/dev/null 2>&1 || :
 
-            sleep 1
+            sleep 0.5
             attempt=$((attempt + 1))
         done
     }
@@ -195,20 +199,35 @@ writeShellApplication {
     # Let the session's own proxy refresh settle before judging its claim.
     sleep 10
 
-    # Idempotent: every pass re-checks the state instead of only reacting to
-    # a posture change, because mutter re-applies its stored config when the
-    # screen blanks or locks - which drops the laptop transform back to the
-    # native portrait (measured 2026-10-09, transform 3 -> 0 with no input
-    # event) - and because the fallback can die with the posture unchanged.
+    # A posture change is the user's own action, so the transform has to
+    # follow within a fraction of a second: the 3 s pass this loop started
+    # with left the panel in the gravity pose for seconds after the keyboard
+    # was deployed (measured 2026-10-09).  The repairs that no user action
+    # triggers keep their own cadence - mutter re-applies its stored config
+    # when the screen blanks or locks, which drops the laptop transform back
+    # to the native portrait (measured 2026-10-09, transform 3 -> 0 with no
+    # input event), and the fallback can die with the posture unchanged - so
+    # they run once every WATCHDOG_PASSES passes.
+    watchdog_passes=12
+    last_posture=
+    passes=0
     while :; do
         now=$(posture)
-        if [ "$now" = 0 ]; then
-            stop_fallback
-            apply_configured_rotation || :
-        elif [ "$now" = 1 ]; then
-            claim_is_alive || fallback || :
+        if [ "$now" != "$last_posture" ]; then
+            passes=0
+            last_posture=$now
         fi
-        sleep 3
+        if [ "$passes" -le 0 ]; then
+            if [ "$now" = 0 ]; then
+                stop_fallback
+                apply_configured_rotation || :
+            elif [ "$now" = 1 ]; then
+                claim_is_alive || fallback || :
+            fi
+            passes=$watchdog_passes
+        fi
+        passes=$((passes - 1))
+        sleep 0.25
     done
   '';
 }

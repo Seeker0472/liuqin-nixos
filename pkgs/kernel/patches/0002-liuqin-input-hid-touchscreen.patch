@@ -137,7 +137,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,1867 @@
+@@ -0,0 +1,2077 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -252,18 +252,51 @@ Merged from: bring-up patches 0002, 0003
 +
 +/*
 + * Folio presence. The hall line reads the same with the keyboard deployed and
-+ * with the folio removed, and so does every line level and every I2C probe -
-+ * the bridge is on the tablet side and answers either way (measured
-+ * 2026-10-09).  What does separate the two states is the bridge's own data
-+ * interrupt: with the keypad attached it fires roughly once a second even when
-+ * idle, and it stops within seconds of the keypad coming off (77 s of silence
-+ * observed).  Presence is therefore a liveness window over that interrupt,
-+ * checked on the hall IRQ and on a timer because neither attach nor detach has
-+ * an interrupt of its own.
++ * with the folio removed, and so is every reply from the bridge - it is on the
++ * tablet side and answers either way (measured 2026-10-09).  The bridge's data
++ * interrupt separates activity from silence: with the keypad attached it fires
++ * roughly once a second while the keypad is awake, and it stops within seconds
++ * of the keypad coming off (77 s of silence observed).  Silence is not
++ * evidence of a detached folio, though: the keypad also goes quiet on its own
++ * when the user is idle (observed on the unit 2026-10-09, a switch flip to
++ * tablet mode after a quiet stretch with the folio still attached), which is
++ * indistinguishable from a detach.  Presence therefore comes from a request
++ * the keypad must answer (see nanosic_keypad_status_command); the window below
++ * is only the fast path - a frame of any kind proves presence - and a quiet
++ * window is resolved by asking, never by guessing.  It is re-checked on the
++ * hall IRQ, on a timer and on every arriving frame, because none of attach,
++ * detach and resume has an interrupt of its own.
 + */
 +#define NANOSIC_FOLIO_POLL_MS		5000
 +#define NANOSIC_FOLIO_DEBOUNCE_MS	50
 +#define NANOSIC_FOLIO_IDLE_MS		15000
++
++/*
++ * Keypad presence probe. The vendor module sends this request from its own
++ * table (nanosic_driver.ko, ".rodata+0xef14") as "request keypad hall status",
++ * and the keypad answers with a status report whose byte 9 is the vendor's
++ * gHallStatus word - bit 0 "Connected", bit 1 "Power", bit 6 the pogo link,
++ * which its version_176x_show prints as "Connected=%d Power=%d POGOPIN=%s".
++ * A reply is evidence that the keypad sits on the connector, where an idle
++ * heartbeat is not; the trailing 0xda is the vendor's own trailer for this
++ * request, in the same place the LED command carries its state-dependent
++ * companion.  A probe costs one write, so the verdict needs two consecutive
++ * misses and a missed probe is retried on the next pass.
++ */
++#define NANOSIC_KEYPAD_STATUS_LEN	NANOSIC_VERSION_COMMAND_LEN
++#define NANOSIC_KEYPAD_STATUS_OFFSET	9
++#define NANOSIC_KEYPAD_STATUS_MARK_1	0x38
++#define NANOSIC_KEYPAD_STATUS_MARK_2	0x80
++#define NANOSIC_KEYPAD_STATUS_MARK_3	0xa2
++#define NANOSIC_KEYPAD_STATUS_RETRIES	2
++#define NANOSIC_KEYPAD_PROBE_WAIT_MS	1000
++#define NANOSIC_KEYPAD_PROBE_RETRY_MS	2000
++#define NANOSIC_KEYPAD_PROBE_MS		20000
++#define NANOSIC_KEYPAD_PROBE_MISSES	2
++
++static const u8 nanosic_keypad_status_command[NANOSIC_KEYPAD_STATUS_LEN] = {
++	0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0xa1, 0x01, 0x01, 0xda,
++};
 +
 +/*
 + * Output reports (the keyboard's five LEDs). The output direction mirrors the
@@ -664,6 +697,7 @@ Merged from: bring-up patches 0002, 0003
 +	NANOSIC_I2C_VERSION_READ,
 +	NANOSIC_I2C_HALL_WRITE,
 +	NANOSIC_I2C_LED_WRITE,
++	NANOSIC_I2C_STATUS_WRITE,
 +};
 +
 +struct nanosic {
@@ -680,8 +714,9 @@ Merged from: bring-up patches 0002, 0003
 +	struct delayed_work hall_work;
 +
 +	/*
-+	 * The folio-folded hall, owned here, and the switch derived from it
-+	 * plus the bridge's presence.
++	 * The folio-folded hall, owned here, and the switch derived from it -
++	 * plus the bridge's liveness where the keypad's idle heartbeat makes
++	 * that liveness trustworthy.
 +	 */
 +	struct gpio_desc *tablet_mode_gpio;
 +	int tablet_mode_irq;
@@ -691,6 +726,17 @@ Merged from: bring-up patches 0002, 0003
 +	unsigned int folio_present;
 +	unsigned int tablet_mode;
 +	unsigned long last_irq;
++
++	/* Keypad presence probe (see nanosic_keypad_status_command). */
++	unsigned int keypad_status;
++	unsigned int keypad_present;
++	unsigned int keypad_probe_misses;
++	unsigned int keypad_probe_status;
++	bool keypad_probe_pending;
++	unsigned long keypad_probe_at;
++	u64 keypad_status_count;
++	u64 keypad_probe_count;
++	u64 keypad_probe_hits;
 +
 +	/* Last keyboard output report, resent when a removed folio returns. */
 +	u8 last_output[NANOSIC_OUTPUT_MAX];
@@ -793,6 +839,8 @@ Merged from: bring-up patches 0002, 0003
 +		return "hall-write";
 +	case NANOSIC_I2C_LED_WRITE:
 +		return "led-write";
++	case NANOSIC_I2C_STATUS_WRITE:
++		return "status-write";
 +	default:
 +		return "none";
 +	}
@@ -864,9 +912,8 @@ Merged from: bring-up patches 0002, 0003
 + * Hall handling. The lid hall belongs to gpio-keys, and its state is read from
 + * the bitmap the input core keeps for that device - the sw bitmap, which is
 + * where EV_SW state lives; the key bitmap only ever holds EV_KEY. The
-+ * folio-folded hall is owned by this driver and folded into the switch it
-+ * reports (tablet_mode): the line alone cannot separate "keyboard deployed"
-+ * from "folio removed". The level byte the bridge receives carries both.
++ * folio-folded hall is owned by this driver; the level byte the bridge
++ * receives carries the switch that line feeds.
 + */
 +static unsigned int nanosic_hall_level(struct nanosic *nano)
 +{
@@ -877,14 +924,16 @@ Merged from: bring-up patches 0002, 0003
 +}
 +
 +/*
-+ * In tablet mode the switch's own semantic is "no keyboard attached", and the
-+ * folio's keys and touchpad are physically out of reach behind the tablet.
-+ * The vendor stack gates the folio on that state; this bridge does not, so
-+ * the input reports are dropped here.
++ * The folio's keys and touchpad are physically out of reach behind the tablet
++ * once the keyboard is folded onto its back, and the vendor stack gates the
++ * folio on that state; this bridge does not, so the reports are dropped here.
++ * The gate is the hall line alone: presence is a liveness guess that a
++ * sleeping keypad can expire (see the folio-presence constants), and a stale
++ * guess must never swallow a keystroke.
 + */
 +static bool nanosic_input_muted(struct nanosic *nano)
 +{
-+	return nano->tablet_mode;
++	return nano->folio_folded;
 +}
 +
 +static int nanosic_write_hall_command(struct nanosic *nano)
@@ -910,6 +959,54 @@ Merged from: bring-up patches 0002, 0003
 +	ret = nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_HALL_WRITE);
 +	if (!ret)
 +		nano->hall_send_count++;
++
++	return ret;
++}
++
++/*
++ * Ask the keypad to report its status. The vendor does the same from its
++ * sysfs store path ("request keypad hall status"): one 66-byte frame behind
++ * the register byte, answered on the data interrupt with the status report
++ * that nanosic_parse_frame latches.
++ */
++static int nanosic_write_keypad_status_command(struct nanosic *nano)
++{
++	struct i2c_client *client = nano->client;
++	u8 command[NANOSIC_KEYPAD_STATUS_LEN];
++	struct i2c_msg msg = {
++		.addr = client->addr,
++		.len = sizeof(command),
++		.buf = command,
++	};
++	bool was_awake;
++	unsigned int attempt;
++	int ret;
++
++	lockdep_assert_held(&nano->lock);
++
++	/* The bridge takes its own slave address as the register byte. */
++	if (client->addr != nanosic_keypad_status_command[0])
++		return -ENXIO;
++
++	memcpy(command, nanosic_keypad_status_command, sizeof(command));
++
++	/*
++	 * After a dropped wake line the bridge needs its I2C back; the vendor
++	 * measured up to 25 ms for that, the same as the version request.
++	 */
++	was_awake = nano->awake;
++	nanosic_wake(nano);
++	if (!was_awake)
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++
++	for (attempt = 0; attempt < NANOSIC_KEYPAD_STATUS_RETRIES; attempt++) {
++		ret = nanosic_i2c_transfer(nano, &msg, 1,
++					   NANOSIC_I2C_STATUS_WRITE);
++		if (!ret)
++			return 0;
++
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++	}
 +
 +	return ret;
 +}
@@ -954,8 +1051,8 @@ Merged from: bring-up patches 0002, 0003
 +}
 +
 +/*
-+ * Liveness: the bridge stops raising its data line when the keypad comes off,
-+ * and any interrupt - even one that only reports "nothing happened" - refreshes
++ * Liveness: the keypad's data frames stop when it sleeps or comes off, and
++ * any interrupt - even one that only reports "nothing happened" - refreshes
 + * the window.
 + */
 +static bool nanosic_folio_present(struct nanosic *nano)
@@ -966,9 +1063,23 @@ Merged from: bring-up patches 0002, 0003
 +			   nano->last_irq + msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS));
 +}
 +
++/*
++ * Absence is a verdict, not a guess: nanosic_tablet_work asks the keypad with
++ * nanosic_keypad_status_command when the frames stop, and only a request the
++ * keypad does not answer (twice) marks it absent.  A folio folded onto the
++ * back is present by construction, and any frame at all proves presence, so
++ * this only reports the latched keypad_present.
++ */
++static bool nanosic_folio_absent(struct nanosic *nano)
++{
++	lockdep_assert_held(&nano->lock);
++
++	return !nano->keypad_present;
++}
++
 +static void nanosic_folio_report(struct nanosic *nano)
 +{
-+	unsigned int value = nano->folio_folded || !nano->folio_present;
++	unsigned int value = nano->folio_folded || nanosic_folio_absent(nano);
 +
 +	if (value == nano->tablet_mode)
 +		return;
@@ -1089,6 +1200,60 @@ Merged from: bring-up patches 0002, 0003
 +	if (!was_present && nano->folio_present && nano->last_output_len)
 +		nanosic_send_led_command_locked(nano, nano->last_output,
 +						nano->last_output_len);
++
++	/*
++	 * Presence. The folded hall is proof, keypad reports and the status
++	 * word's own connected bit are proof (both latched by the parse path),
++	 * and when the frames have stopped the keypad is asked instead of
++	 * guessed at. A probe is sent at most once every
++	 * NANOSIC_KEYPAD_PROBE_MS and only while the window is stale, its
++	 * verdict is read NANOSIC_KEYPAD_PROBE_WAIT_MS later, and only
++	 * NANOSIC_KEYPAD_PROBE_MISSES unanswered probes mark the keypad
++	 * absent, so one lost transfer cannot flip the switch. A missed probe
++	 * is retried after NANOSIC_KEYPAD_PROBE_RETRY_MS rather than a whole
++	 * interval, which is what keeps a detached folio's verdict quick.
++	 *
++	 * The window itself is deliberately not presence evidence: the bridge
++	 * answers a probe with a frame of its own even with the folio off
++	 * (measured 2026-10-09), so a fresh window would undo every verdict.
++	 */
++	if (nano->folio_folded) {
++		nano->keypad_present = 1;
++		nano->keypad_probe_misses = 0;
++		nano->keypad_probe_pending = false;
++	} else if (nano->keypad_probe_pending &&
++		   time_after(jiffies, nano->keypad_probe_at +
++			      msecs_to_jiffies(NANOSIC_KEYPAD_PROBE_WAIT_MS))) {
++		nano->keypad_probe_pending = false;
++
++		/*
++		 * A reply is not a verdict by itself: the status report's own
++		 * connected bit was latched by the parse path when it arrived.
++		 * Only silence is decided here.
++		 */
++		if (nano->keypad_status_count != nano->keypad_probe_status) {
++			nano->keypad_probe_hits++;
++			nano->keypad_probe_misses = 0;
++		} else if (++nano->keypad_probe_misses >=
++			   NANOSIC_KEYPAD_PROBE_MISSES) {
++			nano->keypad_present = 0;
++		} else {
++			nano->keypad_probe_at = jiffies -
++				msecs_to_jiffies(NANOSIC_KEYPAD_PROBE_MS -
++						 NANOSIC_KEYPAD_PROBE_RETRY_MS);
++		}
++	} else if (!nano->keypad_probe_pending &&
++		   !nanosic_folio_present(nano) &&
++		   time_after(jiffies, nano->keypad_probe_at +
++			      msecs_to_jiffies(NANOSIC_KEYPAD_PROBE_MS))) {
++		nano->keypad_probe_at = jiffies;
++
++		if (!nanosic_write_keypad_status_command(nano)) {
++			nano->keypad_probe_status = nano->keypad_status_count;
++			nano->keypad_probe_pending = true;
++			nano->keypad_probe_count++;
++		}
++	}
 +
 +	nanosic_folio_report(nano);
 +
@@ -1382,6 +1547,27 @@ Merged from: bring-up patches 0002, 0003
 +		}
 +		nano->valid_report_count++;
 +
++		/*
++		 * Presence evidence, straight from the report: the keypad's own
++		 * input reports prove it is on the connector, and a status
++		 * report carries the vendor's own connected bit (bit 0 of its
++		 * status word, see nanosic_keypad_status_command).
++		 */
++		if (pkt->dest >= 0) {
++			nano->keypad_present = 1;
++			nano->keypad_probe_misses = 0;
++			nanosic_folio_report(nano);
++		} else if (pkt->wire_len > NANOSIC_KEYPAD_STATUS_OFFSET &&
++			   p[2] == NANOSIC_KEYPAD_STATUS_MARK_1 &&
++			   p[3] == NANOSIC_KEYPAD_STATUS_MARK_2 &&
++			   p[4] == NANOSIC_KEYPAD_STATUS_MARK_3) {
++			nano->keypad_status = p[NANOSIC_KEYPAD_STATUS_OFFSET];
++			nano->keypad_status_count++;
++			nano->keypad_present = nano->keypad_status & 1;
++			nano->keypad_probe_misses = 0;
++			nanosic_folio_report(nano);
++		}
++
 +		if (pkt->dest >= 0 && !nanosic_input_muted(nano)) {
 +			ret = hid_input_report(nano->hid[pkt->dest],
 +					       HID_INPUT_REPORT, p,
@@ -1539,6 +1725,16 @@ Merged from: bring-up patches 0002, 0003
 +			     (unsigned long long)nano->folio_irq_count);
 +	len += sysfs_emit_at(buf, len, "folio_folded=%u\n", nano->folio_folded);
 +	len += sysfs_emit_at(buf, len, "folio_present=%u\n", nano->folio_present);
++	len += sysfs_emit_at(buf, len, "keypad_present=%u\n",
++			     nano->keypad_present);
++	len += sysfs_emit_at(buf, len, "keypad_status=0x%02x\n",
++			     nano->keypad_status);
++	len += sysfs_emit_at(buf, len, "keypad_status_reports=%llu\n",
++			     (unsigned long long)nano->keypad_status_count);
++	len += sysfs_emit_at(buf, len, "keypad_probes=%llu\n",
++			     (unsigned long long)nano->keypad_probe_count);
++	len += sysfs_emit_at(buf, len, "keypad_probe_hits=%llu\n",
++			     (unsigned long long)nano->keypad_probe_hits);
 +	len += sysfs_emit_at(buf, len, "tablet_mode=%u\n", nano->tablet_mode);
 +
 +	return len;
@@ -1824,7 +2020,15 @@ Merged from: bring-up patches 0002, 0003
 +				     "failed to get tablet-mode gpio\n");
 +
 +	nano->folio_folded = gpiod_get_value_cansleep(nano->tablet_mode_gpio);
-+	/* Before the first interrupt arrives the folio counts as absent. */
++	/*
++	 * Presence starts unknown. The first pass of nanosic_tablet_work asks
++	 * the keypad (the probe is due immediately), so the state resolves
++	 * within a pass without claiming tablet mode while an attached keypad
++	 * is still waking up.
++	 */
++	nano->keypad_present = 1;
++	nano->keypad_probe_at = jiffies - msecs_to_jiffies(NANOSIC_KEYPAD_PROBE_MS);
++	/* Before the first interrupt arrives the window counts as stale. */
 +	nano->last_irq = jiffies - msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS + 1000);
 +
 +	nano->vdd = devm_regulator_get(dev, "vdd");
@@ -1963,6 +2167,12 @@ Merged from: bring-up patches 0002, 0003
 +	scoped_guard(mutex, &nano->lock) {
 +		WRITE_ONCE(nano->suspended, false);
 +		nanosic_wake(nano);
++		/*
++		 * No frame can arrive while the system is suspended, so the
++		 * liveness window restarts from here: otherwise the first work
++		 * item after resume would read the suspend as a removed folio.
++		 */
++		nano->last_irq = jiffies;
 +		if (nano->data_pending) {
 +			nano->data_pending = false;
 +			nanosic_receive_frame(nano);
@@ -6298,7 +6508,7 @@ Merged from: bring-up patches 0002, 0003
 +};
 --- /dev/null
 +++ b/tools/testing/selftests/hid/nanosic-static.py
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,628 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: GPL-2.0
 +"""Host-only regression tests for the WN8030 transport and power model."""
@@ -6682,9 +6892,14 @@ Merged from: bring-up patches 0002, 0003
 +        probe = function_body("nanosic_probe")
 +        self.assertIn("nanosic_hall_handler_get(nano)", probe)
 +
-+    def test_folio_input_is_muted_in_tablet_mode(self):
++    def test_folio_input_is_muted_when_folded(self):
++        # The gate is the hall line alone: presence is a liveness guess that a
++        # sleeping keypad can expire, and a stale guess must never swallow a
++        # keystroke.
 +        muted = function_body("nanosic_input_muted")
-+        self.assertIn("return nano->tablet_mode;", muted)
++        self.assertIn("return nano->folio_folded;", muted)
++        self.assertNotIn("tablet_mode", muted)
++        self.assertNotIn("folio_present", muted)
 +        parse = function_body("nanosic_parse_frame")
 +        self.assertIn("pkt->dest >= 0 && !nanosic_input_muted(nano)", parse)
 +
@@ -6693,22 +6908,75 @@ Merged from: bring-up patches 0002, 0003
 +        # folded onto the back (tablet posture) and high with the keyboard
 +        # deployed in front *and* with the folio removed. The hall alone
 +        # cannot express "no keyboard attached", so the driver owns the line
-+        # and derives the switch from it plus the bridge's presence.
++        # and derives the switch from it - plus the keypad's own answer to the
++        # status probe (see test_absence_comes_from_the_keypad_status_probe).
 +        report = function_body("nanosic_folio_report")
-+        self.assertIn("nano->folio_folded || !nano->folio_present", report)
++        self.assertIn("nano->folio_folded || nanosic_folio_absent(nano)",
++                      report)
 +        self.assertIn(
 +            "input_report_switch(nano->folio_dev, SW_TABLET_MODE, value)",
 +            report,
 +        )
 +
-+    def test_folio_switch_needs_the_bridge_liveness(self):
++    def test_absence_comes_from_the_keypad_status_probe(self):
++        # Observed on the unit 2026-10-09: after a quiet stretch the switch
++        # flipped to tablet mode with the folio still attached, so the keypad
++        # stops its idle frames on its own and silence cannot mean "detached".
++        # The vendor module carries the answer - it sends "request keypad hall
++        # status" (nanosic_driver.ko .rodata+0xef14) and prints the reply's
++        # byte 9 as "Connected=%d Power=%d POGOPIN=%s" - so this driver asks
++        # too and believes the status word instead of the silence.
++        cmd = DRIVER.split("nanosic_keypad_status_command[", 1)[1].split("};",
++                                                                       1)[0]
++        self.assertIn("0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0xa1, 0x01",
++                      cmd)
++        self.assertRegex(DRIVER, r"#define NANOSIC_KEYPAD_STATUS_OFFSET\t9")
++        send = function_body("nanosic_write_keypad_status_command")
++        self.assertIn("NANOSIC_I2C_STATUS_WRITE", send)
++        self.assertIn("attempt < NANOSIC_KEYPAD_STATUS_RETRIES", send)
++
++        # The reply is decoded where it arrives: the vendor signature marks
++        # the report and byte 9 is the status word whose bit 0 is "connected";
++        # the keypad's own input reports are proof as well.
++        parse = function_body("nanosic_parse_frame")
++        self.assertIn("p[2] == NANOSIC_KEYPAD_STATUS_MARK_1 &&", parse)
++        self.assertIn("p[3] == NANOSIC_KEYPAD_STATUS_MARK_2 &&", parse)
++        self.assertIn("p[4] == NANOSIC_KEYPAD_STATUS_MARK_3", parse)
++        self.assertIn("nano->keypad_status = p[NANOSIC_KEYPAD_STATUS_OFFSET];",
++                      parse)
++        self.assertIn("nano->keypad_present = nano->keypad_status & 1;",
++                      parse)
++        self.assertIn("nano->keypad_present = 1;", parse)
++
++        # The quiet window is resolved by asking, and one lost transfer is
++        # tolerated: the verdict needs NANOSIC_KEYPAD_PROBE_MISSES silences.
++        work = function_body("nanosic_tablet_work")
++        self.assertIn("NANOSIC_KEYPAD_PROBE_WAIT_MS", work)
++        self.assertIn("NANOSIC_KEYPAD_PROBE_MS", work)
++        self.assertIn("NANOSIC_KEYPAD_PROBE_MISSES", work)
++        self.assertIn("NANOSIC_KEYPAD_PROBE_RETRY_MS", work)
++        self.assertIn("nanosic_keypad_status_command", DRIVER)
++        self.assertIn("keypad_probe_misses = 0", work)
++        probe_fn = function_body("nanosic_probe")
++        self.assertIn("nano->keypad_present = 1;", probe_fn)
++        self.assertIn("nano->keypad_probe_at = jiffies -", probe_fn)
++
++        # No DT knob: the probe answers the question the property used to
++        # guess at, so the binding carries no heartbeat property.
++        self.assertNotIn("keypad-idle-heartbeat", BINDING)
++        self.assertNotIn("keypad-idle-heartbeat", DTS)
++
++    def test_folio_liveness_is_refreshed_by_frames_and_resume(self):
 +        # The hall reads the same with the keyboard deployed and with the
-+        # folio removed, and so does every I2C probe - the bridge is on the
-+        # tablet side and answers either way (measured 2026-10-09).  Its data
-+        # interrupt, however, stops within seconds of the keypad coming off,
-+        # so presence is a liveness window over that interrupt.
++        # folio removed, and so is every bridge reply - it is on the tablet
++        # side and answers either way (measured 2026-10-09).  The data
++        # interrupt separates activity from silence, so the window is
++        # re-checked on every arriving frame and restarted after resume; none
++        # of attach, detach and resume has an interrupt of its own.
 +        data_irq = function_body("nanosic_data_irq")
 +        self.assertIn("nano->last_irq = jiffies;", data_irq)
++        resume = function_body("nanosic_resume")
++        self.assertIn("nano->last_irq = jiffies;", resume)
 +        present = function_body("nanosic_folio_present")
 +        self.assertIn(
 +            "nano->last_irq + msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS)",
@@ -6720,8 +6988,7 @@ Merged from: bring-up patches 0002, 0003
 +        self.assertIn("NANOSIC_FOLIO_DEBOUNCE_MS",
 +                      function_body("nanosic_tablet_irq"))
 +        # No I2C during probe: the bridge's boot-to-application time is not
-+        # fixed, so the first probe rides the attach delay instead, and the
-+        # window starts out stale so a folio-less boot is tablet mode.
++        # fixed, so the first probe rides the attach delay instead.
 +        irqs = function_body("nanosic_irqs_get")
 +        self.assertIn('fwnode_irq_get_byname(dev_fwnode(dev), "tablet-mode")',
 +                      irqs)

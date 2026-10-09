@@ -901,12 +901,12 @@ Merged from: bring-up patches 0001
 +		 * The folio-folded hall (vendor hall_key1).  Measured 2026-10-08
 +		 * on the unit: the pin reads low with the folio folded onto the
 +		 * back (the tablet posture) and high with the keyboard deployed in
-+		 * front - and with the folio removed, which is why the switch is
-+		 * derived here.  GNOME's semantics are "SW_TABLET_MODE=1 means no
-+		 * keyboard attached", so the driver reports folded-or-absent.
-+		 * The line has exactly one DT consumer: a second reference trips
-+		 * the shared-GPIO proxy path and makes gpio-keys' probe fail with
-+		 * -EBUSY (observed on the unit 2026-10-08).
++		 * front or the folio removed, which is why the switch is derived
++		 * here.  GNOME's semantics are "SW_TABLET_MODE=1 means no keyboard
++		 * attached", so the folded posture is what this line reports; a
++		 * removed folio is decided by the driver's keypad status probe,
++		 * because a keypad that sleeps looks detached.  The line has one
++		 * DT consumer: a second reference breaks gpio-keys' probe (-EBUSY).
 +		 */
 +		tablet-mode-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;
 +

@@ -124,16 +124,17 @@ port's own blank/unblank workarounds.
 
 - Novatek NT36523 SPI touchscreen, pen, Nanosic WN8030 keyboard-folio
   bridge (keyboard, media keys, touchpad) and the power keys are **verified**
-  (2026-09-29).  The folio halls stay owned by `gpio-keys` (SW_LID /
-  SW_TABLET_MODE); `hid-nanosic` derives the levels from those switch states
-  (the `sw` bitmap - EV_SW state never appears in `key`) and pushes the
+  (2026-09-29).  The lid hall stays owned by `gpio-keys` (SW_LID);
+  `hid-nanosic` reads its state (the `sw` bitmap - EV_SW state never appears
+  in `key`) and pushes the
   vendor's hall command (hall_n high nibble, hall_s low) to the bridge on
   every switch change, after resume and after a bridge reset.  Pushing that
   command does **not** gate the folio: with 13 pushes counted (`hall_sends`)
   against a folded keyboard, every key still reached the input layer
   (measured 2026-10-08), so the disable is host-side instead - `hid-nanosic`
-  drops the folio's keyboard/mouse/touchpad/consumer reports while
-  SW_TABLET_MODE is 1, and fails open when the switch device is absent.  A
+  drops the folio's keyboard/mouse/touchpad/consumer reports while the
+  keyboard is folded onto the back, and fails open when the switch device is
+  absent.  A
   second DT reference to the hall lines is not an option on 7.2.5: it trips
   the shared-GPIO proxy path and makes `gpio-keys`' probe fail with -EBUSY
   (observed on the unit 2026-10-08), so the driver deliberately reads the
@@ -143,15 +144,39 @@ port's own blank/unblank workarounds.
   the back (the tablet posture) and high with the keyboard deployed in front -
   *and* with the folio removed, which is exactly why a plain switch node
   cannot express it.  `hid-nanosic` owns the line as `tablet-mode-gpios`
-  (`GPIO_ACTIVE_LOW`), combines it with a liveness window over the bridge's
-  data interrupt - with the keypad attached that interrupt fires about once a
-  second even when idle, and it stops within seconds of the keypad coming off
-  (77 s of silence observed; line levels, the status interrupt and every I2C
-  probe including the firmware-version read are identical either way, the
-  bridge being on the tablet side) - and reports SW_TABLET_MODE = folded OR
-  absent on its own input device ("liuqin-folio").  The window is re-checked
-  on the hall IRQ and on a 5 s timer; a folio-less boot starts out absent.  GNOME therefore gets tablet mode - auto-rotate and the
-  on-screen keyboard - both folded and with the folio removed.  The
+  (`GPIO_ACTIVE_LOW`) and reports SW_TABLET_MODE = folded on its own input
+  device ("liuqin-folio"), so GNOME gets tablet mode - auto-rotate and the
+  on-screen keyboard - while the keyboard is folded onto the back.
+- **A removed folio is decided by a probe, not by silence.**  The bridge's
+  data interrupt fires about once a second while the keypad is awake and stops
+  within seconds of the keypad coming off (77 s of silence observed), but the
+  keypad also goes quiet on its own when the user is idle - observed on the
+  unit 2026-10-09, when the switch flipped to tablet mode after a quiet
+  stretch with the folio still attached - and that silence is
+  indistinguishable from a detach (line levels, the status interrupt and every
+  bridge reply are identical either way).  So when the window goes stale the
+  driver sends the vendor's own request: `nanosic_driver.ko` carries it at
+  `.rodata+0xef14` and logs it as "request keypad hall status", a 66-byte
+  frame behind the register byte with a 0xda trailer, and the reply is a
+  status report marked `38 80 a2` whose byte 9 is the vendor's `gHallStatus`
+  word - bit 0 "Connected", bit 1 "Power", bit 6 the pogo link, which the
+  vendor's `version_176x_show` prints as `Connected=%d Power=%d POGOPIN=%s`
+  (recovered by disassembling the DLKM, 2026-10-09).  Keypad input reports of
+  any kind are presence evidence as well.  The probe runs only while the
+  frames are silent, at most once every 20 s, is retried 2 s after a miss, and
+  two unanswered probes must agree before the switch reports a detached folio;
+  presence recovers on the first frame or answered probe.  `bridge_health`
+  prints `keypad_present`, `keypad_status`, `keypad_status_reports`,
+  `keypad_probes` and `keypad_probe_hits` for that.  The window itself is
+  re-checked on the hall IRQ, on a 5 s timer and on every arriving frame, and
+  resume restarts it.  Measured on the unit 2026-10-09 with the folio removed:
+  `keypad_status=0x00` (the connected bit clear, `keypad_status_reports` and
+  `keypad_probe_hits` growing with each answered probe), `keypad_present=0`
+  and `tablet_mode=1` across a 60 s sample - four probes, no flip - and GNOME
+  rotates freely again; with the folio attached the probe is answered with the
+  connected bit set and the switch stays in the laptop posture.  The
+  probe's cadence is also what keeps the bridge's power saving intact: it only
+  runs while the keypad is quiet.  The
   active-high mapping that shipped first was inverted on the unit: GNOME
   stayed in laptop mode when folded (no auto-rotate, the panel pinned
   portrait) while the driver muted the keyboard in the deployed posture.
@@ -171,8 +196,14 @@ port's own blank/unblank workarounds.
   transient call is undone by the next screen-state change and no
   `monitors.xml` is written.
   `liuqin-panel-posture` (`pkgs/panel-posture.nix`, a session user service)
-  therefore watches the driver's `tablet_mode` attribute: entering the laptop
-  posture re-applies the rotation `monitors.xml` configures, verifies the
+  therefore watches the driver's `tablet_mode` attribute every 0.25 s: a
+  posture change is the user's own action and is repaired at once - measured
+  2026-10-09 against a stubbed mutter, <1 s from the flip to the applied
+  transform, where the single 3 s pass left the panel in the gravity pose for
+  up to 3 s + 1 s after the keyboard was deployed.  The repairs no user action
+  triggers (mutter's blank/lock reset, a fallback that died) repeat on the
+  ~3 s watchdog instead.  Entering the laptop
+  posture it re-applies the rotation `monitors.xml` configures, verifies the
   transform actually moved and retries.  The *persistent* method is the one
   that works - measured 2026-10-09, the temporary method returns success and
   changes nothing - and mutter writes no file either way, so the configured
