@@ -182,11 +182,16 @@ boot_nixos_menu=…setenv pxe_no_menu; …sysboot scsi 0:${linux_part} any ${pxe
 
 - `sysboot` 的参数顺序（`cmd/sysboot.c` 的 `U_BOOT_CMD`）是
   `<interface> <dev[:part]> <ext2|fat|any> [addr] [filename]`。
-- 地址用 pxe 装载器认识的名字：`kernel_addr_r=0xb3000000`、
-  `ramdisk_addr_r=0xa7400000`、`fdt_addr_r=0xb2000000`；`pxefile_addr_r`
-  只在解析期间存放配置文件（早于任何 payload 载入），所以只要避开解析期间
-  必须存活的东西（ramoops `0xa7000000`、splash framebuffer `0xb8000000`、
-  MPSS/mailbox `0x8bc00000..0x9ee00000`）即可，这里取 `0xb0000000`。
+- 地址用 pxe 装载器认识的名字（`kernel_addr_r`、`ramdisk_addr_r`、
+  `fdt_addr_r`、`pxefile_addr_r`），但**这些值不在 `liuqin.env` 里设定**：
+  `board_late_init()`（`arch/arm/mach-snapdragon/board.c`）在 env 装载之后
+  用 `lmb_alloc(size, SZ_2M)` 逐个发放并 `env_set_hex()` 覆盖，所以 env 里
+  写什么都无效。LMB 从 DRAM 顶端往下取，位置在它为 U-Boot 自己保留的那段
+  之下、并避开设备树里所有 `/reserved-memory`（MPSS/mailbox
+  `0x8bc00000..0x9ee00000`、ramoops `0xa7000000`、splash framebuffer
+  `0xb8000000..0xbab00000` 都在其中）——因此地址会随 U-Boot 镜像大小整体
+  移动，要读实际值用 `printenv`，不要把地址写回 env（一个与 LMB 不一致的
+  值只会误导，`fastboot_addr_r` 之前那个 `0x98000000` 就落在 MPSS 保留区里）。
 - `liuqin_vwdt ${vwdt_linux_ms}` 仍在交接前调用；`linux_part` 缺失、`sysboot`
   失败都会在面板上留话再 `pause`。
 - 打包配置增加 `-e CMD_SYSBOOT`；它只 `select PXE_UTILS`（`BOOTMETH_

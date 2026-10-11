@@ -50,6 +50,13 @@
 		 * ABL continuous-splash framebuffer, left scanning out at
 		 * 0xb8000000 by the stock boot chain. Writing pixels here is
 		 * enough to get a console; do NOT touch display clocks/power.
+		 *
+		 * No driver binds this node: CONFIG_VIDEO_SIMPLE is off and the
+		 * board's liuqin_video DM driver (board/qualcomm/liuqin/video.c)
+		 * owns the panel instead. The node stays because
+		 * map_framebuffer() (arch/arm/mach-snapdragon/board.c) reads its
+		 * reg to map the region, and because the kernel's earlycon
+		 * (simplefb) is the same convention on the kernel's own DTB.
 		 */
 		framebuffer: framebuffer@b8000000 {
 			compatible = "simple-framebuffer";

@@ -194,6 +194,20 @@ PYEOF
     # the stage pad in board/qualcomm/liuqin/liuqin.c documents both boundaries
     # and what stepping over either of them would cost.
     #
+    # VIDEO_SIMPLE is disabled so that exactly one driver owns the panel: the
+    # board's own liuqin_video, bound by hand in qcom_board_init(). U-Boot binds
+    # a driver for the device tree's /chosen/framebuffer@b8000000 as well, and
+    # dm_extended_scan() scans /chosen explicitly, so with simple-framebuffer
+    # enabled that driver is bound first (initr_dm, before board_init() binds
+    # liuqin_video) and its vidconsole child takes stdio's "vidconsole" name
+    # while liuqin_video is left unprobed. The two only agreed because the DT
+    # node and video.c's constants happen to carry the same base, geometry and
+    # format, and because only the 16x32 font is compiled in; a DT change that
+    # broke that agreement would silently have the console paint different
+    # memory than the early renderer. Enabling one of them is the point: the
+    # DT node stays (map_framebuffer() in arch/arm/mach-snapdragon/board.c
+    # needs its reg), it just has no driver to bind to.
+    #
     # The payload's text_offset is forced to 0 by the SYS_BOARD="liuqin"
     # conditional default of LNX_KRNL_IMG_TEXT_OFFSET_BASE (unprompted symbol,
     # so it cannot be overridden here).
@@ -218,7 +232,7 @@ PYEOF
         --set-val SYS_BOARD '"liuqin"' \
         -e PANIC_HANG -e CMD_PAUSE -e BOOTSTD -e BOOTSTD_IGNORE_BOOTABLE \
         -e BOOT_RETRY --set-val BOOT_RETRY_TIME 30 \
-        -e VIDEO_SIMPLE -e VIDEO -e DM_VIDEO -e DISPLAY \
+        -e VIDEO -e DM_VIDEO -e DISPLAY -d VIDEO_SIMPLE \
         -e VIDEO_FONT_16X32 -d VIDEO_FONT_8X16 -d VIDEO_FONT_4X6 -d VIDEO_FONT_SUN12X22 \
         -d REQUIRE_SERIAL_CONSOLE \
         -e LIUQIN_EARLY_VIDEO -e PRE_CONSOLE_BUFFER \
