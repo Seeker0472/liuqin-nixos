@@ -313,7 +313,11 @@ this board's Halo payloads.
   endpoint (`pcm0p/sub0/status` stuck in SETUP).  Patch 0004 carries the fix.
 - **WCD9385 analog capture: verified** (2026-10-06).  `arecord -D hw:0,1`
   records live signal on ch0; ch1 is silent by design (only DEC0/ADC1 is
-  routed).  Two channels, 48 kHz.
+  routed).  Two channels, 48 kHz.  The capture gain is fixed at the UCM's
+  calibrated +12 dB (`ADC1 Volume` 8) with no `CaptureMixerElem`: with the
+  hook present the session stack wrote the hooked control to 100 % (+30 dB)
+  on every device init (measured 2026-10-11, see the UCM comment), which
+  made the stream-open transient clip.  The source volume is software-only.
 - **Not implemented:** the USB-C/FSA4480 headset path (the WCD playback link
   is wired but inert), the VA/digital microphones (the vendor DT disables
   every `swr-dmic` slave and no DMIC pinctrl exists), WSA883x backends, and
