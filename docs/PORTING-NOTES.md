@@ -927,12 +927,20 @@ This tablet has no wired serial.  The available channels:
   (`earlycon=simplefb console=tty0`); a photo is often the only evidence of
   a boot that never reaches userspace.
 - **U-Boot cross-reset stage log.** U-Boot records boot stages in DRAM (the
-  last page of the framebuffer carve-out, `no-map` for Linux) and the log
+  last page of the framebuffer carve-out, `0xb8000000..0xbab00000`, `no-map`
+  for Linux, and the panel only scans the first 20.7 MB of it) and the log
   survives a reset, so a run that dies still reports its last stages through
-  the next one.  Read it over fastboot:
+  the next one.  The same hook pets the Gunyah vWDT: it is the earliest point
+  U-Boot runs at, so the timer ABL hands over armed is refreshed before the
+  SMEM read, relocation, the OF_LIVE tree and the device-model scan, none of
+  which pets or schedules otherwise.  Read the log over fastboot:
   `fastboot getvar stagecount`, then `fastboot getvar stage`,
   `fastboot getvar stage1` … (up to 16 older lines; the panel shows only the
-  newest eight).
+  newest eight).  Worth knowing when reading one: a run that appended a single
+  `fdt blob` died inside `board_fdt_blob_setup()`/`qcom_parse_memory()` - the
+  panel's first *possible* line is `display_options()`, step ~38 of
+  `init_sequence_f`, so a death before it is silent by construction and the
+  stage log is the only evidence there is.
 - **U-Boot console record.** `fastboot getvar concount`,
   `fastboot getvar con`, `fastboot getvar con1` … (`liuqin_conlog [n]`
   in the U-Boot shell dumps/clears more on demand).

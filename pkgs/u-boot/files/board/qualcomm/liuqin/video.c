@@ -94,16 +94,24 @@ static void early_draw_char(int col, int row, u8 ch)
 
 			px[c] = on ? LIUQIN_FB_WHITE : LIUQIN_FB_BLACK;
 		}
-	}
 
-	/*
-	 * The scanout engine reads DRAM directly: push the glyph out of the data
-	 * cache so the panel sees it even while U-Boot keeps running.
-	 */
-	flush_dcache_range((ulong)dst,
-			   (ulong)dst +
-			   (early_font->height - 1) * LIUQIN_FB_STRIDE +
-			   early_font->width * 4);
+		/*
+		 * The scanout engine reads DRAM directly: push each row of the
+		 * glyph out of the data cache as it is finished, so the panel
+		 * sees it even while U-Boot keeps running.
+		 *
+		 * Per row, not one range per glyph: with a 7200-byte stride the
+		 * glyph's first and last row are 223 KB apart, so one range per
+		 * glyph would walk ~3488 cache lines to reach the 32 the glyph
+		 * occupies. (A range's end does not need rounding up - the flush
+		 * loop covers the line its last byte falls in - so this is
+		 * maintenance saved, not a bug fixed: the same pixels reached
+		 * the panel before.)
+		 */
+		flush_dcache_range((ulong)px,
+				   ALIGN((ulong)px + early_font->width * 4,
+					 CONFIG_SYS_CACHELINE_SIZE));
+	}
 }
 
 /*

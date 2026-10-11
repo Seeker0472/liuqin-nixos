@@ -186,6 +186,14 @@ PYEOF
     # U-Boot's hashed env stops accepting variables at CONFIG_ENV_MAX_ENTRIES (512
     # by default) and silently drops the rest, which makes those exports look empty.
     #
+    # PRE_CON_BUF_ADDR (0xb9400000, 8 KiB): the pre-console ring buffer, in the
+    # framebuffer carve-out past the 20.7 MB the panel scans out and inside
+    # map_framebuffer()'s ALIGN(0x2b00000, SZ_2M) window - memory the display
+    # pipeline does not read and U-Boot has mapped no matter what the DRAM banks
+    # say. The carve-out ends at 0xbab00000 and oem_vm_mem starts at 0xbb000000;
+    # the stage pad in board/qualcomm/liuqin/liuqin.c documents both boundaries
+    # and what stepping over either of them would cost.
+    #
     # The payload's text_offset is forced to 0 by the SYS_BOARD="liuqin"
     # conditional default of LNX_KRNL_IMG_TEXT_OFFSET_BASE (unprompted symbol,
     # so it cannot be overridden here).

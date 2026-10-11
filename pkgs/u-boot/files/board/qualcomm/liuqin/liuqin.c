@@ -58,11 +58,24 @@ static void liuqin_vwdt_pet(void);
  * through the next run - DRAM survives the reset:
  *
  *  - the scratch pad is the last page of the device tree's framebuffer
- *    carve-out (framebuffer@b8000000 + 0x2b00000): no-map for the kernel, so it
- *    is never mapped or written there, and the panel only scans the first
- *    20.7 MB of it. enable_caches() maps the whole carve-out, so the address
- *    stays writable once the MMU is on - the first markers run before that and
- *    go out physically;
+ *    carve-out (framebuffer@b8000000 + 0x2b00000, i.e. 0xb8000000..0xbab00000):
+ *    no-map for the kernel, so it is never mapped or written there, and the
+ *    panel only scans the first 20.7 MB of it. Three facts keep it safe, and
+ *    the numbers are the ones to re-check before moving it:
+ *      * the carve-out ends at 0xbab00000, and oem_vm_mem (memory@bb000000,
+ *        80 MB, no-map) starts a further 5 MB up at 0xbb000000. Stepping past
+ *        0xbab00000 would not leave the splash region at all: the gap between
+ *        the two is plain DRAM (no carve-out claims it, so Linux uses it and
+ *        the log would not survive a Linux boot), and past 0xbb000000 is another
+ *        VM's memory, which writing is not U-Boot's to do - and a hypervisor,
+ *        not U-Boot's exception vector, would decide what happened next;
+ *      * map_framebuffer() maps ALIGN(0x2b00000, SZ_2M) = 0x2c00000 bytes from
+ *        0xb8000000, i.e. up to 0xbac00000. Anywhere in that window the page is
+ *        mapped no matter what the DRAM banks say, which is what keeps it
+ *        writable once the MMU is on - the first markers run before that and go
+ *        out physically. The pad (mapped) and the pre-console buffer at
+ *        0xb9400000 (CONFIG_PRE_CON_BUF_ADDR) are the two addresses chosen this
+ *        way, in the same carve-out;
  *  - the log keeps the previous run's lines, so a run that dies still reports
  *    its last stage through the next one (getvar stage, stage1, ...).
  */
@@ -78,7 +91,8 @@ struct liuqin_stage_log {
 	char line[LIUQIN_STAGE_LINES][LIUQIN_STAGE_LINE_LEN];
 };
 
-/* It has to fit the page it lives in: past the carve-out is other memory. */
+/* It has to fit the page it lives in: the next page up is past the carve-out,
+ * and past that is oem_vm_mem - other memory. */
 _Static_assert(sizeof(struct liuqin_stage_log) <= 0x1000,
 	       "the stage log outgrew its page");
 
@@ -87,6 +101,21 @@ void liuqin_stage(const char *what)
 {
 	struct liuqin_stage_log *log = (void *)LIUQIN_STAGE_ADDR;
 	u32 i;
+
+	/*
+	 * This is the earliest hook U-Boot has on this board - the mach code
+	 * calls it from board_fdt_blob_setup(), before it has read the device
+	 * tree - and it is reached at every step that matters, so pet the
+	 * Gunyah vWDT here. ABL hands over with it armed, and nothing between
+	 * here and qcom_board_init() pets or runs a schedule(): the SMEM read,
+	 * relocation, the OF_LIVE tree and the device-model scan all run on a
+	 * timer that is already counting down at the hand-off. A bite there
+	 * takes the boot down with no output at all, because the panel's first
+	 * possible line is display_options(), ~35 steps later in
+	 * init_sequence_f, and nothing this early can be recovered by the
+	 * exception vectors either.
+	 */
+	liuqin_vwdt_pet();
 
 	if (log->magic != LIUQIN_STAGE_MAGIC) {
 		log->magic = LIUQIN_STAGE_MAGIC;
