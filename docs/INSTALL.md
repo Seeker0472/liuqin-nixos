@@ -474,6 +474,6 @@ line) — so a plain `cam` capture verifies the stock path, not the AF path.
 | no boot output at all | panel photo, then U-Boot `fastboot getvar stage*` / `con*` (`PORTING-NOTES.md` §3.1) |
 | kernel panic / lockup | ramoops pstore + persistent journal (`journalctl -b -1`) |
 | display dark under U-Boot | patch 0003 retry cycle (`PORTING-NOTES.md` §1) |
-| no USB debug channel | `debugTransport`, gadget re-bind, or the RAM installer (`PORTING-NOTES.md` §3.2) |
+| no USB debug channel | `systemctl status liuqin-usb-gadget` (it retries by itself), `dmesg` for `soft reset failed`, or the RAM installer (`PORTING-NOTES.md` §1) |
 | USB-C role/DP/charging | `PORTING-NOTES.md` §1 (Type-C, DP Alt Mode, MiPPS) and §2 for MiPPS keys |
 | camera missing | `systemctl status liuqin-camera-probe`, then `media-ctl -r` |

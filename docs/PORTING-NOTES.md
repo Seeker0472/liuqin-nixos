@@ -30,7 +30,7 @@ Companion documents: `README.md` (build outputs and configuration model),
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
 | Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
 | USB3 device (peripheral) | verified | 10-hotplug stability record still open; the cover-close suspend loop re-enumerates the gadget, see `docs/TODO/LID-SUSPEND-LOOP.md` |
-| Type-C host + OTG power | verified | 10-hotplug record and automatic gadget re-bind still open |
+| Type-C host + OTG power | verified | 10-hotplug record still open |
 | DP Alt Mode | verified | — |
 | Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
 | Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
@@ -1025,7 +1025,9 @@ On an installed system this channel is opt-in:
 `hardware.liuqin.debugTransport = "usb"` (or `"both"` to keep Wi-Fi SSH).
 The gadget is fixed at `superSpeed = true, requestDeviceRole = false`
 because UCSI owns the Type-C role.  If the cable is unplugged the host-side
-interface simply disappears.
+interface simply disappears.  The gadget unit retries by itself and only
+reports success once the UDC's own `function` attribute confirms the binding
+(§1, Type-C host and OTG), so a role change no longer needs a manual restart.
 
 Deploying a new system over the local binary cache (the full walk-through is
 in `docs/INSTALL.md` §4): serve `/var/tmp/liuqin-cache` from the host, then
