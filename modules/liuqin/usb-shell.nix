@@ -58,9 +58,19 @@ in
     systemd.services.liuqin-usb-gadget = {
       description = "liuqin USB2 debug gadget (NCM, ECM fallback)";
       wantedBy = [ "multi-user.target" ];
+      # Every way this unit can fail is transient: the controller may not have
+      # probed yet (dwc3 defers while its PHYs come up), a role switch can take
+      # the UDC away for as long as something else is attached, the port can be
+      # in the host role while a dock or a DP sink is plugged in, and the
+      # configfs bind itself can fail while the PHY domain settles. Retry
+      # instead of staying dead until an operator notices; no start limit,
+      # because "something else is attached" lasts as long as it lasts.
+      startLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        Restart = "on-failure";
+        RestartSec = "5s";
         ExecStart = "${gadget}/bin/liuqin-usb-gadget";
         ExecStop = "${gadget}/bin/liuqin-usb-gadget --unbind";
       };

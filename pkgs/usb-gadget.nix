@@ -18,6 +18,11 @@
 # The binary also owns the teardown: `--unbind` detaches the UDC for the
 # installed system's ExecStop, so the configfs layout is known in exactly one
 # place instead of once here and once in a module-side one-liner.
+#
+# Both sides decide "bound" from the UDC's own `function` attribute rather than
+# from the configfs UDC name: the kernel keeps that name when a role switch
+# removes the UDC or a re-probe fails, so the name alone can describe a binding
+# that no longer exists.
 { lib, writeShellApplication, coreutils, iproute2, util-linux }:
 
 { product
@@ -53,9 +58,39 @@ writeShellApplication {
   runtimeInputs = [ coreutils iproute2 util-linux ];
 
   text = ''
-    configfs=/sys/kernel/config
+    configfs=''${LIUQIN_USB_CONFIGFS:-/sys/kernel/config}
     gadget=$configfs/usb_gadget/liuqin
     ready=/run/liuqin-usb-ready
+    # The UDC class is read twice - is the binding real, and which controller
+    # exists - so it is named once. Both roots are overridable exactly like
+    # configfs: that is what lets this script's decision table be driven
+    # against a fixture tree instead of the live kernel.
+    udc_class=''${LIUQIN_USB_UDC_CLASS:-/sys/class/udc}
+
+    log() {
+      echo "liuqin-usb: $*"${lib.optionalString logToConsole " >/dev/console 2>/dev/null || true"}
+    }
+
+    fail() {
+      log "$*"
+      rm -f "$ready" 2>/dev/null || true
+      exit 1
+    }
+
+    # Is the gadget really bound, and to which controller? The configfs UDC
+    # attribute alone cannot answer that: the kernel keeps the last name when
+    # the binding ends on the bus side (configfs_composite_unbind() does not
+    # clear gadget_driver.udc_name, and a role switch that removes the UDC
+    # goes through it) and when a re-probe fails, so it can name a UDC with
+    # nothing bound to it. The UDC's own 'function' attribute is the answer:
+    # it names the bound gadget driver and is empty when there is none.
+    bound_udc() {
+      local name
+      name=$(cat "$gadget/UDC" 2>/dev/null || true)
+      [ -n "$name" ] || return 1
+      [ -n "$(cat "$udc_class/$name/function" 2>/dev/null || true)" ] || return 1
+      printf '%s\n' "$name"
+    }
 
     # `--unbind` is the stop side of the installed system's debug unit
     # (modules/liuqin/usb-shell.nix): detach the UDC and leave the rest of the
@@ -68,23 +103,20 @@ writeShellApplication {
         exit 2
       }
       if [ -w "$gadget/UDC" ]; then
-        printf '\n' >"$gadget/UDC"
+        printf '\n' >"$gadget/UDC" 2>/dev/null || true
+      fi
+      # ExecStop must not fail, but a binding that outlived the write means
+      # this unit no longer owns the UDC: leave the fact in the log.
+      if udc=$(bound_udc); then
+        echo "liuqin-usb: UDC $udc is still bound after --unbind" >&2
       fi
       exit 0
     fi
 
-    log() {
-      echo "liuqin-usb: $*"${lib.optionalString logToConsole " >/dev/console 2>/dev/null || true"}
-    }
-
-    fail() {
-      log "$*"
-      rm -f "$ready" 2>/dev/null || true
-      exit 1
-    }
-
     mkdir -p "$configfs" /run || fail "could not create configfs or /run"
-    if ! mountpoint -q "$configfs"; then
+    # Only the real configfs is mounted; an overridden root is a fixture tree
+    # its caller has already laid out.
+    if [ "$configfs" = /sys/kernel/config ] && ! mountpoint -q "$configfs"; then
       mount -t configfs configfs "$configfs" 2>/dev/null \
         || fail "could not mount configfs"
     fi
@@ -136,9 +168,16 @@ writeShellApplication {
       || fail "USB function is not present in the configuration"
 
     udc_name=
-    if [ -r "$gadget/UDC" ]; then
-      udc_name=$(cat "$gadget/UDC" 2>/dev/null || true)
-      [ "$udc_name" = none ] && udc_name=
+    if udc_name=$(bound_udc); then
+      # Really bound: the UDC's own attribute names this gadget.
+      :
+    else
+      udc_name=
+      # Nothing is bound. Drop a name the kernel left behind, so the bind
+      # below cannot be skipped by a stale configfs attribute.
+      if [ -n "$(cat "$gadget/UDC" 2>/dev/null || true)" ]; then
+        printf '\n' >"$gadget/UDC" 2>/dev/null || true
+      fi
     fi
     if [ -z "$udc_name" ]; then
       # No UCSI userspace helper on this device: if the role switch has not
@@ -171,7 +210,7 @@ writeShellApplication {
       fi
       tries=0
       while [ -z "$udc_name" ] && [ "$tries" -lt 10 ]; do
-        for udc_path in /sys/class/udc/*; do
+        for udc_path in "$udc_class"/*; do
           [ -e "$udc_path" ] || continue
           udc_name=$(basename "$udc_path")
           break
@@ -183,6 +222,14 @@ writeShellApplication {
       if [ -n "$udc_name" ]; then
         if ! printf '%s\n' "$udc_name" >"$gadget/UDC"; then
           fail "failed to bind USB gadget to UDC $udc_name"
+        fi
+        # configfs accepts the write once the driver registered; ask the UDC
+        # whether it actually took it, because a name that stays behind with
+        # nothing bound is exactly the state that hides the failure from every
+        # later run.
+        if [ -z "$(cat "$udc_class/$udc_name/function" 2>/dev/null || true)" ]; then
+          printf '\n' >"$gadget/UDC" 2>/dev/null || true
+          fail "USB gadget did not bind to UDC $udc_name"
         fi
       fi
     fi

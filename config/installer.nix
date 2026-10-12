@@ -132,12 +132,18 @@ let
         description = "Create the liuqin USB NCM/ECM gadget (${stage})";
         inherit wantedBy;
         path = with pkgs; [ coreutils iproute2 util-linux ];
+        # Retry for as long as the stage runs: the controller may still be
+        # probing, the port may be in the host role, or the configfs bind may
+        # fail while the PHY domain settles.  5s, not 1s, because this unit
+        # reports on the panel console (logToConsole): a one-second loop would
+        # scroll the console the operator is reading.  No start limit.
+        startLimitIntervalSec = 0;
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${usbGadgetSetup}/bin/liuqin-usb-gadget";
           RemainAfterExit = true;
           Restart = "on-failure";
-          RestartSec = "1s";
+          RestartSec = "5s";
         };
       };
 
@@ -147,6 +153,9 @@ let
         requires = [ "liuqin-usb-gadget.service" ];
         after = [ "liuqin-usb-gadget.service" ];
         path = with pkgs; [ busybox coreutils ];
+        # The ExecStartPre waits on the gadget's readiness marker, so this unit
+        # needs the same tolerance for a late gadget as the gadget unit itself.
+        startLimitIntervalSec = 0;
         serviceConfig = {
           Type = "simple";
           ExecStartPre = [
@@ -166,6 +175,7 @@ let
         requires = [ "liuqin-usb-gadget.service" ];
         after = [ "liuqin-usb-gadget.service" ];
         path = with pkgs; [ busybox coreutils ];
+        startLimitIntervalSec = 0;
         serviceConfig = {
           Type = "simple";
           ExecStartPre = "${pkgs.coreutils}/bin/test -e /run/liuqin-usb-ready";
