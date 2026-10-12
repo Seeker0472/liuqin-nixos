@@ -237,6 +237,22 @@ static int read_state(char *state, size_t len)
     return ret;
 }
 
+/* Restore the device data role after a failed authentication.  The USB device
+ * link - the debug gadget's NCM/ECM interface - only exists in the device
+ * role, so a failed authentication must not leave the port in the host role:
+ * a non-Xiaomi PD source (a PD-capable PC port always fails the vendor SVID
+ * gate) would otherwise lose the link for the rest of the session.  Best
+ * effort: the partner may refuse the swap back, and the ADSP stays the
+ * authority. */
+static void restore_data_role_device(void)
+{
+    int ret = write_text("/class/typec/port0/data_role", "device");
+    if (ret)
+        fprintf(stderr, "liuqin-mippsd: could not restore the device data role: %d\n", ret);
+    else
+        fprintf(stderr, "liuqin-mippsd: restored the device data role after a failed authentication\n");
+}
+
 static int set_data_role_host(void)
 {
     char role[MAX_VALUE], state[MAX_VALUE];
@@ -254,6 +270,10 @@ static int set_data_role_host(void)
         if (!read_text("/class/typec/port0/data_role", role, sizeof(role)) &&
             strstr(role, "[host]")) return 0;
     }
+    /* The write went through but the local role never read back as host: the
+     * caller cannot tell this apart from "nothing happened", so undo it here
+     * instead of leaving the port in a state neither side expects. */
+    restore_data_role_device();
     return -EAGAIN;
 }
 
@@ -314,7 +334,7 @@ static int send_vdm(unsigned int command, const char *payload, unsigned int time
     return -EAGAIN;
 }
 
-static int authenticate_pd(void)
+static int authenticate_pd(int *swapped_role)
 {
     unsigned char key[HMAC_SIZE], challenge[PD_CHALLENGE], response[PD_CHALLENGE];
     unsigned char seed[PD_CHALLENGE];
@@ -325,6 +345,7 @@ static int authenticate_pd(void)
     char key_name[32], seed_name[32];
     const char *verdict;
     int ret, pd_auth = 0;
+    *swapped_role = 0;
     if (getrandom(&index, sizeof(index), 0) != (ssize_t)sizeof(index))
         return -EIO;
     index %= 10;
@@ -339,11 +360,13 @@ static int authenticate_pd(void)
     ret = read_text("/class/qcom-battery/qcom-battery/pdo2", pdo, sizeof(pdo));
     if (ret || !strncmp(pdo, "00000000", 8)) goto clear;
     /* The stock batterysecret switches to the Type-C host role before
-     * speaking UVDM; --no-data-role-swap (the shipped default) keeps the
-     * community service behaviour instead. */
+     * speaking UVDM, because the ADSP only runs the vendor SVID discovery
+     * there; --no-data-role-swap keeps the community service behaviour
+     * instead (modules/liuqin/usb.nix selects between the two). */
     if (!no_data_role_swap) {
         ret = set_data_role_host();
         if (ret) goto clear;
+        *swapped_role = 1;
         /* The ADSP runs the vendor SVID discovery asynchronously after the
          * role change, so give it a bounded window before the SVID gate in
          * send_vdm() rejects the first command. */
@@ -411,6 +434,8 @@ static int authenticate_pd(void)
 clear:
     OPENSSL_cleanse(key, sizeof(key));
     OPENSSL_cleanse(seed, sizeof(seed));
+    if (*swapped_role)
+        restore_data_role_device();
     clear_verdict();
     return ret ? ret : -EACCES;
 }
@@ -436,7 +461,14 @@ static void process_once(void)
 {
     char type[MAX_VALUE], state[MAX_VALUE], verified[MAX_VALUE];
     static int fg_verified[2];
-    int ret;
+    /* A PD source whose authentication already failed once is not retried
+     * while the same contract is up: every attempt swaps the port to the host
+     * data role and back, which drops the USB device link for the duration,
+     * and a source that fails the vendor SVID gate - any non-Xiaomi PD source,
+     * a PD-capable PC port for instance - fails every attempt.  Cleared as
+     * soon as no PD contract is at hand, so a replug is tried again. */
+    static int pd_failed;
+    int ret, swapped;
     if (read_text("/class/qcom-battery/qcom-battery/real_type", type, sizeof(type))) {
         clear_verdict();
         return;
@@ -459,22 +491,28 @@ static void process_once(void)
         fg_verified[slave] = 1;
     }
     if (!usb_online()) {
+        pd_failed = 0;
         clear_verdict();
         return;
     }
     if (strcmp(type, "PD") && strcmp(type, "PD_PPS")) {
+        pd_failed = 0;
         clear_verdict();
         return;
     }
     if (read_state(state, sizeof(state)) || strcmp(state, "SNK_Ready")) {
+        pd_failed = 0;
         clear_verdict();
         return;
     }
     if (!read_text("/class/qcom-battery/qcom-battery/pd_verifed", verified, sizeof(verified)) &&
         verified[0] == '1') return;
-    ret = authenticate_pd();
-    if (ret)
+    if (pd_failed) return;
+    ret = authenticate_pd(&swapped);
+    if (ret) {
         fprintf(stderr, "liuqin-mippsd: PD authentication failed: %d\n", ret);
+        if (swapped) pd_failed = 1;
+    }
 }
 
 static int uevent_socket(void)

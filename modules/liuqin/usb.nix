@@ -41,7 +41,10 @@ in
           67 W charger: the ADSP runs the vendor SVID discovery
           (adapter_svid 0x2717) only in the host role, while the FG digest is
           only valid in the sink role, so the stock ordering - FG first, then
-          the swap - is what makes 67 W authentication work at all.
+          the swap - is what makes 67 W authentication work at all.  A failed
+          authentication restores the device data role and does not retry the
+          same contract: that swap is what takes the USB device link down, and
+          a non-Xiaomi PD source fails it every time.
         '';
       };
       keyDirectory = lib.mkOption {
