@@ -1,0 +1,36 @@
+usb: dwc3: keep the controller state when the core soft reset times out
+
+A DWC3 core soft reset that never completes (DCTL.CSFRST stays set) leaves the
+whole boot without a USB controller, and the driver's only message is a bare
+"DWC3 controller soft reset failed." - no way to tell a poll budget that is
+too short from a PHY-side clock that is not running at all.  Record DCTL, GCTL,
+GUSB2PHYCFG0, GUSB3PIPECTL0, GSNPSID and the controller revision, so the next
+occurrence names its own cause.
+
+This is what identified the liuqin RAM installer's dead USB control channel
+(2026-10-12): the dump reported revision=3138302a (DWC_usb31 1.80a) with
+CSFRST still set, i.e. a clock that never starts rather than a short wait - the
+installer DT asked the controller for a PIPE3 pipe clock while nothing in that
+image powers the SuperSpeed PHY.  The device tree is fixed there
+(pkgs/bootimg/dts/liuqin-installer-overlay.dts now selects the UTMI clock, the
+configuration the board carried before the SuperSpeed bring-up); the dump stays
+for the next report, at the cost of one dev_warn on a path that has failed
+already.
+
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -358,6 +358,14 @@
+ 	} while (--retries);
+ 
+ 	dev_warn(dwc->dev, "DWC3 controller soft reset failed.\n");
++	dev_warn(dwc->dev, "DCTL=%08x GCTL=%08x GUSB2PHYCFG0=%08x "
++		 "GUSB3PIPECTL0=%08x GSNPSID=%08x revision=%08x\n",
++		 dwc3_readl(dwc, DWC3_DCTL),
++		 dwc3_readl(dwc, DWC3_GCTL),
++		 dwc3_readl(dwc, DWC3_GUSB2PHYCFG(0)),
++		 dwc3_readl(dwc, DWC3_GUSB3PIPECTL(0)),
++		 dwc3_readl(dwc, DWC3_GSNPSID),
++		 dwc->revision);
+ 	return -ETIMEDOUT;
+ 
+ done:
