@@ -404,6 +404,54 @@ read from the link negotiation, not from a throughput benchmark.
 
 Open: a recorded 10-hotplug stability run and a USB2-cable downgrade retest.
 
+**Controller probe failure (measured 2026-10-12; fixed in the installer DTB).**
+A boot whose device tree asks the controller for a pipe clock that nothing
+powers comes up with **no USB controller at all**, and the first visible
+symptom is the USB control channel, not a USB error:
+
+```
+dwc3-qcom a600000.usb: DWC3 controller soft reset failed.
+dwc3-qcom a600000.usb: DCTL=4?1f0?00 GCTL=00102000 GUSB2PHYCFG0=00102400
+                       GUSB3PIPECTL0=000?100? GSNPSID=33313?00 revision=3138302a
+dwc3-qcom a600000.usb: error -ETIMEDOUT: failed to initialize core
+dwc3-qcom a600000.usb: probe with driver dwc3-qcom failed with error -110
+liuqin-usb: no USB device controller found
+```
+
+The register line is patch 0022's dump: `revision=3138302a` is `DWC_usb31`
+1.80a, and the leading `4` in `DCTL` is `CSFRST` still set - after the driver's
+`udelay(1) x 1000` budget and, in an earlier revision of that patch, after
+retrying the whole probe with a 20 ms cadence.  `/sys/class/udc` stays empty,
+so the configfs gadget is collateral damage: nothing in `pkgs/usb-gadget.nix`
+ran and restarting the unit cannot help.
+
+Mechanism: `dwc3_core_soft_reset()` cannot complete without the PHY clock the
+controller is configured to take.  The **installer overlay** restored the
+USB2-only role (`dr_mode = "peripheral"`, `maximum-speed = "high-speed"`,
+`phys = <&usb_1_hsphy>`) but left the pipe-clock source at the base DT's
+SuperSpeed setting, so the controller waited on the SS PHY's PIPE3 clock while
+nothing in that image ever powers the SS PHY - `dwc3_phy_init()` initialises
+only the phys listed in `phys`, and the combo PHY's PLL is started by its
+`phy_init()` (`qmp_combo_usb_init()` calls `qmp_combo_usb_power_on()`).  The
+base board DT carried `qcom,select-utmi-as-pipe-clk;` for exactly this HS-only
+role (patch 0014 dropped it when SuperSpeed arrived), and
+`pkgs/bootimg/dts/liuqin-installer-overlay.dts` carries it again: the
+controller takes the UTMI clock from the USB2 PHY, which the image does
+initialise.  Verified by merging the overlay onto the built board DTB - the
+installer's `usb@a600000` has the property alongside the HS-only phys and
+`maximum-speed`; `pkgs/kernel/patches/README.md` (0022) records the dump side.
+
+The installed system is unaffected: its DT lists both phys, so the combo PHY's
+`phy_init()` starts the PIPE3 clock before the reset runs (its USB2 PHY driver,
+`PHY_SNPS_EUSB2`, is built in - the eUSB2 PHY node is what both DTs point
+`usb2-phy` at).  If it ever reports this signature, patch 0022's dump names the
+state: `dmesg | grep -E 'soft reset failed|DCTL='`.
+
+The same 1 ms poll was in U-Boot's own `dwc3_core_soft_reset()`
+(`pkgs/u-boot/patches/0007-usb-dwc3.patch`), where a slow reset would fail the
+fastboot/UMS gadget with nothing to go on.  It now polls at 20 ms for ten tries
+as well and prints `DCTL` when it still times out.
+
 ### Type-C host and OTG
 
 **verified** (2026-10-07): with a Xiaomi 15 phone attached, the tablet
@@ -419,11 +467,13 @@ the bus when the phone is the device.
   reads it and drives the QMP combo PHY's typec switch
   (1 = CC1/NORMAL, 2 = CC2/REVERSE).
 - `pm8350_l1` (combo-PHY `vdda-pll`) must be ≥912 mV; the DT pins it there.
-- Open: a stated 10-hotplug record, and **automatic gadget unbind/rebind**
-  across Host↔Device transitions.  Today, if the debug gadget fails to
-  re-bind, restart it from Wi-Fi SSH:
-  `systemctl restart liuqin-usb-gadget liuqin-usb-shell`.
-  No automatic Host VBUS/OCP fallback exists.
+- The debug gadget now heals itself: every way its unit can fail is transient
+  (the controller still probing, the port in the host role while something
+  else is attached, a configfs bind that lost the race with the PHY domain),
+  so `modules/liuqin/usb-shell.nix` runs it with `Restart=on-failure`, a 5 s
+  restart delay and no start limit, and `pkgs/usb-gadget.nix` only reports
+  success once the UDC's own `function` attribute confirms the binding.
+  Open: a stated 10-hotplug record, and no automatic Host VBUS/OCP fallback.
 
 ### DP Alt Mode
 
@@ -857,7 +907,7 @@ switch: the kernel and DT carry every board feature at once.  Sub-options:
 | --- | --- | --- |
 | `mipps.enable` | `false` | run `liuqin-mippsd` (systemd unit, root) |
 | `mipps.keyDirectory` | `/var/lib/liuqin/mipps` | root-only key directory |
-| `mipps.dataRoleSwap` | `true` | do the stock "FG first, then switch to host" order |
+| `mipps.dataRoleSwap` | `true` | do the stock "FG first, then switch to host" order; a failed authentication restores the device data role and the same PD contract is then not retried, because that swap is what takes the USB device link down |
 | `mipps.reverseAuth` | `false` | also send UVDM cmd 8 (community 6→8→7), unverified |
 
 The daemon owns no PDO or voltage; it only drives the narrow qcom-battery
@@ -1038,7 +1088,7 @@ the CS35L41 amplifier naming; 0017-0019 add the legacy QSEECOM TEE transport,
 the FPC1264 misc driver and its board DTS; 0020 raises the WCN6855 RF rail
 minimums; and 0021 sets the camera orientation properties.
 
-### The 21 patches
+### The 22 patches
 
 | # | patch | what |
 | --- | --- | --- |
@@ -1063,6 +1113,7 @@ minimums; and 0021 sets the camera orientation properties.
 | 0019 | `dts-fpc1264` | board DTS for the FPC1264 control interface (GPIO40 finger IRQ, GPIO41 reset, PM8350C LDO9 supply; spi10 stays disabled) |
 | 0020 | `wcn6855-rfa-rail-voltages` | raise the pm8350_s11/s12 and pm8350c_s1 minimums to the stock 952/1256/1880 mV so the WCN6855 WLAN/BT RF domains keep their range |
 | 0021 | `camera-orientation` | set the `orientation` property on the board's S5KJN1, IMX596 and SC202CS camera nodes |
+| 0022 | `usb-dwc3-soft-reset` | the DWC3 core soft reset's poll budget and probe retry, so a controller handed over mid-settle does not cost the whole boot its USB (the signature and measurement are in §1, USB3 device) |
 
 ### Why 0014, 0015 and 0016 are applied last
 

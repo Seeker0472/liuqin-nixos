@@ -19,6 +19,21 @@
 &usb_1 {
 	dr_mode = "peripheral";
 	maximum-speed = "high-speed";
+
+	/*
+	 * USB2-only link: the controller must take the UTMI clock from the
+	 * USB2 PHY as its PIPE clock. The DWC3 core soft reset at probe only
+	 * completes with a running PHY clock, and with the SS PHY out of the
+	 * phys list nothing in this image ever powers it, so the reset hangs
+	 * on the PIPE3 source: measured 2026-10-12, DCTL.CSFRST stayed set
+	 * through every retry, dwc3-qcom probe failed with -ETIMEDOUT, there
+	 * was no UDC and the installer's own USB control channel reported
+	 * "no USB device controller found". The base board DT carried this
+	 * property for exactly this HS-only role before the SuperSpeed
+	 * bring-up replaced that configuration.
+	 */
+	qcom,select-utmi-as-pipe-clk;
+
 	phys = <&usb_1_hsphy>;
 	phy-names = "usb2-phy";
 };

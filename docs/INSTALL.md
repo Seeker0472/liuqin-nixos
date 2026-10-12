@@ -299,10 +299,11 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   it was handed on every boot (`liuqin_slot_autoclaim`, `liuqin_ab_mark=0`
   disables it), so the retry budget no longer drains across reboots.
 - If the installed system cannot bring up Wi-Fi and the USB gadget does not
-  re-bind after a role change, restart it from a local console or SSH
-  (`systemctl restart liuqin-usb-gadget liuqin-usb-shell`), or fall back to
-  the RAM installer.  There is no automatic role manager yet
-  (`PORTING-NOTES.md` §1, Type-C host and OTG).
+  come up, the gadget unit already retries on its own (5 s apart, no start
+  limit); check `systemctl status liuqin-usb-gadget` and
+  `dmesg | grep 'soft reset failed'` (that dump is what named the installer's
+  dead USB channel, `PORTING-NOTES.md` §1) before falling back to the RAM
+  installer.
 
 ## 7. Fingerprint (FPC1264)
 
