@@ -143,9 +143,8 @@ stdenv.mkDerivation (finalAttrs: {
       }
     done
 
-    # First NixOS adaptation: oem_runtime.py verifies and points
-    # firmware_class.path at the OEM firmware directory next to itself (see the
-    # patch file for why the operator-supplied directory wins).
+    # Verify OEM firmware through the system-owned union. Individual
+    # fingerprint operations must never switch the global kernel lookup path.
     patch -p1 -d $bundle < ${./oem-runtime-firmware-dir.patch}
     grep -qF 'Path(os.environ.get("LIUQIN_FPC_OEM_FIRMWARE")' $bundle/oem_runtime.py || {
       echo "liuqin-fpc-oem: oem_runtime.py firmware-directory patch did not apply" >&2

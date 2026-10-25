@@ -66,7 +66,7 @@ let
     runtimeInputs = [ pkgs.python3 pkgs.coreutils ];
     text = ''
       # ${description}
-      export LIUQIN_FPC_OEM_FIRMWARE=${cfg.firmwareDir}
+      export LIUQIN_FPC_OEM_FIRMWARE=${lib.escapeShellArg cfg.firmwareDir}
       export PYTHONDONTWRITEBYTECODE=1
       exec python3 ${runtimeDir}/${script} "$@"
     '';
@@ -86,10 +86,13 @@ in
       description = ''
         Root-owned directory holding the OEM firmware images for the FPC1264
         (fpcliu.mdt plus its segment files) and the SHA256.json that lists them.
-        The OEM runtime points the kernel's firmware_class.path at this
-        directory for the duration of one operation and verifies every file
-        against that manifest, so the files must be placed there by the
-        operator: they are per-device vendor data and cannot be packaged.
+        This directory is included in the shared /run/firmware union. The
+        runtime verifies the manifest and the files visible through that
+        union without changing the kernel's global firmware path. Stop
+        run-firmware.mount before provisioning files and start the loader
+        path service afterwards (see docs/INSTALL.md). Keep credentials in
+        the separate fingerprint state directory. The path must be absolute
+        and contain only letters, digits, slashes, dots, underscores and hyphens.
       '';
     };
 
@@ -167,6 +170,8 @@ in
     ];
 
     systemd.services.fprintd = {
+      requires = [ "liuqin-firmware-loader-path.service" ];
+      after = [ "liuqin-firmware-loader-path.service" ];
       environment = {
         # Selects the virtual OEM device in the TOD driver.
         FP_LIUQIN_FPC1264_OEM_ENABLE = "1";
@@ -200,14 +205,9 @@ in
         # and the lock screen stays locked.  The CLI path chmods its output to
         # 0600 itself, which is why only the desktop flow exposed this.
         UMask = "0077";
-        # Likewise: /sys/devices is the upstream exception (USB wakeup tuning);
-        # the firmware class parameter is the one the OEM runtime rewrites to
-        # point the sensor firmware loader at firmwareDir.  Same list, so both
-        # survive the upstream unit's ProtectSystem=strict/ProtectKernelTunables.
-        ReadWritePaths = [
-          "/sys/devices"
-          "/sys/module/firmware_class/parameters/path"
-        ];
+        # The runtime only reads the shared firmware lookup. Keep the
+        # upstream USB wakeup exception without granting firmware path writes.
+        ReadWritePaths = [ "/sys/devices" ];
         # Upstream device rules are restated for the same reason (a drop-in
         # replaces the list); the last four are the nodes the OEM stack uses:
         # the sensor control interface, the TEE client and supplicant devices,
