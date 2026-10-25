@@ -47,13 +47,25 @@ let
     else
       requireFile {
         name = "liuqin-firmware-vpu.tar.zst";
-        hash = "sha256-UJ0voVU4dM3A2wH7M83A0lE6EaC9X9Xl0gibI3woYf4=";
+        hash = "sha256-9cM0lmDfBtdBcrQnjUsp7FgJVZYGZllQryWIwLdVn2E=";
         message = ''
-          qcom/vpu/vpu20_4v.mbn iris2 VPU firmware, packed as a zstd tar archive
-          from the official MIUI V14 extraction in liuqin-mainline-blobs/extracted
-          (the downstream release does not carry it).  Register it with
-          `nix-store --add-fixed sha256 liuqin-firmware-vpu.tar.zst` - or point
-          hardware.liuqin.firmware.vpu at the file and skip that step.
+          qcom/vpu/vpu20_4v.mbn iris2 VPU firmware, packed as a zstd tar archive.
+          Taken from the firmware the stock system actually runs: the file in
+          xiaomipad-6pro-mainline/device/firmware/usr/lib/firmware/updates/qcom/vpu/
+          (video-firmware.2.4-4774f4555..., built 2024-08-05), which is the build
+          MIUI ships after its OTAs.  The copy inside the release image's vendor
+          partition (liuqin-mainline-blobs/extracted/.../fs_vendor_a/firmware/) is
+          the pre-OTA 2022 build (2.4-e54eca1aa...) and its HFI version does not
+          match what the iris2 firmware expects: the firmware answers the first
+          encoder property with a system error.
+
+          Reproduce the local archive from that payload with:
+          `tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner
+          -I 'zstd -19' -cf liuqin-firmware-vpu.tar.zst
+          -C <updates-firmware-root> qcom/vpu/vpu20_4v.mbn`.
+          Register it with `nix-store --add-fixed sha256
+          liuqin-firmware-vpu.tar.zst`, or point hardware.liuqin.firmware.vpu
+          at the file and skip that step.
         '';
       };
 
