@@ -221,9 +221,9 @@ in
         };
       };
 
-      # gnome-shell only claims the accelerometer when the SensorProxy name
-      # appears inside a live greeter session; re-announce after graphical
-      # boot and verify a claim landed.
+      # Preserve one bounded re-announcement for legacy desktop sensor clients.
+      # Accelerometer ownership belongs to the GNOME posture client; remove
+      # these refresh units only after the remaining lifecycle checks pass.
       systemd.services.liuqin-sensor-proxy-refresh = {
         description = "Re-announce iio-sensor-proxy to the greeter's gnome-shell";
         after = [ "graphical.target" ];

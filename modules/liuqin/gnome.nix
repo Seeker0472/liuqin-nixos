@@ -241,17 +241,16 @@ in
       }
     ];
 
-    # Mutter neither restores the configured transform when tablet mode ends
-    # (the panel keeps whatever the accelerometer last produced) nor re-claims
-    # the accelerometer after a laptop-posture interlude; the loop repairs
-    # both from the driver's derived folio switch.  See pkgs/panel-posture.nix.
+    # Own the accelerometer claim and keep DSI-1 in the configured laptop
+    # rotation. Extended layouts are preserved and reflowed when that rotation
+    # changes the panel's logical size; mirrored layouts remain desktop-managed.
     systemd.user.services.liuqin-panel-posture = {
       description = "Keep the panel transform right across folio postures";
       wantedBy = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${pkgs.liuqinPanelPosture}/bin/liuqin-panel-posture";
+        ExecStart = "${pkgs.liuqinPanelPosture}/bin/liuqin-panel-posture --laptop-rotation ${cfg.desktop.gnome.panelOrientation}";
         Restart = "on-failure";
         RestartSec = 2;
       };
