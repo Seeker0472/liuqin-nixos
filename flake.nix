@@ -337,55 +337,70 @@
       checks.x86_64-linux.liuqin-storage-guard =
         pkgsHost.callPackage ./pkgs/storage-guard.nix { };
 
-      # `nix run .#unit-verify`: systemd's own dependency analysis over the demo
-      # system's generated units. It catches an ordering cycle - e.g. a mount
-      # unit, which implicitly gets Before=local-fs.target, ordered after a
-      # service that is itself After=local-fs.target - which systemd resolves by
-      # *deleting* a start job. That is silent in the boot log and reorders the
-      # boot, so it is worth a command. An app rather than a check: the analyzer
-      # creates /run/systemd, which a Nix build sandbox cannot, so a check would
-      # pass vacuously. Verification happens inside a root of its own, so the
-      # host's own unit files never enter the analysis.
+      # Verify the actual NixOS default boot transaction, including upstream
+      # units, package units, aliases, dependency links and drop-ins. Verifying
+      # every installed optional/template/initrd unit together invents a
+      # transaction NixOS never starts. An explicit unit path keeps host units
+      # out while leaving store executables accessible.
       apps.x86_64-linux.unit-verify =
         let
-          units = lib.filterAttrs (_: u: u.enable) self.nixosConfigurations.demo.config.systemd.units;
-          # Each unit's store output is a directory holding the unit file
-          # itself; the analyzer wants the files.
-          unitFiles = lib.mapAttrsToList (name: u: "${u.unit}/${name}") units;
-          unitNames = builtins.attrNames units;
-          verifier = pkgsHost.writeShellApplication {
-            name = "liuqin-unit-verify";
-            runtimeInputs = [ pkgsHost.systemd pkgsHost.coreutils pkgsHost.gnugrep ];
-            text = ''
-              root=$(mktemp -d)
-              trap 'rm -rf "$root"' EXIT
-              mkdir -p "$root/etc/systemd/system" "$root/run" "$root/nix/store"
-              # The framework units (sysinit.target, local-fs.target, ...) come
-              # from the systemd package, which the analyzer looks up under the
-              # same absolute store path inside that root.
-              ln -s ${pkgsHost.systemd} "$root/nix/store/$(basename ${pkgsHost.systemd})"
-              cp -L ${lib.escapeShellArgs unitFiles} "$root/etc/systemd/system/"
-
-              # `--` because the root mount is named "-.mount", which the
-              # option parser would otherwise take for a flag. The analyzer's
-              # exit status also reflects unrelated findings (unit files it
-              # cannot reach inside the root), so only a cycle is fatal here.
-              if ! systemd-analyze --root="$root" verify -- ${lib.escapeShellArgs unitNames} >"$root/verify.log" 2>&1; then
-                :
-              fi
-              if grep -q "ordering cycle" "$root/verify.log"; then
-                echo "ordering cycle in the demo system's units:" >&2
-                grep -B2 -A6 "ordering cycle" "$root/verify.log" >&2
-                exit 1
-              fi
-              echo "no ordering cycle in ${toString (builtins.length unitFiles)} units"
-            '';
-          };
-        in
-        {
+          verifier = pkgsHost.callPackage ./pkgs/unit-verify { };
+          unitTree = self.nixosConfigurations.demo.config.environment.etc."systemd/system".source;
+          command = pkgsHost.writeShellScript "liuqin-demo-unit-verify" ''
+            exec ${verifier}/bin/liuqin-unit-verify ${unitTree} "$@"
+          '';
+        in {
           type = "app";
-          program = "${verifier}/bin/liuqin-unit-verify";
-          meta.description = "systemd ordering analysis over the demo system's generated units";
+          program = toString command;
+          meta.description = "Strict verification of the demo systemd default boot transaction";
         };
+
+      # systemd's system-manager analyzer needs /run/systemd even with
+      # --root. Run its positive/negative fixtures as an app, outside the Nix
+      # build sandbox, and require a real successful positive case.
+      apps.x86_64-linux.unit-verify-tests =
+        let
+          verifier = pkgsHost.callPackage ./pkgs/unit-verify { };
+          command = pkgsHost.writeShellScript "liuqin-unit-verifier-tests" ''
+            exec ${pkgsHost.python3}/bin/python3 ${./pkgs/unit-verify/test_verify.py} \
+              ${verifier}/bin/liuqin-unit-verify ${pkgsHost.coreutils}/bin/true
+          '';
+        in {
+          type = "app";
+          program = toString command;
+          meta.description = "Positive and negative tests of the strict systemd verifier";
+        };
+
+      checks.x86_64-linux.liuqin-fingerprint-runtime =
+        pkgsHost.runCommand "liuqin-fingerprint-runtime-tests" {
+          nativeBuildInputs = [ pkgsHost.patch pkgsHost.python3 ];
+        } ''
+          cp ${./pkgs/fingerprint/fpc-oem-src/oem/oem_runtime.py} oem_runtime.py
+          chmod u+w oem_runtime.py
+          patch --fuzz=0 -p1 < ${./pkgs/fingerprint/oem-runtime-firmware-dir.patch}
+          patch --fuzz=0 -p1 < ${./pkgs/fingerprint/oem-runtime-power-state.patch}
+          python3 ${./pkgs/fingerprint/test-runtime-firmware.py} "$PWD/oem_runtime.py"
+          touch $out
+        '';
+
+      checks.x86_64-linux.liuqin-kernel-config-policy =
+        let
+          initial = pkgsHost.writeText "liuqin-kernel-initial-answers.json"
+            (builtins.toJSON (import ./pkgs/kernel/config.nix { inherit lib; }));
+        in
+        pkgsHost.runCommand "liuqin-kernel-config-policy" {
+          nativeBuildInputs = [ pkgsHost.python3 ];
+        } ''
+          mkdir -p $out
+          python3 ${./pkgs/kernel/check-config-policy.py} \
+            --initial ${initial} \
+            --board ${./pkgs/kernel/liuqin-firstboot.config} \
+            --installer ${./pkgs/kernel/installer.config} \
+            --camera ${./pkgs/kernel/camera-symbols.txt} \
+            --policy ${./pkgs/kernel/config-transitions.json} \
+            --report $out/ownership.tsv
+          python3 -m unittest discover -s ${./pkgs/kernel}/tests -v
+        '';
+
     };
 }
