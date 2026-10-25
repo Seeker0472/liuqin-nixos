@@ -1,6 +1,7 @@
 /result
 /result-*
 /out/
+.vscode/
 *.img
 __pycache__/
 
