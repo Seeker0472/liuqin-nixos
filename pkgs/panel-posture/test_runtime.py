@@ -114,8 +114,12 @@ class RuntimeTests(unittest.TestCase):
         self.mode = "0"
         with patch("main.laptop_rotation", return_value=3):
             self.update()
-        self.assertEqual(self.requests()[0][2][1][0], 1440)
-        self.assertEqual(self.requests()[0][2][1][5][0][0], "DP-1")
+        self.assertEqual(self.requests()[0][2], [
+            (0, 0, 2.0, 3, True,
+             [("DSI-1", "1800x2880@120", {"color-mode": 1})]),
+            (1440, 0, 2.0, 0, False,
+             [("DP-1", "2560x1600@60", {})]),
+        ])
 
     def test_tablet_posture_leaves_external_layout_untouched(self):
         state = list(self.client.mutter.state)

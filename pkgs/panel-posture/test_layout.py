@@ -29,16 +29,6 @@ class LayoutTests(unittest.TestCase):
             [("DSI-1", "current-120Hz", {"underscanning": False, "color-mode": 1})])])
         self.assertEqual(self.state, before)
 
-    def test_extended_desktop_moves_right_monitor_and_preserves_it(self):
-        self.state = (42, [self.panel_monitor, self.external_monitor], [
-            (0, 0, 2.0, 0, True, [self.panel], {}),
-            (900, 0, 2.0, 0, False, [self.external], {}),
-        ], {"layout-mode": 1})
-        _, _, logicals, _ = rotation_config(self.state, 3)
-        self.assertEqual(logicals[0][0:5], (0, 0, 2.0, 3, True))
-        self.assertEqual(logicals[1], (1440, 0, 2.0, 0, False,
-            [("DP-1", "external-60Hz", {"color-mode": 2})]))
-
     def test_extended_desktop_moves_monitor_below_panel(self):
         self.state = (42, [self.panel_monitor, self.external_monitor], [
             (0, 0, 2.0, 0, True, [self.panel], {}),
