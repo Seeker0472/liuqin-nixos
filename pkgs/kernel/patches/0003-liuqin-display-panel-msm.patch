@@ -1,8 +1,10 @@
 Display: the Novatek NT36532 DSI panel (driver plus dsi_host plumbing), the
-msm dirtyfb fix for CPU-written buffers, the warm-start fixes (stop the DSI
-controller before programming it; do not restore the bootloader PLL state),
-and one early DPMS off/on after the first modeset, which is what actually
-gets a picture out of a pipeline the bootloader left running.
+warm-start workarounds (stop the DSI controller before programming it; do not
+restore the bootloader PLL state), and one early DPMS off/on after the first
+modeset. The local CPU-mapping dirtyfb override was withdrawn: it forced
+atomic commits without demonstrating a visual benefit on this video-mode
+panel. Keep upstream's dirtyfb policy; mapping a GEM buffer is not a damage
+or cache-coherency requirement.
 
 Merged from: bring-up patches 0004, 0012, 0015
 --- a/drivers/gpu/drm/msm/dsi/dsi_host.c
@@ -135,32 +137,6 @@ Merged from: bring-up patches 0004, 0012, 0015
  	 */
  	if (!dsi_pll_7nm_vco_recalc_rate(&pll_7nm->clk_hw, VCO_REF_CLK_RATE))
  		pll_7nm->vco_current_rate = pll_7nm->phy->cfg->min_pll_rate;
---- a/drivers/gpu/drm/msm/msm_fb.c
-+++ b/drivers/gpu/drm/msm/msm_fb.c
-@@ -39,11 +39,21 @@ static int msm_framebuffer_dirtyfb(struct drm_framebuffer *fb,
- 				   unsigned int num_clips)
- {
- 	struct msm_framebuffer *msm_fb = to_msm_framebuffer(fb);
-+	struct msm_gem_object *msm_obj = to_msm_bo(fb->obj[0]);
- 
- 	/* If this fb is not used on any display requiring pixel data to be
--	 * flushed, then skip dirtyfb
-+	 * flushed, then skip dirtyfb.  That reasoning only holds for buffers
-+	 * the display engine already sees, i.e. ones written through the
-+	 * GPU: a display that scans out continuously picks GPU writes up by
-+	 * itself.  It does not hold for buffers someone has mapped for CPU
-+	 * access, because those writes are only published to the display by a
-+	 * commit.  Measured on liuqin (SM8475, two video-mode DSI panels):
-+	 * the fbdev console draws through the deferred ops and arrives here
-+	 * with refcount_read(&dirtyfb) == 1, and with the unconditional skip
-+	 * the panel keeps showing stale content until an unrelated commit,
-+	 * while committing here makes every batch of drawn lines appear.
- 	 */
--	if (refcount_read(&msm_fb->dirtyfb) == 1)
-+	if (refcount_read(&msm_fb->dirtyfb) == 1 && !msm_obj->vmap_count)
- 		return 0;
- 
- 	return drm_atomic_helper_dirtyfb(fb, file_priv, flags, color,
 --- a/drivers/gpu/drm/panel/Kconfig
 +++ b/drivers/gpu/drm/panel/Kconfig
 @@ -622,6 +622,16 @@ config DRM_PANEL_NOVATEK_NT36523

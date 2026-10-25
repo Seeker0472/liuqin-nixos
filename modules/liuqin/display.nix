@@ -31,17 +31,10 @@ in
     };
 
     # --- Panel console repaint --------------------------------------------
-    # The bootloader framebuffer and the memory the panel scans after the DRM
-    # driver takes over are not the same, so everything the early console drew
-    # used to land in a buffer that is no longer on screen - which is what
-    # made a healthy boot look like a dead panel.  The fix for that is the
-    # kernel's per-draw flushing (0003-liuqin-display-panel-msm.patch, the msm
-    # dirtyfb fix); the blank/unblank workaround that used to live here
-    # (`liuqin-screen-refresh`) is gone: measured 2026-10-07, its late blank
-    # is refused once a DRM master exists (GDM at ~10 s), so the display is
-    # left blanked with nothing to undo it - it was turning a working panel
-    # into a dark screen.  The RAM installer still runs the same command (its
-    # own unit in config/installer.nix), where the blank lands before any
-    # master exists and only costs a one-second blink.
+    # The installed system relies on patch 0003's one early pipeline cycle.
+    # Do not add a late userspace blank/unblank here: after GDM owns DRM master
+    # the blank is refused and can leave the panel dark. The RAM installer has
+    # its own early blank in config/installer.nix to redraw the complete boot
+    # log before a DRM master exists. Dirtyfb uses upstream drm/msm policy.
   };
 }

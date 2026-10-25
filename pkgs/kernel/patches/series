@@ -1,0 +1,24 @@
+# Board DTS extensions 0014-0016 follow the common series.
+0001-liuqin-board-dts-bindings.patch
+0002-liuqin-input-hid-touchscreen.patch
+0003-liuqin-display-panel-msm.patch
+0004-liuqin-audio-audioreach.patch
+0005-liuqin-power-pmic-glink-mipps.patch
+0006-liuqin-media-iris.patch
+0007-liuqin-soc-misc-earlycon.patch
+0008-liuqin-usb-typec-dp.patch
+0009-liuqin-pinctrl-sm8475.patch
+0010-liuqin-pcie-qmp-phy.patch
+0011-liuqin-cpu-topology-thermal.patch
+0012-liuqin-camera-core.patch
+0013-liuqin-camera-tuning.patch
+0017-liuqin-tee-qseecom-legacy-transport.patch
+0018-liuqin-misc-fpc1020.patch
+0019-liuqin-dts-fpc1264.patch
+0020-liuqin-wcn6855-rfa-rail-voltages.patch
+0021-liuqin-camera-orientation.patch
+0022-liuqin-usb-dwc3-reset-dump.patch
+0023-liuqin-phy-dp-vendor-state.patch
+0014-liuqin-board-usb-typec-dp-dt.patch
+0015-liuqin-audio-wcd-capture.patch
+0016-liuqin-cs35l41-subsystem-id.patch

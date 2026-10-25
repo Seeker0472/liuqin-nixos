@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MIT
 #
-# liuqin kernel configuration, expressed as nixpkgs structuredExtraConfig.
+# Initial liuqin Kconfig answers, expressed as nixpkgs structuredExtraConfig.
+# This is the generate-config.pl input, not the final module/built-in policy.
+# Final boot constraints belong to liuqin-firstboot.config; installer-only
+# constraints belong to installer.config. config-transitions.json records
+# the allowed changes between these stages (see CONFIGURATION.md).
 #
 # Base: the kernel's own arm64 defconfig (the generate-config.pl flow in
 # nixpkgs builds the .config by answering `make defconfig` first, then
@@ -35,10 +39,9 @@ with kernelLib;
   PINCTRL_SM8475 = lib.mkForce yes;
   SCSI_UFS_QCOM = lib.mkForce yes;
   PHY_QCOM_QMP = lib.mkForce yes;
-  # SM8450/V6 USB3 + DP combo PHY; the DP register tables are the wholesale
-  # pkgs/kernel/replaced/phy-qcom-qmp-combo.c replacement (see pkgs/kernel/default.nix
-  # postPatch), the USB3 side comes from 0008-liuqin-usb-typec-dp.patch, and
-  # the DT profile decides when it is connected.
+  # SM8450/V6 USB3 + DP combo PHY: USB3 is in 0008-liuqin-usb-typec-dp.patch,
+  # the DP vendor tables are in 0023-liuqin-phy-dp-vendor-state.patch, and the
+  # DT profile decides when it is connected.
   PHY_QCOM_QMP_COMBO = lib.mkForce module;
   PHY_QCOM_QMP_UFS = lib.mkForce yes;
   PHY_QCOM_QMP_PCIE = lib.mkForce yes;

@@ -14,10 +14,9 @@
 # `allowImportFromDerivation` (meaningful only for linuxManualConfig /
 # linuxPackages_custom) is deliberately not passed.
 #
-# Three config inputs, on purpose, because they answer different questions:
-#   config.nix              structured answers for the installed system; they
-#                           are the record of what this port wants, and they
-#                           are applied in one Kconfig pass.
+# Three config stages, with ownership checked by check-config-policy.py:
+#   config.nix              initial answers for generate-config.pl, not a
+#                           declaration of the final module/built-in split.
 #   liuqin-firstboot.config raw fragment appended afterwards (see the
 #                           postConfigure hook below) for the symbols that a
 #                           structured answer cannot settle - either because
@@ -25,7 +24,10 @@
 #                           or because olddefconfig would downgrade them to
 #                           =m.  Appending and re-resolving is what the
 #                           downstream build script does with oldconfig.
-#   installer.config        the same mechanism for the RAM installer only.
+#   installer.config        installer-only additions; common constraints
+#                           belong to liuqin-firstboot.config alone.
+# config-transitions.json declares every intentional change between stages.
+# See CONFIGURATION.md for ownership, checks and the override contract.
 # Every "CONFIG_X=y"/"=m" line the fragments carry - and every
 # "# CONFIG_X is not set" - is asserted against the final .config, derived
 # from the fragments at build time (see postConfigure), so a symbol that no
@@ -46,45 +48,35 @@ let
     hash = "sha256-Vd3w34Ml2drZb8/3vZOXfSLj9QrwZSdXKvWbd8djK3g=";
   };
 
-  # Everything in ./patches, except the board DTS additions that are
-  # applied after them (dtPatchNames below), so the DTS patches stay in their
-  # validated order.
-  commonKernelPatches =
-    map
-      (name: {
-        name = lib.removeSuffix ".patch" name;
-        patch = ./patches + "/${name}";
-      })
-      (builtins.sort (a: b: a < b) (
-        builtins.attrNames (
-          lib.filterAttrs (n: t: t == "regular" && lib.hasSuffix ".patch" n)
-            (builtins.readDir ./patches)
-        )
-      ));
+  # Keep dependency order explicit. Missing or unlisted patches fail evaluation.
+  patchDir = ./patches;
+  patchNames = lib.filter (name: name != "" && !(lib.hasPrefix "#" name)) (
+    lib.splitString "\n" (builtins.readFile ./patches/series)
+  );
+  onDisk = builtins.attrNames (
+    lib.filterAttrs (name: type: type == "regular" && lib.hasSuffix ".patch" name) (
+      builtins.readDir patchDir
+    )
+  );
+  boardPatches =
+    assert lib.assertMsg (
+      builtins.sort builtins.lessThan patchNames == onDisk
+    ) "pkgs/kernel/patches/series must list each patch exactly once";
+    map (name: {
+      name = lib.removeSuffix ".patch" name;
+      patch = patchDir + "/${name}";
+    }) patchNames;
 
-  # One build carries every board feature.  The board DTS additions came from
-  # three bring-up patches (usb3-device, typec-otg, dp) that cannot stack as
-  # separate patches: USB3 and Type-C both add the same pm8350_l1 rail and
-  # qmpphy node, and the Type-C &usb_1 hunk rewrites the node USB3 changed.
-  # They are merged into one patch generated against the post-common tree, so
-  # it applies without fuzz.
-  # 0015 and 0016 extend the same board DTS (the WCD9385 capture graph and
-  # the CS35L41 amplifier naming), so they are applied after 0014 as well.
-  dtPatchNames = [
-    "0014-liuqin-board-usb-typec-dp-dt.patch"
-    "0015-liuqin-audio-wcd-capture.patch"
-    "0016-liuqin-cs35l41-subsystem-id.patch"
-  ];
-
-  kernelPatches =
-    (lib.filter (p: !(lib.elem (baseNameOf p.patch) dtPatchNames))
-      commonKernelPatches)
-    ++ map (n: {
-      name = lib.removeSuffix ".patch" n;
-      patch = ./patches + "/${n}";
-    }) dtPatchNames;
-
-  structuredExtraConfig = import ./config.nix { inherit lib; };
+  boardConfig = import ./config.nix { inherit lib; };
+  initialAnswers = builtins.toFile "liuqin-kernel-initial-answers.json" (builtins.toJSON boardConfig);
+  checkConfigPolicy = ''
+    ${buildPackages.python3}/bin/python3 ${./check-config-policy.py} \
+      --initial ${initialAnswers} \
+      --board ${./liuqin-firstboot.config} \
+      --installer ${./installer.config} \
+      --camera ${./camera-symbols.txt} \
+      --policy ${./config-transitions.json}
+  '';
 
   # The fragments appended by postConfigure, in append order.
   fragments = [ ./liuqin-firstboot.config ] ++ lib.optional installer ./installer.config;
@@ -97,8 +89,8 @@ in
 # buildLinux's generic.nix whitelists its known arguments; postBuild is not
 # one of them and would be dropped silently, so the fw_path_para assertion
 # is attached with overrideAttrs where every mkDerivation attr survives.
-(buildLinux {
-  inherit version src kernelPatches structuredExtraConfig;
+(buildLinux ({
+  inherit version src;
   modDirVersion = version;
   # nixpkgs common-config (namespaces, cgroups, DM, CIFS/NTFS3, USB storage,
   # the sound sequencer, ...) is deliberately NOT part of the base: this
@@ -123,15 +115,18 @@ in
   # symbols this port needs are asserted against the final .config instead.
   ignoreConfigErrors = true;
   defconfig = "defconfig"; # ARCH=arm64 defconfig
-}).overrideAttrs (old: {
-  # Feed the downstream display recipe in where it can actually take effect.
-  #
-  # This hook deliberately OVERRIDES the =module choices that ./config.nix
-  # still carries from the original "everything is a module, loaded from the
-  # initrd/rootfs" design.  That is the one place where this derivation has two
-  # sources of truth, and it is on purpose: config.nix stays the record of what
-  # the flake wants for a normal (rootfs-bearing) deployment, while the recipe
-  # below is the port's bring-up set for this device as it actually boots today.
+} // builtins.removeAttrs args [
+  "lib" "fetchurl" "buildLinux" "buildPackages" "installer"
+] // {
+  # Keep board patches first, then the caller's patches. Forward features,
+  # randstructSeed and other buildLinux arguments used by NixOS .override.
+  kernelPatches = boardPatches ++ (args.kernelPatches or [ ]);
+  structuredExtraConfig = boardConfig // (args.structuredExtraConfig or { });
+})).overrideAttrs (old: {
+  # Apply the board's final boot constraints after the initial answers.
+  # config.nix retains the validated generator inputs; the common fragment
+  # owns the final built-ins. Their intentional m -> y transitions are listed
+  # in config-transitions.json, and accidental drift fails postPatch below.
   #
   # nixpkgs' own channels cannot express it: structuredExtraConfig and
   # extraConfig both end up in the one file generate-config.pl reads
@@ -158,8 +153,8 @@ in
     '') fragments}
     # Check what the fragments required, derived from the same files that
     # were just appended so the expectations cannot drift from the fragments,
-    # plus the frozen camera/media list in camera-symbols.txt (config.nix
-    # carries those answers, but ignoreConfigErrors would let a rejected one
+    # plus the frozen camera/media list in camera-symbols.txt (config.nix or
+    # arm64 defconfig supplies them, but ignoreConfigErrors lets a rejected one
     # drift silently).
     # Each "CONFIG_X=y" line must survive as =y - '^CONFIG_X=' alone also
     # matches '=m', and olddefconfig silently downgrades to =m when a
@@ -220,20 +215,12 @@ in
   # sm8475-xiaomi-liuqin.dts lost its &usb_1/&usb_1_hsphy overrides and the
   # built DTB came out with the eUSB2 PHY and DWC3 disabled - the installed
   # system then had no USB debug channel at all, while every build passed.
-  # Check every patch this build consumes, so the next drift is a build
+  # Check every board patch this build consumes, so the next drift is a build
   # failure that names the hunk instead of a device that cannot be reached.
   postPatch = (old.postPatch or "") + ''
     ${buildPackages.python3}/bin/python3 ${./check-patch-hunks.py} \
-      ${lib.concatMapStringsSep " " (p: "${p.patch}") kernelPatches}
-    # The DP side of the combo PHY is a wholesale replacement, not a diff:
-    # its values are the live register state of the vendor stack on this
-    # board (Xiaomi Android 15: HBR2 4-lane, 2560x1600@60, widebus).  The
-    # file is generated by liuqin-audit/kernel-exp/dp-gen-vendor-tables.py
-    # plus the COM/PD_CTL fixes; it supersedes a patch because upstream
-    # shares the same DP block between the sm8350 and sm8450 cfgs.
-    cp ${./replaced/phy-qcom-qmp-combo.c} \
-       drivers/phy/qualcomm/phy-qcom-qmp-combo.c
-  '';
+      ${lib.concatMapStringsSep " " (p: "${p.patch}") boardPatches}
+  '' + checkConfigPolicy;
   # firmware_class.path=/var/lib/firmware (boot.kernelParams) only works when
   # the kernel was built with the fw_path_para command-line parameter; assert
   # the symbol string survived into vmlinux so a config regression fails the
