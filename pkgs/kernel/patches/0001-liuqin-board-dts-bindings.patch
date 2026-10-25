@@ -117,7 +117,7 @@ Merged from: bring-up patches 0001
    "^neardi,.*":
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -18547,6 +18547,20 @@ F:	rust/kernel/pid_namespace.rs
+@@ -18547,6 +18547,12 @@ F:	rust/kernel/pid_namespace.rs
  F:	kernel/pid_namespace.c
  F:	tools/testing/selftests/pid_namespace/
  
@@ -126,14 +126,6 @@ Merged from: bring-up patches 0001
 +S:	Maintained
 +F:	Documentation/devicetree/bindings/input/nanosic,wn8030.yaml
 +F:	drivers/hid/hid-nanosic.c
-+F:	tools/testing/selftests/hid/nanosic-static.py
-+
-+NANOSIC WN8030 KEYBOARD BRIDGE DRIVER
-+M:	Erwin <yzddmr7@gmail.com>
-+S:	Maintained
-+F:	Documentation/devicetree/bindings/input/nanosic,wn8030.yaml
-+F:	drivers/hid/hid-nanosic.c
-+F:	tools/testing/selftests/hid/nanosic-static.py
 +
  NATIONAL INSTRUMENTS SERIAL DRIVER
  M:	Chaitanya Vadrevu <chaitanya.vadrevu@emerson.com>
