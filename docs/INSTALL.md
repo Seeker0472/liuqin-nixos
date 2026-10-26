@@ -106,14 +106,21 @@ When the display never comes up, work from the U-Boot/fastboot and pstore
 channels instead — `PORTING-NOTES.md` §3.1 is the list.
 
 ## 2. Building
+The build consumes static payloads from the separate sibling repository
+`liuqin-nixos-os2-firmware-assets`. Keep that authorized checkout beside this
+repository; no downstream release image or per-device persist data is a build
+input. Because the sibling is outside this flake's Git tree, every Nix command
+must pass `--override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets`;
+Nix then hashes the checkout into a store input.
+
 
 ```sh
-nix build .#uboot-bootimg --out-link result-uboot          # U-Boot boot.img, the payload of boot_b
-nix build .#installer-bootimg --out-link result-installer  # RAM installer, ABL-bootable only
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#uboot-bootimg --out-link result-uboot
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#installer-bootimg --out-link result-installer
 
 # the installed system plus the loader step that /boot needs
-nix build .#nixosConfigurations.demo.config.system.build.toplevel
-LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.toplevel
+LOADER=$(nix eval --raw --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.installBootLoader)
 ```
 
 The x86_64 → aarch64 cross set (`pkgsArm`) builds the device packages once on
@@ -207,8 +214,8 @@ or over Wi-Fi (the tablet's DHCP address).
 
 ```sh
 # host: build the system and the loader script once
-nix build .#nixosConfigurations.demo.config.system.build.toplevel
-LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.toplevel
+LOADER=$(nix eval --raw --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.installBootLoader)
 ```
 
 ### a. Binary cache (small HTTP server)
@@ -310,47 +317,36 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 The sensor sits in the power button and the vendor trustlet does the matching;
 Linux only drives power/reset/IRQ and the QSEECOM TEE transport, and fprintd
 talks to a libfprint TOD driver that keeps one template per account.  The
-whole software stack is in this tree; the firmware images and the per-device
-Gatekeeper/RPMB state are operator-supplied data.
+whole software stack is in this tree; static `fpcliu.mdt` and its segment files
+come from the OS2.0.4 asset repository. Gatekeeper/RPMB state remains per-device.
 
 ### What is verified, what is not
 
-- Verified (2026-10-06): enrolment from Settings, lock-screen unlock through
-  `gdm-fingerprint`, and the adaptive template update.  Details and the limits
-  are in `docs/PORTING-NOTES.md` ("Fingerprint (FPC1264)").
+- Previously verified (2026-10-06): enrolment from Settings, lock-screen unlock
+  through `gdm-fingerprint`, and the adaptive template update, using the prior
+  firmware source. That does not verify the OS2.0.4 firmware payloads.
+- The OS2.0.4 firmware files are source- and hash-verified in the separate
+  assets repository, but still require on-device validation.
 - Not implemented: more than one finger per account, credential sync after a
   password change from the desktop (the CLI entry below exists), the OEM
   acceptance-record flow, and fingerprint authentication for `su`/SSH.
 
-### Operator material
+### Static firmware and account credential
 
-The only binary you have to extract is the OEM firmware; everything else is
-built from this tree (the OEM userspace component and qsee-supplicant are
-vendored under `pkgs/fingerprint/`, QCBOR comes from upstream; no key has to
-be extracted - the per-account credential is created on the device).
+The static `fpcliu.mdt` and `b00`-`b08` files are packaged from
+`liuqin-nixos-os2-firmware-assets`; the enabled module installs that immutable
+package and points the OEM runtime at it. No firmware files need to be copied
+onto the device. The asset repository contains proprietary payloads extracted
+from official OS2.0.4 images, not per-device credentials, Gatekeeper state or
+RPMB data.
 
-- **OEM firmware.**  `fpcliu.mdt` plus its `b00`-`b08` segments come from the
-  stock ROM (the MIUI V14 extraction in
-  `liuqin-mainline-blobs/extracted/NON-HLOS/image/` is the copy used here).
-  Install it where the runtime points the kernel's firmware loader:
-
-  ```sh
-  # device, as root
-  install -d -m 0700 /var/lib/liuqin-fpc-oem/firmware
-  install -m 0600 fpcliu.mdt fpcliu.b0* /var/lib/liuqin-fpc-oem/firmware/
-  # the runtime verifies every file against this manifest (name -> sha256)
-  cd /var/lib/liuqin-fpc-oem/firmware
-  { printf '{'; sep=''; for f in fpcliu.*; do
-      printf '%s"%s": "%s"' "$sep" "$f" "$(sha256sum "$f" | cut -d' ' -f1)"; sep=', '
-    done; printf '}\n'; } > SHA256.json
-  ```
-
-- **Account credential (once per account).**  `sudo liuqin-fpc-credential
+- **Account credential (once per account).** `sudo liuqin-fpc-credential
   --create <user>`: root, a local terminal (not SSH), and it authenticates the
-  account password through its own PAM service.  It creates the Gatekeeper
+  account password through its own PAM service. It creates the Gatekeeper
   credential and the authenticated RPMB state under
-  `/var/lib/liuqin-fingerprint/native/`.  Run it once and never repeat it (the
+  `/var/lib/liuqin-fingerprint/native/`. Run it once and never repeat it (the
   tool refuses to re-create an existing identity).
+
 
 ### Enrol and use
 
@@ -385,8 +381,8 @@ ls -l /dev/fpc1020 /dev/tee0 /dev/teepriv0 /dev/bsg/0:0:0:49476
 liuqin-fpc-oem-runtime --ufs-rpmb-read-only --hw-auth-probe
 ```
 
-(The last one needs the firmware from above; it loads `fpcliu` into the TEE and
-reports the RPMB metadata.)
+The last command uses the packaged firmware to load `fpcliu` into the TEE and
+reports the RPMB metadata.
 
 ### Deploying an update
 

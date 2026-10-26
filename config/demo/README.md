@@ -15,44 +15,40 @@ github:Seeker0472/liuqin-nixos` produces exactly these files.
   `services.displayManager.autoLogin.user` and `nix.settings.trusted-users`
   all name the same account;
 - `networking.hostName` and `time.timeZone`;
-- the sensor stack: `hardware.liuqin.sensors.sscConfigHash` carries the demo
-  unit's archive hash. A different unit must register its own archive and
-  re-derive the hash, or drop the line to leave the SSC stack out (the module
-  warns).
+- the sensor stack uses the static OS2.0.4 configuration from the asset
+  repository; its registry is still provisioned from this unit's private
+  persist partition. WLAN/BT identities, speaker calibration, MiPPS keys and
+  fingerprint credentials/RPMB state remain device-local.
 
 Comments refer to paths in the BSP repository (`docs/…`, `pkgs/…`); the BSP's
 `README.md` is the reference for what the hardware does and does not support.
 
-## Operator-supplied payloads
+## Asset repository
 
-No proprietary data is in either repository. A build that carries firmware
-needs these archives on the build host, registered as fixed-output store
-paths; the filename must match, because the store path's name is what
-`requireFile` looks up:
+Builds require an authorized local checkout of the separate
+`liuqin-nixos-os2-firmware-assets` repository. When invoking Nix from
+`config/demo/`, pass
+`--override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets`
+to hash the sibling checkout into the store; update both input paths if you
+copy this template elsewhere. The nested
+`inputs.liuqin.inputs.firmwareAssets.follows = "firmwareAssets"` wiring makes
+the BSP and consumer use the same assets.
 
-- `liuqin-firmware-vpu.tar.zst`, `liuqin-firmware-cs35l41.tar.zst` — the VPU
-  and speaker-amplifier firmware;
-- `boot.img` — the downstream release image carrying the bulk firmware tree;
-- `liuqin-ssc-config.tar.zst` — the sensor configuration set (only when
-  `sscConfigHash` is set);
-- `stock-base-dtbs.tar.zst`, `stock-dtbo-entries.tar.zst` — the stock DT
-  archives used by the boot.img pipeline.
+The asset repository contains proprietary static payloads extracted from
+official OS2.0.4 images, pinned upstream firmware and generated AudioReach
+topology, with source/output hashes and provenance. Do not publish or
+redistribute it without authorization. The build does not use the downstream
+release boot image or per-host `requireFile` registrations.
 
-```sh
-nix-store --add-fixed sha256 <file>   # once per archive, per build host
-```
-
-`hardware.liuqin.firmware.{vpu,cs35l41,bootImg}` can also take plain paths
-(`./liuqin-firmware-vpu.tar.zst`) instead of the store registration. The BSP's
-`README.md`, `docs/PORTING-NOTES.md` and `.gitignore` describe how to extract
-each archive.
+Per-device persist contents, credentials, calibration, identities, sensor
+registry, MiPPS keys and RPMB state are not stored in the asset repository.
 
 ## Build and install
 
 ```sh
-nix build .#installer-bootimg   # RAM installer; the only first-install path
-nix build .#bootimg             # bootable image for the U-Boot/ABL path
-nix build .#uboot-bootimg       # the U-Boot boot.img
+nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#installer-bootimg   # RAM installer; the only first-install path
+nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#bootimg             # bootable image for the U-Boot/ABL path
+nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#uboot-bootimg       # the U-Boot boot.img
 ```
 
 The install and update flow — fastboot-booting the RAM installer, the telnet
@@ -63,9 +59,9 @@ in the BSP.
 ## Updating
 
 `nix flake update` advances the `liuqin` input to the newest BSP `main`; the
-nixpkgs pin follows the BSP's own lockfile, so the combination stays the one
-the BSP was validated against. Pin the input to a revision for
-reproducibility:
+nixpkgs pin follows the BSP's own lockfile. The asset repository remains a
+separate local path input and must be updated independently when its contents
+change. Pin the BSP input to a revision for reproducibility:
 
 ```nix
 inputs.liuqin.url = "github:Seeker0472/liuqin-nixos/<rev>";

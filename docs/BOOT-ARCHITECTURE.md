@@ -124,8 +124,9 @@ nix build .#uboot-bootimg   # 上面那份 + ABL 打包（pkgs/bootimg/default.n
 | `patches/` | 对基线**已有**文件的 30 处改动，切成 13 个 topic patch。分组之间**文件互不重叠**，所以顺序无关、也不会互相 fuzz：Kconfig 符号、mach 板级钩子（含跨复位 stage log 的标记）、`Makefile` 的 `pwd` 修正、console/input、UFS+QMP-UFS PHY、eUSB2 PHY、dwc3（含端点状态机）、fastboot 弱钩子、f_fastboot 请求池、pinctrl/PMIC GPIO/RPMH regulator/SMMU、`cmd` 的 partlog 接线、bootmenu 重绘、`boot/pxe_utils.c` 的 extlinux 按键菜单。 |
 
 `pkgs/u-boot/default.nix` 固定 `scripts/config` 清单与 `DEVICE_TREE`（**构建期
-不对结果做断言**）；`boot.img` 的契约（ids、`__symbols__` 并集 1744、惰性
-sink、`base 0`/`kernel_offset 0x8000`/`dtb_offset 0x1f00000`、8 MiB padding、
+不对结果做断言**）；`boot.img` 的契约（ids、OS2.0.4 的 44 个 DTBO 条目
+与 14 个 base DTB 的 `__symbols__`，以及 DTBO `__fixups__` 目标合计 2524
+个名称、惰性 sink、`base 0`/`kernel_offset 0x8000`/`dtb_offset 0x1f00000`、8 MiB padding、
 空 newc ramdisk）由 `pkgs/bootimg/default.nix` 统一实现，内核镜像走同一条管线。
 构建把实际用的 `.config` 装进产物（`$out/uboot.config`）。
 
