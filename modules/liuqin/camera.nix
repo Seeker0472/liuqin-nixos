@@ -126,10 +126,15 @@ in
       # or reserved when a cma= size is on the kernel command line - then the
       # system heap.  /dev/udmabuf is a different device and is not reached
       # while the system heap is available, so it is not granted here.
+      # The rear flash has no /dev node: GROUP=/MODE= on the LED event do not
+      # affect its sysfs attributes. The GNOME flashlight extension writes
+      # brightness directly, so grant that one torch control to the same video
+      # group as the camera stack. Keep flash_strobe root-only.
       services.udev.extraRules = ''
         SUBSYSTEM=="dma_heap", KERNEL=="linux,cma", GROUP="video", MODE="0660"
         SUBSYSTEM=="dma_heap", KERNEL=="reserved", GROUP="video", MODE="0660"
         SUBSYSTEM=="dma_heap", KERNEL=="system", GROUP="video", MODE="0660"
+        SUBSYSTEM=="leds", KERNEL=="white:flash", RUN+="${pkgs.coreutils}/bin/chgrp video /sys/class/leds/white:flash/brightness", RUN+="${pkgs.coreutils}/bin/chmod 0664 /sys/class/leds/white:flash/brightness"
       '';
 
       # There is deliberately no idle "seat the VCM" service either: the VCM

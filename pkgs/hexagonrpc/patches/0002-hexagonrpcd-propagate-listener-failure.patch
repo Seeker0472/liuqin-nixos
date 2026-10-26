@@ -1,0 +1,78 @@
+From 4db02cf393ad16bbf4440005a1dc4d097fae0fd8 Mon Sep 17 00:00:00 2001
+From: liuqin integration <noreply@localhost>
+Date: Mon, 26 Oct 2026 18:10:00 +0800
+Subject: [PATCH] hexagonrpcd: propagate reverse tunnel failures
+
+The daemon discarded run_fastrpc_listener()'s result and always returned zero.
+A closed FastRPC channel therefore looked like a clean daemon shutdown, so
+Restart=on-failure could not recover it and systemd reported misleading
+successful exits. Return a failure from main when listener setup or service
+fails.
+---
+ hexagonrpcd/rpcd.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index 3249a89..d044db8 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -187,7 +187,7 @@ static int start_clients(size_t n_progs, const char **progs, pid_t *pids)
+ 	return 0;
+ }
+ 
+-static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
++static int start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+ {
+ 	struct fastrpc_interface **ifaces;
+ 	struct hexagonfs_dirent *root_dir;
+@@ -196,7 +196,7 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+ 
+ 	ifaces = malloc(sizeof(struct fastrpc_interface) * n_ifaces);
+ 	if (ifaces == NULL)
+-		return NULL;
++		return -ENOMEM;
+ 
+ 	root_dir = construct_root_dir(device_dir, dsp);
+ 
+@@ -215,18 +215,18 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+ 	if (ret)
+ 		goto err;
+ 
+-	run_fastrpc_listener(fd, n_ifaces, ifaces);
++	ret = run_fastrpc_listener(fd, n_ifaces, ifaces);
+ 
+ 	fastrpc_localctl_deinit(ifaces[REMOTECTL]);
+ 
+ 	free(ifaces);
+ 
+-	return NULL;
++	return ret;
+ 
+ err:
+ 	free(ifaces);
+ 
+-	return NULL;
++	return ret;
+ }
+ 
+ static char *read_sysfs_file(const char *path, struct stat *file_stat)
+@@ -433,7 +433,7 @@ int main(int argc, char* argv[])
+ 	if (ret)
+ 		goto err_close_dev;
+ 
+-	start_reverse_tunnel(fd, device_dir, dsp);
++	ret = start_reverse_tunnel(fd, device_dir, dsp);
+ 
+ 	terminate_clients(n_progs, pids);
+ 
+@@ -441,7 +441,7 @@ int main(int argc, char* argv[])
+ 	free(pids);
+ 	free(progs);
+ 
+-	return 0;
++	return ret ? 4 : 0;
+ 
+ err_close_dev:
+ 	close(fd);
+-- 
+2.51.0
