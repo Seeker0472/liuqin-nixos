@@ -6,37 +6,10 @@ let
 
   stateDir = "/var/lib/liuqin-private";
 
-  # The SSC configuration set is Qualcomm/Xiaomi proprietary. Either the
-  # operator points sscConfig at their own extraction or registers an archive
-  # in the store and pins its hash; without one the SSC stack (and only that
-  # stack) is left out - the rest of the per-device provisioning below still
-  # runs, because the persist partition is on the device itself.
-  hasSscConfig = cfg.sensors.sscConfig != null || cfg.sensors.sscConfigHash != null;
-
-  sscConfig =
-    if hasSscConfig then
-      pkgs.liuqinSensorsConfig.override {
-        inherit (cfg.sensors) sscConfigHash;
-        sscConfigArchive = cfg.sensors.sscConfig;
-      }
-    else
-      null;
+  sscConfig = pkgs.liuqinSensorsConfig;
 in
 {
   config = lib.mkMerge [
-    {
-      warnings =
-        lib.optional (cfg.enable && cfg.sensors.enable && !hasSscConfig) ''
-          hardware.liuqin.sensors.enable is set but no SSC configuration set is
-          available, so the Qualcomm sensor stack is left out of this system.
-          Extract vendor/etc/sensors/config from your stock ROM dump
-          (docs/PORTING-NOTES.md) and either point
-          hardware.liuqin.sensors.sscConfig at the archive or register it with
-          `nix-store --add-fixed sha256 liuqin-ssc-config.tar.zst` and set
-          hardware.liuqin.sensors.sscConfigHash. Set
-          hardware.liuqin.sensors.enable = false to silence this.
-        '';
-    }
 
     (lib.mkIf cfg.enable {
       # The operator tools on PATH, independent of the SSC configuration set:
@@ -69,17 +42,15 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          # The command owns the payload format and the fail-closed checks
-          # (pkgs/persist-provision.nix); the module owns the layout. The SSC
-          # seed is optional there: without it the unit warns and provisions
-          # the remaining per-device data.
-          ExecStart = lib.concatStringsSep " " ([
+          # The packaged OS2.0.4 sensor config provides hexagonrpcd's physical
+          # sns_reg.conf adapter path and the mutable sns_reg_version seed.
+          ExecStart = lib.concatStringsSep " " [
             "${pkgs.liuqinPersistProvision}/bin/liuqin-persist-provision"
             "--private-dir ${stateDir}"
             "--sensor-dir /var/lib/liuqin-sensors"
             "--firmware-dir /var/lib/firmware"
-          ] ++ lib.optional hasSscConfig
-            "--ssc-config ${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin");
+            "--ssc-config ${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin"
+          ];
         };
       };
 
@@ -100,7 +71,7 @@ in
       ];
     })
 
-    (lib.mkIf (cfg.enable && cfg.sensors.enable && hasSscConfig) {
+    (lib.mkIf (cfg.enable && cfg.sensors.enable) {
       # The proxy package is in systemPackages for two reasons: nixpkgs' polkit
       # module links /share/polkit-1 from every system package, which installs
       # the net.hadess.SensorProxy.claim-sensor action the rules below reference
@@ -143,7 +114,7 @@ in
         wantedBy = [ "multi-user.target" ];
         requires = [ "liuqin-persist-provision.service" ];
         after = [ "systemd-udevd.service" "systemd-tmpfiles-setup.service" "liuqin-persist-provision.service" ];
-        before = [ "liuqin-hexagonrpcd-sdsp.service" ];
+        before = [ "liuqin-fastrpc-sdsp-device.service" ];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -155,14 +126,37 @@ in
         };
       };
 
-      systemd.services.liuqin-hexagonrpcd-sdsp = {
-        description = "liuqin SLPI FastRPC reverse tunnel";
+      # Wait outside the sandboxed tunnel service. DeviceAllow= resolves the
+      # device's major/minor while systemd creates that service's cgroup, so an
+      # ExecStartPre= in the same service is already too late.
+      systemd.services.liuqin-fastrpc-sdsp-device = {
+        description = "Wait for the liuqin SLPI FastRPC device";
         requires = [ "liuqin-slpi.service" ];
         after = [ "liuqin-slpi.service" ];
+        before = [ "liuqin-hexagonrpcd-sdsp.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          TimeoutStartSec = "10s";
+          ExecStart = "${pkgs.systemd}/bin/udevadm wait --timeout=10 --initialized=yes /dev/fastrpc-sdsp";
+        };
+      };
+
+      systemd.services.liuqin-hexagonrpcd-sdsp = {
+        description = "liuqin SLPI FastRPC reverse tunnel";
+        requires = [
+          "liuqin-slpi.service"
+          "liuqin-fastrpc-sdsp-device.service"
+        ];
+        after = [
+          "liuqin-slpi.service"
+          "liuqin-fastrpc-sdsp-device.service"
+        ];
         before = [ "liuqin-ssc-sample-gate.service" ];
-        unitConfig.ConditionPathExists = "/dev/fastrpc-sdsp";
         serviceConfig = {
           Type = "simple";
+          # The prerequisite above ensures DeviceAllow= can resolve the device
+          # before systemd creates this service's device cgroup.
           User = "fastrpc";
           Group = "fastrpc";
           ExecStart = "${pkgs.liuqinHexagonrpc}/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R ${sscConfig}/share/qcom/sm8450/Xiaomi/liuqin";
@@ -221,13 +215,15 @@ in
         };
       };
 
-      # Preserve one bounded re-announcement for legacy desktop sensor clients.
-      # Accelerometer ownership belongs to the GNOME posture client; remove
-      # these refresh units only after the remaining lifecycle checks pass.
+      # Re-announce only after both graphical boot and the sensor proxy are
+      # ready. A shell may intentionally decline the claim in laptop posture,
+      # so successful restart - not proxy CPU activity - is the contract.
       systemd.services.liuqin-sensor-proxy-refresh = {
         description = "Re-announce iio-sensor-proxy to the greeter's gnome-shell";
-        after = [ "graphical.target" ];
-        wants = [ "graphical.target" ];
+        after = [ "graphical.target" "iio-sensor-proxy.service" ];
+        # Wants orders startup without propagating the proxy restart back into
+        # this helper; Requires would SIGTERM the helper mid-ExecStart.
+        wants = [ "graphical.target" "iio-sensor-proxy.service" ];
         wantedBy = [ "graphical.target" ];
         serviceConfig = {
           Type = "oneshot";

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 #
-# hexagonrpc at the pinned downstream commit, with the liuqin patch
-# from pkgs/hexagonrpc/patches (source and patches are unchanged downstream
-# work; see NOTICE).
+# hexagonrpc at the pinned downstream commit, with the liuqin integration
+# patches from pkgs/hexagonrpc/patches (source and patches are unchanged
+# downstream work; see NOTICE).
 { lib
 , stdenv
 , fetchFromGitHub
@@ -25,6 +25,7 @@ stdenv.mkDerivation {
 
   patches = [
     ./patches/0001-hexagonrpcd-implement-ssc-file-service.patch
+    ./patches/0002-hexagonrpcd-propagate-listener-failure.patch
   ];
 
   nativeBuildInputs = [ meson ninja pkg-config ];

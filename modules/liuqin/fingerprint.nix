@@ -34,13 +34,11 @@
 #               credential input helper and the Python entry points, all under
 #               one prefix (LIUQIN_FPC_OEM_RUNTIME).
 #
-# Off by default, and deliberately so: enabling it is not enough for a working
-# sensor.  The OEM firmware images, the FPC trusted applications, RPMB state and
-# the Gatekeeper handles are per-device data that cannot be packaged, and the
-# first credential creation (liuqin-fpc-credential --create <user>) is a
-# physical procedure documented in docs/INSTALL.md (Fingerprint); until it has
-# been performed on the unit, the option only makes the stack reachable -
-# password login is untouched either way.
+# Off by default. The static FPC firmware is packaged from OS2.0.4 assets, but
+# the FPC trusted applications, RPMB state and Gatekeeper handles remain
+# device-local. The first credential creation
+# (liuqin-fpc-credential --create <user>) is a physical procedure documented in
+# docs/INSTALL.md (Fingerprint); until then, password login is untouched.
 { config, lib, pkgs, ... }:
 
 let
@@ -66,7 +64,7 @@ let
     runtimeInputs = [ pkgs.python3 pkgs.coreutils ];
     text = ''
       # ${description}
-      export LIUQIN_FPC_OEM_FIRMWARE=${lib.escapeShellArg cfg.firmwareDir}
+      export LIUQIN_FPC_OEM_FIRMWARE=${pkgs.liuqinFpcFirmware}/lib/firmware
       export PYTHONDONTWRITEBYTECODE=1
       exec python3 ${runtimeDir}/${script} "$@"
     '';
@@ -77,24 +75,9 @@ in
     enable = lib.mkEnableOption ''
       OEM FPC1264 fingerprint support: the qseecomtee/fpc1020 modules,
       the libfprint TOD driver, fprintd with OEM template persistence and the
-      OEM userspace runtime.  Requires operator-supplied firmware and the
-      documented device-side credential/enrolment procedure'';
-
-    firmwareDir = lib.mkOption {
-      type = lib.types.str;
-      default = "/var/lib/liuqin-fpc-oem/firmware";
-      description = ''
-        Root-owned directory holding the OEM firmware images for the FPC1264
-        (fpcliu.mdt plus its segment files) and the SHA256.json that lists them.
-        This directory is included in the shared /run/firmware union. The
-        runtime verifies the manifest and the files visible through that
-        union without changing the kernel's global firmware path. Stop
-        run-firmware.mount before provisioning files and start the loader
-        path service afterwards (see docs/INSTALL.md). Keep credentials in
-        the separate fingerprint state directory. The path must be absolute
-        and contain only letters, digits, slashes, dots, underscores and hyphens.
-      '';
-    };
+      OEM userspace runtime. Static firmware comes from the OS2.0.4 asset
+      package; trusted applications and per-device credential state remain
+      local. See docs/INSTALL.md for enrollment'';
 
     pamServices = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -165,7 +148,6 @@ in
     systemd.tmpfiles.rules = [
       "d ${stateDir} 0700 root root -"
       "d /var/lib/liuqin-fpc-oem 0700 root root -"
-      "d ${cfg.firmwareDir} 0700 root root -"
       "d /var/lib/liuqin-fpc-oem/candidate 0700 root root -"
     ];
 
@@ -180,7 +162,7 @@ in
         # the unrelated legacy driver.
         FP_DRIVERS_ALLOWLIST = "fpc1264_oem";
         LIUQIN_FPC_OEM_RUNTIME = runtimeDir;
-        LIUQIN_FPC_OEM_FIRMWARE = cfg.firmwareDir;
+        LIUQIN_FPC_OEM_FIRMWARE = "${pkgs.liuqinFpcFirmware}/lib/firmware";
         # The bundle lives in the read-only store; do not attempt __pycache__
         # writes next to it.
         PYTHONDONTWRITEBYTECODE = "1";
@@ -205,9 +187,14 @@ in
         # and the lock screen stays locked.  The CLI path chmods its output to
         # 0600 itself, which is why only the desktop flow exposed this.
         UMask = "0077";
-        # The runtime only reads the shared firmware lookup. Keep the
-        # upstream USB wakeup exception without granting firmware path writes.
-        ReadWritePaths = [ "/sys/devices" ];
+        # Likewise: /sys/devices is the upstream exception (USB wakeup tuning);
+        # the firmware class parameter is the one the OEM runtime rewrites to
+        # the static asset package. Same list, so both
+        # survive the upstream unit's ProtectSystem=strict/ProtectKernelTunables.
+        ReadWritePaths = [
+          "/sys/devices"
+          "/sys/module/firmware_class/parameters/path"
+        ];
         # Upstream device rules are restated for the same reason (a drop-in
         # replaces the list); the last four are the nodes the OEM stack uses:
         # the sensor control interface, the TEE client and supplicant devices,

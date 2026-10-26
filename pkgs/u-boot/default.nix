@@ -65,6 +65,7 @@
 , fetchFromGitHub
 , callPackage
 , hostPkgs
+, firmwareAssets
 }:
 
 let
@@ -278,6 +279,7 @@ PYEOF
   };
 
   bootimg = callPackage ../bootimg {
+    firmwareAssets = firmwareAssets;
     # The DTB surgery runs gawk on the build host, so take it from the host
     # package set rather than the cross one.
     inherit (hostPkgs) gawk;

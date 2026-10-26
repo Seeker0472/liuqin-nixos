@@ -14,6 +14,12 @@ Verification labels used throughout:
 - **unverified** — implemented or expected, never confirmed on hardware.
 - **not implemented** — no code path exists.
 
+The static-payload cutover switches firmware and stock boot DT inputs to the
+official OS2.0.4 asset set. The hardware measurements below describe earlier
+payloads; the new firmware/DT set has not been tested on the tablet. Verify
+boot, WLAN/BT, speaker protection/playback, VPU, sensors/SLPI and FPC on hardware
+before treating those payload paths as accepted.
+
 Companion documents: `README.md` (build outputs and configuration model),
 `docs/INSTALL.md` (install/update/recover), `docs/BOOT-ARCHITECTURE.md`
 (boot chain and U-Boot menu), `docs/TODO/CAMERA-MAINLINE.md` (camera detail),
@@ -25,23 +31,22 @@ Companion documents: `README.md` (build outputs and configuration model),
 
 | Subsystem | Status | One-line limit |
 | --- | --- | --- |
-| DSI display / DRM / backlight | historically verified; regression open | fixed 120 Hz; user reports internal-panel failures in newer variants; the early pipeline cycle remains a workaround |
-| Touch, pen, keyboard folio, touchpad, keys | historically verified; regression open | old touch retained; refactor has IRQ/idle-ESD defects; external-DP coordinate drift remains unresolved |
-| Keyboard backlight (`liuqin-keyboard::kbd_backlight`) | user-verified | LED class, 0..100; accepted from the operator's hardware test; aborted-suspend replay additionally checked in a host harness |
+| DSI display / DRM / backlight | verified | one fixed 120 Hz mode; the U-Boot path needed an early pipeline stop/start to keep the picture, now in patch 0003 |
+| Touch, pen, keyboard folio, touchpad, keys | previously verified | touch drifts with external DP; OS2.0.4 panel firmware still needs hardware validation |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
-| Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
+| Audio playback (CS35L41) | previously verified | four speakers played with the prior payload; OS2.0.4 protection files need hardware validation |
 | USB3 device (peripheral) | verified | 10-hotplug stability record still open; the cover-close suspend loop re-enumerates the gadget, see `docs/TODO/LID-SUSPEND-LOOP.md` |
 | Type-C host + OTG power | verified | 10-hotplug record still open |
 | DP Alt Mode | historically verified; regression open | user reports external-display failures; 0023 extraction is byte-identical to the previous whole-file driver |
 | Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
 | Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
-| Sensors (SSC/SLPI) | partly verified | accelerometer + ambient light live on the SensorProxy D-Bus API (four orientations and all five tilt states measured 2026-10-07); gyroscope has no userspace consumer; CCT/RGB, light-sensor identity, fusion and suspend/resume unverified |
-| Wi-Fi / Bluetooth | verified | ath11k `msdu_done` noise, reconnects; 5 GHz fixed 2026-10-07 by booting the vendor fw/BDF set (-48 dBm ch161, 0 % loss) |
+| Sensors (SSC/SLPI) | previously partly verified | prior config exposed accelerometer/light; OS2.0.4 config and SLPI behavior need validation |
+| Wi-Fi / Bluetooth | previously verified | prior vendor firmware set worked; OS2.0.4 WLAN/BTFM payloads need validation |
 | Storage (UFS, root guard) | verified | root ext4 bitmap-checksum errors in dmesg (TODO) |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones vs 81 on Android; no IPA |
-| Fingerprint (FPC1264) | verified | one finger per account; enrolment needs a password login (or the polkit prompt) to authorise it; press firmly |
-| Microphone capture (WCD9385) | verified | AMIC1 -> ADC1 -> TX macro -> `TX_CODEC_DMA_TX_3`; the vendor has no AP-visible DMIC |
+| Fingerprint (FPC1264) | previously verified | prior firmware supported one-finger enrollment; OS2.0.4 firmware needs validation |
+| Microphone capture (WCD9385) | previously verified | earlier topology captured AMIC1; OS2.0.4 topology needs validation |
 | U-Boot SuperSpeed | not implemented | U-Boot is USB2 fastboot |
 
 ### 2026-10-25 branch integration review
@@ -126,6 +131,25 @@ neither establishes driver behavior or resolved Kconfig values.
   is informational.
 - **verified** (2026-09-29): panel lights, backlight, console, fbcon on the
   DSI panel.
+- **OS2.0.4 GPU zap payload:** the stock tree stores
+  `firmware/a730_zap.mdt` plus its external `a730_zap.bNN` load segments.
+  The MDT is extracted byte-for-byte as `qcom/a730_zap.mbn`; the board DT
+  requests `qcom/sm8475/liuqin/a730_zap.mbn`, and `qcom_mdt_load()` then
+  resolves each `.bNN` beside that requested path. The initial static-payload
+  boots exposed the two missing layers in sequence: first the board-qualified
+  MDT (`-ENOENT` for `.mbn`), then its omitted load segment (`-ENOENT` for
+  `.b01`). Either failure prevents Adreno initialization, every GDM greeter
+  exits before registering and fbcon flashes between retries. The asset
+  extractor now requires and preserves the complete stock set;
+  `liuqinFirmware` projects every member to the board-qualified path and
+  asserts the required `.b01` at both paths.
+- **Firmware-tree activation:** `run-firmware.mount` is a read-only overlay
+  whose `lowerdir` contains the immutable firmware store path. NixOS normally
+  reloads a mount when only `Options=` changes, but overlayfs rejects changing
+  lower layers in place (`fsconfig(): No changes allowed in reconfigure`).
+  The unit repeats that path in `AssertPathIsDirectory=` so a firmware update
+  is classified as a restart/remount; the assertion also keeps a missing
+  static tree fail-closed.
 - **Limit — one refresh rate.** The mainline panel driver exposes only the
   120 Hz mode.  The panel hardware supports 144/120/90/60/50/48/30 Hz
   (Android/vendor timing set).  Adding 60 Hz is the single most valuable
@@ -415,44 +439,51 @@ AudioReach/`sc8280xp` path with the CS35L41 amplifiers and `wm_adsp`; patch
 UCM `Mic` device); patch 0016 names the four amplifiers so the driver selects
 this board's Halo payloads.
 
-- **Loudspeaker playback: verified** (2026-10-06).  `aplay -D plughw:0,0`
-  and `pw-play` both run to completion and the four speakers are audible.
-  The stall seen before was the tertiary-TDM backend graph never being
-  started: the ported `q6tdm_ops` DAI table had no `.trigger`, so
-  `GRAPH_START` was never sent for it and the DSP never consumed the write
-  endpoint (`pcm0p/sub0/status` stuck in SETUP).  Patch 0004 carries the fix.
-- **WCD9385 analog capture: verified** (2026-10-06).  `arecord -D hw:0,1`
-  records live signal on ch0; ch1 is silent by design (only DEC0/ADC1 is
-  routed).  Two channels, 48 kHz.  The capture gain is fixed at the UCM's
-  calibrated +12 dB (`ADC1 Volume` 8) with no `CaptureMixerElem`: with the
-  hook present the session stack wrote the hooked control to 100 % (+30 dB)
-  on every device init (measured 2026-10-11, see the UCM comment), which
-  made the stream-open transient clip.  The source volume is software-only.
+- **Loudspeaker playback: previously verified** (2026-10-06, prior firmware
+  set). `aplay -D plughw:0,0` and `pw-play` both ran to completion and the four
+  speakers were audible; the OS2.0.4 speaker payloads still need hardware
+  validation. The stall seen before was the tertiary-TDM backend graph never
+  being started: the ported `q6tdm_ops` DAI table had no `.trigger`, so
+  `GRAPH_START` was never sent and the DSP never consumed the write endpoint
+  (`pcm0p/sub0/status` stuck in SETUP). Patch 0004 carries the fix.
+- **WCD9385 analog capture: previously verified** (2026-10-06, prior firmware
+  set). `arecord -D hw:0,1` recorded live signal on ch0; ch1 was silent by
+  design (only DEC0/ADC1 is routed), two channels at 48 kHz. The OS2.0.4
+  AudioReach topology has not been tested on hardware. The capture gain is
+  fixed at the UCM's calibrated +12 dB (`ADC1 Volume` 8) with no
+  `CaptureMixerElem`: with the hook present the session stack wrote the hooked
+  control to 100 % (+30 dB) on every device init (measured 2026-10-11), which
+  made the stream-open transient clip. The source volume is software-only.
 - **Not implemented:** the USB-C/FSA4480 headset path (the WCD playback link
   is wired but inert), the VA/digital microphones (the vendor DT disables
   every `swr-dmic` slave and no DMIC pinctrl exists), WSA883x backends, and
   the rest of the vendor PCM endpoints.
-- The amplifiers load the vendor's Halo payloads
-  (`cirrus/cs35l41-dsp1-spk-prot-10251826.*`, extracted from the stock vendor
-  partition and registered as a `requireFile` payload), and
-  `modules/liuqin/firmware.nix` declares the union of the vendor payloads, the
-  system firmware tree and the per-device calibration records under
-  `/var/lib/firmware` as a mount unit (`run-firmware.mount`) and switches the
-  loader to it from `liuqin-firmware-loader-path.service`, ordered after that
-  mount - without the calibration the CS35L41 protection gate stays closed.
+- Static CS35L41 payloads come from the OS2.0.4 asset repository. The generic
+  stock protection `.wmfw` is preserved byte-for-byte and aliased to
+  `cs35l41-dsp1-spk-prot-10251826.wmfw`; each stock TL/TR/BR/BL protection
+  `.bin` is likewise aliased to the system-ID/prefix filename requested by
+  `wm_adsp`. The source includes stock calibration files too. Static inspection
+  finds the required Halo controls but does not establish tuning/build identity;
+  these payloads have not been tested on hardware.
+  `modules/liuqin/firmware.nix` installs the static asset tree and disables
+  Nixpkgs redistributable firmware; the firmware union also includes per-device
+  calibration records under `/var/lib/firmware` and the system firmware
+  environment. The per-device layer precedes the system symlink farm: its
+  `cirrus` symlink otherwise terminates overlay lookup and hides the CS35L41
+  calibration directory. The `run-firmware.mount` switches the loader path only
+  after provisioning, without which the CS35L41 protection gate stays closed.
   The order matters: the ASoC card probe (~10 s, driven by the SoundWire
   modules udev loads) requests the AudioReach topology through this parameter,
   and a `-ENOENT` there fails `snd_soc_register_card()` for the rest of the
-  boot - no card means no playback *and* no capture device (measured
-  2026-10-08/09: a tmpfiles write pointed the loader at the not-yet-mounted
-  `/run/firmware` and every boot lost the card).  Until the switch runs the
-  parameter keeps the `hardware.firmware` environment path NixOS's activation
-  script writes, from which the topology loads as a `.zst` blob.  The overlay
-  reads its lower layers once at mount, so the mount is `PartOf=` the
-  provisioner and a `systemctl restart liuqin-persist-provision` rebuilds the
-  union.
-  `POST_PMU: * Main AMP event failed: -13` can still print at
-  probe; playback is audible regardless.
+  boot - no card means no playback or capture device (measured 2026-10-08/09:
+  a tmpfiles write pointed the loader at the not-yet-mounted `/run/firmware`).
+  Until the switch runs the parameter keeps the `hardware.firmware` environment
+  path NixOS's activation script writes; the generated topology is present at
+  its requested `.bin` path. The overlay reads its lower layers once at mount,
+  so the mount is `PartOf=` the provisioner and restarting
+  `liuqin-persist-provision` rebuilds the union.
+  `POST_PMU: * Main AMP event failed: -13` can still print at probe; earlier
+  playback remained audible.
 
 ### Fingerprint (FPC1264)
 
@@ -499,9 +530,10 @@ trustlet, never in Linux.
   PR #11; see NOTICE), qsee-supplicant is vendored next to it, QCBOR comes
   from upstream (see pkgs/fingerprint/qcbor.nix), and the port's adaptations
   are the patch files next to them.
-- The firmware images (`fpcliu.mdt` plus its segments) and the Gatekeeper/RPMB
-  state are per-device data and are not in this tree; "Fingerprint" in
-  `docs/INSTALL.md` documents the extraction, placement and operator steps.
+- Static FPC firmware (`fpcliu.*`) comes from official OS2.0.4 images and is
+  packaged from the separate asset repository. The new payload is not
+  hardware-tested; Gatekeeper credentials and RPMB state remain device-local.
+  `docs/INSTALL.md` documents credential creation and on-device validation.
 
 ### USB3 device (peripheral data path)
 
@@ -621,12 +653,18 @@ Details and the key contract are in §2.
 The SSC/SLPI path is implemented: the package serves the registry contract,
 the persist import is atomic, and bounded `libssc` checks cover acceleration,
 angular rate and the default SSC ambient-light Lux instance.  In the
-installed system the boot chain is `liuqin-slpi` -> `liuqin-hexagonrpcd-sdsp`
--> `liuqin-ssc-sample-gate` -> patched `iio-sensor-proxy`
-(`net.hadess.SensorProxy`).  The gate fails closed unless a real accelerometer
-sample arrives (`--all --attempts 4 --require accelerometer`); the gyroscope
-and light checks are recorded but cannot fail the unit, and the claim-refresh
-helpers restart the proxy once a gnome-shell is watching.
+installed system the boot chain is `liuqin-slpi` -> a root
+`liuqin-fastrpc-sdsp-device` udev wait -> sandboxed
+`liuqin-hexagonrpcd-sdsp` -> `liuqin-ssc-sample-gate` -> patched
+`iio-sensor-proxy` (`net.hadess.SensorProxy`).  The separate prerequisite
+waits up to 10 s for udev to initialize `/dev/fastrpc-sdsp` before systemd
+creates the tunnel's `DevicePolicy=closed` cgroup.  A `ConditionPathExists=`
+check raced publication and counted the tunnel as successfully skipped;
+waiting in its own `ExecStartPre=` was also too late for `DeviceAllow=` to
+resolve the device major/minor.  The gate fails closed unless a real
+accelerometer sample arrives (`--all --attempts 4 --require accelerometer`);
+the gyroscope and light checks are recorded but cannot fail the unit, and the
+claim-refresh helpers restart the proxy once a gnome-shell is watching.
 
 **Measured** (2026-10-07, this unit, the boot after a reboot): all three
 checks report ready (accelerometer 182 and gyroscope 139 measurement lines in
@@ -685,10 +723,13 @@ panel silently stops following the accelerometer (it keeps whatever
 transform was applied last).  A transient local claim (`systemd-run --user
 monitor-sensor --accel`, admitted by the `subject.local` rule above) makes
 the proxy poll again - CPU and orientation come back - but mutter does not
-resume consuming the orientation: only a fresh shell claims again.  The
-boot chain's refresh helpers verify a claim by the proxy's CPU advancing,
-which cannot tell *which* client claimed, so a greeter claim that dies when
-the greeter exits can mask a session shell that never got one.
+resume consuming the orientation: only a fresh shell claims again.
+
+The old refresh helper tried to infer a claim from advancing proxy CPU time.
+That is not a boot invariant: mutter intentionally omits its claim in laptop
+posture, so the heuristic caused repeated proxy restarts and failed both the
+system and user units. The helpers now restart exactly once after their shell
+is ready; `liuqin-panel-posture` owns the tablet-mode fallback.
 `liuqin-panel-posture` repairs the user-visible half of that loss: entering
 tablet mode it finds the proxy unpolled, claims the accelerometer itself and
 applies the transform, so rotation survives a dead mutter claim.  Only a
@@ -733,12 +774,17 @@ and `busctl --system get-property net.hadess.SensorProxy
 /net/hadess/SensorProxy net.hadess.SensorProxy AccelerometerOrientation
 AccelerometerTilt HasAmbientLight LightLevel`.
 
-Without an SSC configuration set (`hardware.liuqin.sensors.sscConfig`, or
-`hardware.liuqin.sensors.sscConfigHash` for a store-registered archive) the
-module warns and leaves the SSC stack — and only that stack — out of the
-system; `hardware.liuqin.sensors.enable = false` silences the warning.  A
-config-only archive is accepted (`sns_reg.conf`/`sns_reg_version` are
-synthesized when absent).
+OS2.0.4 provides 56 sensor JSON files and `sns_reg_config` (554 bytes,
+version=12), but no separately named `sns_reg.conf` or `sns_reg_version` in
+vendor_a/odm_a. `hexagonrpcd`'s virtual-filesystem contract exposes Android's
+`vendor/etc/sensors/sns_reg_config` from the package's physical
+`sensors/sns_reg.conf` path, so the package installs the extracted bytes under
+both names. It derives the NUL-terminated `version=12` runtime seed from that
+file's single validated version field. Removing those adapter records was
+hardware-tested to make sensorspd close the FastRPC channel (`Broken pipe`);
+they are protocol projections of the official payload, not replacement sensor
+data. Mutable registry contents are copied from persist and remain per-device.
+`hardware.liuqin.sensors.enable = false` still disables the SSC stack.
 
 ### Wi-Fi, Bluetooth, storage, power
 
@@ -746,66 +792,31 @@ synthesized when absent).
   2026-09-29), with repeated `msdu_done` errors and occasional carrier
   reconnects.  WLAN MAC and BT public address are per-device values
   provisioned from persist.
-- **TODO(wifi-5ghz-rf)**: the 2.4 GHz link is healthy on this unit while the
-  5 GHz receive path sits far below expectation.  **Measured** 2026-10-07
-  (full-feature kernel, same minute and position, same AP `CMCC-Z6bX`, the
-  host as the reference client): 2.4 GHz `ch6` -43/-44 dBm with 0 % ping loss
-  against 5 GHz `ch161` -85..-88 dBm with 50 % ping loss; the reference
-  (Intel AX210, same AP) reads about -62/-76 dBm, and on a second 5 GHz AP
-  (Ciallo `ch44`) the tablet reads -77 dBm where the reference reads
-  ~-55 dBm.  `station dump` shows both 5 GHz chains weak (`[-89, -90]`)
-  against one strong 2.4 GHz chain (`[-76, -44]`), i.e. the tablet's own
-  band-to-band spread is ~40 dB where ~6-12 dB is physical.  Association
-  itself works (ch161, VHT-MCS2/NSS2, PTK=CCMP), so this is margin, not a
-  functional break.  Ruled out: RF rails (live `pm8350_s11` 952 mV / `s12`
-  1256 mV / `pm8350c_s1` 1888 mV, patch 0020 active), regdomain (driver
-  self-managed `CN`; every enabled 5 GHz channel is `no IR`, which removes
-  active scanning only) and TX caps (AP limits 30/27 dBm).  Resolved by
-  `TODO(ath11k-fw-shadowed)` below: the chip had been booting the compressed
-  `.zst` firmware/BDF set, and with the vendor set installed at the plain
-  paths the same antennas hold `ch161` at -48 dBm with 0 % loss.  The
-  `802-11-wireless.band=bg` pin that the tablet's local
-  `CMCC-Z6bX.nmconnection` carried as the workaround has been dropped - NM
-  selects `ch161` on its own now.
-- **TODO(ath11k-fw-shadowed)**: the firmware package ships two ath11k sets
-  and the kernel only reads the `.zst` one.  The firmware loader expands
-  `updates/` only under its hardcoded `/lib/firmware*` entries
-  (`drivers/base/firmware_loader/main.c`, `fw_path[]`), and the custom
-  `firmware_class.path=/run/firmware` has no such sibling, so the live set is
-  `ath11k/WCN6855/hw2.x/*.zst`: `amss` `WLAN.HSP.1.1-03125-…SILICONZ_LITE-
-  3.6510.37` and a 131-entry `board-2` (entry for `17cb:0108 / chip 18 /
-  board 255`: 60036 B, `e9c3d433…`).  The unread `updates/` set instead
-  carries `amss` `WLAN.HSP.2.0.c2-00057-…696964.3` (stock's branch is
-  `…c2-00057-…570200.7`) and a 108-entry `board-2` whose matching entry is
-  59920 B, byte-identical to the stock ROM's `bd_m81.elf`.  **Measured**
-  2026-10-07 with both sets installed at the plain paths and a PCI
-  unbind/bind re-probe: the vendor set boots and its scan sees `shebang-5G`
-  `ch36` -64 dBm and `Seeker` `ch36` -78 dBm, neither of which the `.zst`
-  set can see; but the vendor `board-2` with the LITE `amss` dies
-  (`-110` → `firmware crashed: MHI_CB_EE_RDDM`, reproduced), so the four
-  files must stay a set, and under the vendor set NetworkManager still fails
-  activation (`set-hw-addr … failure 99`).  Fix: ship the vendor set at the
-  plain `ath11k/WCN6855/hw2.1/` paths (first search path wins over `.zst`),
-  then settle the NM/MAC wrinkle and re-run the 5 GHz margin table above.
-  Implemented in `pkgs/firmware.nix` (both hw dirs, as a set) with the
-  scan-MAC randomization disabled in `modules/liuqin/identity.nix` for the
-  `set-hw-addr` failure, and **verified** 2026-10-07 after a deploy + reboot:
-  `fw_build_id` is the vendor build, `ch161` associates at -48 dBm (signal
-  avg -48, beacon -46, chains `[-59, -48]`, tx retries/failed 0) with 0 %
-  loss on 20 x 1200 B pings, and the link ramps to VHT-MCS7/NSS2 80 MHz
-  (526-650 Mbit/s tx) once the profile's `band=bg` pin is dropped; the scan
-  now lists the 5 GHz APs the `.zst` set could not see.
-- Bluetooth runs the stock QCA6490 payloads.  The mainline driver asks for the
-  `wcn`-prefixed rampatch/NVM names first, and only linux-firmware ships those,
-  so `pkgs/firmware.nix` installs the stock `qca/hp*` files under both names;
-  before that the controller silently ran linux-firmware's build
-  (`BTFW.HSP.2.1.0-00660-USB_UART_PATCHZ-6`) instead of the stock
-  `00570-PATCHZ-1` the unit's own `bluetooth_a` partition carries (**measured**
-  2026-10-06).  The controller is unconfigured on every boot (volatile
-  address), so `liuqin-bt-preconfigure`'s Set Public Address re-runs the whole
-  QCA setup and its firmware download; the unit is therefore ordered after
-  `run-firmware.mount`, without which that download finds no `qca` file
-  (the stage-2 root has calibration only) and Bluetooth never starts.
+- **TODO(wifi-5ghz-rf)**: prior hardware measurements (2026-10-07) showed the
+  old vendor ath11k set improving ch161 from -85..-88 dBm/50 % ping loss to
+  -48 dBm/0 % loss, with 5 GHz APs visible again. That result predates the
+  OS2.0.4 asset cutover and does not validate its WLAN payloads.
+- The asset repository combines a compressed ath11k baseline from the pinned
+  Nixpkgs revision with the OS2.0.4 vendor `amss.bin`, `board-2.bin`, `m3.bin`
+  and `regdb.bin` as one tuple for each WCN6855 hardware revision. The vendor
+  tuple is emitted under both `updates/` and the plain request paths because
+  the custom `firmware_class.path=/run/firmware` has no `/lib/firmware*`
+  `updates/` search sibling; the plain uncompressed files must win over the
+  fallback `.zst` baseline. `board-2.bin` is generated deterministically from
+  pinned upstream WCN6855 board data and the OS2.0.4 `bd_m81gf.elf` payload.
+  The same asset repository supplies `regulatory.db` and `.p7s` from its
+  pinned `wireless-regdb` package. None of these OS2.0.4 outputs has been
+  tested on hardware; verify 5 GHz scan, association and sustained traffic.
+- The asset repository extracts the complete OS2.0.4 BTFM `hpbtfw`/`hpnv`
+  files, keeps their board-specific `.bXX` variants, and emits byte-identical
+  `wcn`-prefixed aliases for the mainline driver's first lookup. The prior
+  2026-10-06 hardware run showed that using the stock payload instead of the
+  then-current linux-firmware build changed the controller version; the new
+  OS2.0.4 BTFM payload still needs on-device validation.
+  The controller is unconfigured on every boot (volatile address), so
+  `liuqin-bt-preconfigure`'s Set Public Address re-runs QCA setup and downloads
+  firmware. It remains ordered after `run-firmware.mount`, which exposes the
+  asset tree to that download.
 - The WCN6855 RF rails are pinned to the stock DTB's `qcom,init-voltage`
   values (`pm8350_s11` 952 mV, `pm8350_s12` 1256 mV, `pm8350c_s1` 1880 mV).
   The RPMh driver has no `qcom,init-voltage`, and the core's `apply_uV`
@@ -837,9 +848,11 @@ synthesized when absent).
   wiped again).
 - UFS, GPU, PCIe/WCN6855 (needs patch 0010's cape tables) and the initrd
   storage guard work (**verified**).
-- Video decode (Iris VPU, patch 0006): H.264 and HEVC decode 1080p30 to bytes
-  identical to a software decode, every frame, with the `iris` IRQ line rising
-  by ~260 per run (**verified** 2026-10-07); the encoder exposes H.264/HEVC.
+- Video decode (Iris VPU, patch 0006): H.264 and HEVC previously decoded
+  1080p30 byte-identically to software with the `iris` IRQ line rising by ~260
+  per run (**verified** 2026-10-07 using the earlier VPU firmware); the
+  OS2.0.4 VPU payload has not been tested on hardware. The encoder exposes
+  H.264/HEVC.
 - **FIXME(vp9-first-frame)**: VP9 hardware decode loses the first frame of
   every stream.  **Measured** 2026-10-07: a 30-frame 1080p30 clip yields 29
   frames, and those 29 are byte-identical to frames 2..30 of the software
@@ -889,10 +902,14 @@ synthesized when absent).
   options are in `docs/TODO/LID-SUSPEND-LOOP.md`.
 - **TODO(rootfs-ext4)**: the root filesystem reports
   `EXT4-fs error (device sda36): ext4_validate_block_bitmap: bad block bitmap
-  checksum` at switch-root and again at 11:33 (**measured** 2026-10-07;
-  `initial error at time 1773777354`).  Run `fsck.ext4` on the `linux`
-  partition from the RAM installer and decide whether the storage guard
-  should fail closed on it.
+  checksum` at switch-root and again at 11:33 (**measured** 2026-10-07,
+  `initial error at time 1773777354`, and still present on 2026-10-26).
+  This is on `/dev/sda36`, label `LIUQIN_ROOT`. Do not run repair against the
+  mounted root. Back up irreplaceable data, boot the RAM installer, verify
+  `findmnt /dev/disk/by-label/LIUQIN_ROOT` prints no mount, then run
+  `sudo e2fsck -f /dev/disk/by-label/LIUQIN_ROOT`; after corrections, repeat
+  until it exits cleanly before rebooting. Decide separately whether the
+  storage guard should fail closed on future ext4 error counts.
 - CPU: cluster capacities 277/832/1024 (expected 278/833/1024), EAS active,
   `teo` idle governor, CPU thermal cooling maps in place (**verified**).
   `CONFIG_UCLAMP_TASK` is not enabled (free to enable, useless until
@@ -920,6 +937,14 @@ root=fstab loglevel=7 lsm=landlock,yama,bpf cpuidle.governor=teo
   `loglevel=7` (NixOS' 4 hid the log).  `keep_bootcon` is **not** in the
   default — it keeps simplefb0 writing over the compositor — and lives behind
   `hardware.liuqin.boot.debug`.
+- `lsm=landlock,yama,bpf` is paired with built-in Yama, Landlock and BPF LSM.
+  systemd's `RestrictFileSystems=` BPF program additionally requires vmlinux
+  BTF and the function-tracing trampoline. `CONFIG_BPF_LSM=y` without
+  `CONFIG_DEBUG_INFO_BTF=y` produced `Failed to load BPF object: No such
+  process`; adding BTF without `CONFIG_FUNCTION_TRACER=y` then produced
+  `Failed to link program` in both initrd and stage 2. The kernel recipe
+  enables both, disables reduced DWARF, and leaves output stripping to the Nix
+  kernel build.
 - `firmware_class.path=` takes **exactly one** directory (`fw_path_para` is a
   single `char[256]`, no `:` splitting).  A second `:`-joined path
   invalidates the parameter and every `request_firmware()` fails with `-2`.
@@ -1221,7 +1246,7 @@ register tables.
 | 0013 | `camera-tuning` | s5kjn1 vendor modes/vflip, gt9764 autofocus, camcc/gcc GDSC always-on |
 | 0014 | `board-usb-typec-dp-dt` | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode |
 | 0015 | `audio-wcd-capture` | WCD9385 RX/TX SoundWire capture graph, guarded UCM `Mic`, 2.75 V micbias — **applied after 0014** |
-| 0016 | `cs35l41-subsystem-id` | name the four CS35L41 amplifiers so the driver picks linux-firmware's Halo build keyed by 10251826 — **applied after 0015** |
+| 0016 | `cs35l41-subsystem-id` | name the four CS35L41 amplifiers so the driver requests OS2.0.4 aliases keyed by 10251826 — **applied after 0015** |
 | 0017 | `tee-qseecom-legacy-transport` | legacy QSEECOM transport under the TEE subsystem (client + privileged supplicant nodes, SCM app load/shutdown, mdt image assembler) for the FPC1264 trustlet |
 | 0018 | `misc-fpc1020` | FPC1264 power/reset/IRQ platform driver on `/dev/fpc1020` (PM8350C LDO9, vendor reset pulse, GPIO40 wakeup IRQ; no SPI — that stays in the secure world) |
 | 0019 | `dts-fpc1264` | board DTS for the FPC1264 control interface (GPIO40 finger IRQ, GPIO41 reset, PM8350C LDO9 supply; spi10 stays disabled) |

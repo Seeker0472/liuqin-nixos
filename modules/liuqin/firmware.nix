@@ -10,67 +10,11 @@ let
   cfg = config.hardware.liuqin;
 in
 {
-  options.hardware.liuqin.firmware = {
-    vpu = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      example = "./liuqin-firmware-vpu.tar.zst";
-      description = ''
-        Your own qcom/vpu/vpu20_4v.mbn (iris2 VPU firmware) as a zstd tar
-        archive, taken from an official MIUI image. A path literal
-        (`./liuqin-firmware-vpu.tar.zst`) needs no `nix-store --add-fixed`
-        step. When null the hash-pinned archive has to be registered in the
-        store; the requireFile error carries the same instructions.
-      '';
-    };
-
-    cs35l41 = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      example = "./liuqin-firmware-cs35l41.tar.zst";
-      description = ''
-        Your own CS35L41 Halo protection/calibration payloads as a zstd tar
-        archive rooted at `cirrus/`, extracted from the stock ROM's vendor
-        partition. A path literal needs no `nix-store --add-fixed` step. When
-        null the hash-pinned archive has to be registered in the store.
-      '';
-    };
-
-    bootImg = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      example = "./boot.img";
-      description = ''
-        The downstream v0.3.1 release image whose ramdisk carries the bulk of
-        the firmware tree (the 196 files under lib/firmware this port pins).
-        When null the hash-pinned file has to be registered in the store with
-        `nix-store --add-fixed sha256 boot.img`; the requireFile message
-        carries the same instructions. Only this release image satisfies the
-        pin - the boot.img of a v0.1.0 dump is a different build.
-      '';
-    };
-  };
-
   config = lib.mkIf cfg.enable (
     let
-      # Rebuild the payload tree (and the firmware union that carries it) only
-      # when the operator supplies their own archives; with both null the
-      # override would return the plain derivation anyway, so the injected
-      # cross build keeps serving the system unchanged.
-      firmwareTree =
-        if cfg.firmware.vpu == null && cfg.firmware.cs35l41 == null && cfg.firmware.bootImg == null then
-          pkgs.liuqinFirmware
-        else
-          pkgs.liuqinFirmware.override {
-            inherit (cfg.firmware) vpu cs35l41;
-            releaseBootImg = cfg.firmware.bootImg;
-          };
-
-      # hardware.firmware is the merged buildEnv in the pinned NixOS module;
-      # use its immutable store path, not the mutable current-system link.
-      firmwareLowerDirs =
-        lib.optionalString cfg.fingerprint.enable "${cfg.fingerprint.firmwareDir}:"
-        + "${firmwareTree}/lib/firmware:${config.hardware.firmware}/lib/firmware:/var/lib/firmware";
+      firmwareTree = pkgs.liuqinFirmware;
+      firmwareMountOptions =
+        "ro,lowerdir=${firmwareTree}/lib/firmware:/var/lib/firmware:/run/current-system/firmware";
     in
     {
       assertions = lib.optional cfg.fingerprint.enable {
@@ -97,12 +41,12 @@ in
       # See docs/PORTING-NOTES.md ("Touch and input") for the current status and
       # the remaining options (synthetic EDID for the DSI connector, or a
       # Mutter-side mapping).
-      # --- Firmware the patched drivers request from userspace --------------
-      # nvt_ts probes on the SPI bus very early and request_firmware() must
-      # succeed there; the panel/keyboard/GPU/DSP payloads below come from the
-      # operator's stock ROM dump (requireFile placeholders until pinned).
-      hardware.firmware = [ firmwareTree ];
-      hardware.enableRedistributableFirmware = lib.mkDefault true;
+      # Static firmware is fixed to the OS2.0.4 assets; the optional FPC
+      # package contains only board-independent firmware, not device secrets.
+      hardware.firmware = lib.mkForce (
+        [ firmwareTree ] ++ lib.optional cfg.fingerprint.enable pkgs.liuqinFpcFirmware
+      );
+      hardware.enableRedistributableFirmware = lib.mkForce false;
 
       # The touchscreen (nvt_ts) request_firmware() fires during probe, before
       # switch_root, so the firmware tree must be in the initrd too.
@@ -114,13 +58,9 @@ in
 
       # The firmware loader reads exactly one directory (firmware_class.path;
       # fw_path_para is a single char[256] with no ':') and /lib/firmware does
-      # not exist on NixOS, so the board gets one union of the three trees it
-      # needs: the vendor CS35L41 payloads (they must shadow linux-firmware's
-      # same-named files in the system tree), the system firmware tree and the
-      # per-device calibration records under /var/lib/firmware.  The union is a
-      # mount unit; the parameter is a second unit that runs only once the
-      # mount is up.
-      #
+      # not exist on NixOS, so the board gets a union of the static asset tree,
+      # per-device calibration records under /var/lib/firmware, and the NixOS
+      # firmware package union (including optional FPC firmware).
       # The order of the two units below is load-bearing, not cosmetic.  The
       # ASoC card probe (triggered by the SoundWire/WCD938x modules udev loads
       # at ~10 s) loads the AudioReach topology
@@ -128,9 +68,8 @@ in
       # -ENOENT there fails snd_soc_register_card() for the rest of the boot:
       # no card means no playback *and* no capture device.  Until the switch
       # below runs, the loader keeps the path NixOS's activation script wrote
-      # (the hardware.firmware environment, which carries the topology as a
-      # compressed blob, CONFIG_FW_LOADER_COMPRESS_ZSTD); a mount that fails
-      # leaves that environment in place instead of an empty directory.  A
+      # (the hardware.firmware environment, which carries the static topology);
+      # a mount that fails leaves that environment in place instead of empty.
       # tmpfiles `w` line cannot express that order - tmpfiles-setup runs in
       # the initrd and again long before the union - so it pointed the loader
       # at the not-yet-mounted `/run/firmware` during every card probe.  The
@@ -151,19 +90,17 @@ in
       # requires the stock crus_calr.bin before it writes them).
       systemd.mounts = [
         {
-          description = "Firmware union (vendor, system and calibration trees)";
+          description = "Firmware union (static, system and calibration trees)";
           what = "overlay";
           where = "/run/firmware";
           type = "overlay";
-          # Put the OEM directory first when enabled: its 0700 root keeps
-          # the merged tree private, as the OEM source directory was. Kernel
-          # firmware requests use kernel credentials; session clients do not
-          # consume this tree. An empty OEM directory leaves audio available.
-          options = "ro,lowerdir=${firmwareLowerDirs}";
-          # Options-only mount changes are reloaded by NixOS, but overlayfs
-          # needs an unmount/mount to replace its lower layers. A unit-level
-          # trigger makes every lowerdir change a stop/start instead.
-          restartTriggers = [ firmwareLowerDirs ];
+          # Keep the real per-device directory ahead of the system firmware
+          # symlink farm. A symlink named cirrus in that layer terminates
+          # overlay lookup and otherwise hides the later calibration directory.
+          options = firmwareMountOptions;
+          # overlayfs rejects lowerdir changes through mount(2) remount. Make
+          # every option change a stop/start during switch-to-configuration.
+          restartTriggers = [ firmwareMountOptions ];
           wantedBy = [ "sound.target" ];
           before = [ "sound.target" ];
           after = [
@@ -184,10 +121,10 @@ in
           # `systemd-analyze verify` on the generated unit is clean.
           unitConfig = {
             DefaultDependencies = false;
-            RequiresMountsFor = [
-              "/var/lib/firmware"
-            ]
-            ++ lib.optional cfg.fingerprint.enable cfg.fingerprint.firmwareDir;
+            # Fail closed before the mount syscall if the immutable tree is
+            # absent. restartTriggers above handles live reconfiguration.
+            AssertPathIsDirectory = "${firmwareTree}/lib/firmware";
+            RequiresMountsFor = "/var/lib/firmware";
             Conflicts = [ "umount.target" ];
             Before = [ "umount.target" ];
           };

@@ -23,15 +23,12 @@
 # uncalibrated and that mapping is relative; docs/TODO/AUTOMATIC-BRIGHTNESS.md
 # records both and the replacement work.
 #
-# Per-device data this file cannot carry, all operator-supplied:
-#   - the SSC sensor registry archive: point hardware.liuqin.sensors.sscConfig
-#     at your own extraction, or register the archive in the store and replace
-#     sscConfigHash below with its hash (docs/PORTING-NOTES.md);
-#   - the fingerprint trustlet state: fingerprint.enable only makes the stack
-#     reachable; creating the credential is a physical procedure
-#     (docs/INSTALL.md, Fingerprint);
-#   - the MiPPS HMAC keys, read from the persist partition
-#     (docs/PORTING-NOTES.md).
+# Per-device data this file cannot carry:
+#   - WLAN/BT identities, speaker calibration and the SSC sensor registry from
+#     the device's persist partition;
+#   - MiPPS HMAC keys from persist (docs/PORTING-NOTES.md);
+#   - fingerprint trusted-application state, Gatekeeper credentials and RPMB
+#     state. Credential creation is a physical procedure (docs/INSTALL.md).
 { pkgs, ... }:
 
 {
@@ -53,25 +50,17 @@
       autofocus.enable = true;
     };
 
-    # OEM FPC1264 stack: the software is in this tree, the firmware, trustlet
-    # credentials and RPMB state are per-device data. Without the credential
-    # creation it only makes the stack reachable; password login is untouched
-    # either way (docs/INSTALL.md, Fingerprint).
+    # OEM FPC1264 stack: static firmware comes from the separate OS2.0.4 asset
+    # repository; trustlet credentials and RPMB state are device-local. Without
+    # credential creation the stack is reachable but password login is
+    # untouched (docs/INSTALL.md, Fingerprint).
     fingerprint.enable = true;
 
     # MiPPS coordinator: runs because this system carries the key files; the
     # keys themselves come from the persist partition (docs/PORTING-NOTES.md).
     mipps.enable = true;
-
-    sensors = {
-      # Operator-supplied stock ROM vendor/etc/sensors/config archive. No
-      # proprietary SSC archive is committed; a different unit must register
-      # its own archive and re-derive this hash, or leave both this and
-      # sscConfig unset to skip the SSC stack (the module warns), see
-      # docs/PORTING-NOTES.md.
-      sscConfigHash = "sha256-9IzksIEZq8NveGBaD5cBSgzNLCh7KmvdjKnEaubCOdU=";
-    };
   };
+
 
   # ssh-ng:// deployments (lq-deploy-direct) need the machine user to be
   # trusted by the remote daemon; the legacy ssh:// store did not.

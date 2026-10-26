@@ -10,19 +10,17 @@
 #   2. apply it onto the kernel's sm8475-xiaomi-liuqin.dtb with fdtoverlay
 #      (fdtoverlay preserves the base's __symbols__; verified with dtc 1.7.2)
 #   3. synthesize one plugin overlay whose fragment targets / and carries an
-#      inert sink node plus a __symbols__ entry for every label that any stock
-#      DTBO entry (__fixups__) or stock base DTB (__symbols__) exports, all
-#      pointing at that sink. This is what the downstream abl-symbols.py does
+#      inert sink node plus a __symbols__ entry for every label exported by
+#      any stock DTBO entry or base DTB, and every stock DTBO __fixups__ target,
+#      all pointing at that sink. This is what downstream abl-symbols.py does
 #      with text surgery; fdtoverlay replaces the entries one by one when the
 #      overlay is applied, which yields the same result at the DT level.
 #   4. apply that overlay with fdtoverlay.
 #
-# The stock DTBO entries and stock base DTBs are fixed-output inputs
-# (devices-only data extracted from the stock ROM; they never change).
+# Stock DTBO entries and base DTBs are read from the sibling assets repository,
+# extracted from OS2.0.4 and checked by its file manifest.
 { lib
 , stdenvNoCC
-, fetchurl
-, zstd
 , dtc
 , gzip
 , gnugrep
@@ -31,7 +29,7 @@
 , findutils
 , python3
 , mkbootimg
-, requireFile
+, firmwareAssets
 # Payload source. The kernel's Image by default; the U-Boot port passes its
 # u-boot-nodtb.bin, which this ABL wants shaped like a Linux Image too (the
 # build pads it and it carries the same ARM64 header).
@@ -73,13 +71,8 @@
 }:
 
 let
-  # Stock ABL artifacts extracted from the operator's own device images
-  # (liuqin-audit/evidence/dtbo + the stock base DTB). They are device-only
-  # data: they never change for a given stock bootloader, so they are
-  # operator-supplied requireFile inputs (see pkgs/bootimg/stock-dtbo-entries.nix
-  # and stock-base-dtbs.nix for the archive contract and hashes).
-  stockDtbo = import ./stock-dtbo-entries.nix { inherit requireFile; };
-  stockBaseDtbs = import ./stock-base-dtbs.nix { inherit requireFile; };
+  stockDtboDir = "${firmwareAssets}/assets/bootimg/stock-dtbo-entries";
+  stockBaseDtbDir = "${firmwareAssets}/assets/bootimg/stock-base-dtbs";
 in
 # bootargs is interpolated verbatim into a double-quoted DTS string below;
 # a quote or backslash would corrupt the generated overlay (or worse).
@@ -88,18 +81,48 @@ assert lib.assertMsg (!cmdlineOverlay || builtins.match ''.*["\\].*'' bootargs =
 stdenvNoCC.mkDerivation {
   pname = "liuqin-bootimg";
   inherit version;
+  meta.license = lib.licenses.unfree;
   dontUnpack = true;
 
-  nativeBuildInputs = [ dtc gzip gnugrep gawk coreutils findutils python3 mkbootimg zstd ];
+  nativeBuildInputs = [ dtc gzip gnugrep gawk coreutils findutils python3 mkbootimg ];
 
   buildPhase = ''
     runHook preBuild
 
-    stockDtboDir=$PWD/stock-dtbo
-    stockDtbDir=$PWD/stock-dtbs
-    mkdir -p "$stockDtboDir" "$stockDtbDir"
-    tar --zstd -xf ${stockDtbo} -C "$stockDtboDir"
-    tar --zstd -xf ${stockBaseDtbs} -C "$stockDtbDir"
+    stockDtboDir=${stockDtboDir}
+    stockDtbDir=${stockBaseDtbDir}
+    test -d "$stockDtboDir"
+    test -d "$stockDtbDir"
+    python3 - "${firmwareAssets}/MANIFEST.tsv" "${firmwareAssets}" <<'PYEOF'
+import csv
+import hashlib
+from pathlib import Path
+import sys
+
+manifest, root = Path(sys.argv[1]), Path(sys.argv[2])
+with manifest.open(newline="") as stream:
+    rows = list(csv.DictReader(stream, delimiter="\t"))
+expected = {
+    row["output"]: row["sha256"]
+    for row in rows
+    if row["output"].startswith("assets/bootimg/")
+}
+actual = {
+    path.relative_to(root).as_posix()
+    for path in (root / "assets/bootimg").rglob("*")
+    if path.is_file()
+}
+if not expected or actual != set(expected):
+    raise SystemExit(f"bootimg asset manifest/file-set mismatch: expected={sorted(expected)} actual={sorted(actual)}")
+for relative, expected_hash in expected.items():
+    digest = hashlib.sha256()
+    with (root / relative).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    actual_hash = digest.hexdigest()
+    if actual_hash != expected_hash:
+        raise SystemExit(f"bootimg asset SHA256 mismatch for {relative}: {actual_hash}")
+PYEOF
 
     image=${payload}
     test -r "$image"
@@ -170,6 +193,9 @@ PYEOF
     : > symbols.list
     for overlay in $stockDtboDir/entry.*.dtb; do
       dtc -I dtb -O dts -@ "$overlay" 2>/dev/null \
+        | awk '/__symbols__ \{/,/\t\};/' \
+        | grep -oP '^\s*\K[A-Za-z0-9_]+(?=\s*=)' >> symbols.list
+      dtc -I dtb -O dts -@ "$overlay" 2>/dev/null \
         | awk '/__fixups__ \{/,/\t\};/' \
         | grep -oP '^\s*\K[A-Za-z0-9_]+(?=\s*=)' >> symbols.list
     done
@@ -180,24 +206,17 @@ PYEOF
     done
     sort -u symbols.list > symbols.sorted
     count=$(wc -l < symbols.sorted)
-    echo "symbols exported: $count"
-    # Exact contract, like the downstream --expect-symbols: the union of
-    # every label the 38 stock DTBO entries reference (__fixups__) plus
-    # every label the 11 stock base DTBs export (__symbols__) is exactly
-    # 1744 symbols. It must stay a superset of what the downstream
-    # extraction yields (44 entries / 14 base DTBs from the OS2.0.6.0
-    # analysis tree, 1781 labels) because ABL force-applies the stock DTBO
-    # overlay and aborts on the first fixup it cannot resolve. 1469 was the
-    # single-base-DTB set: short by 275 labels (apsscc, BIG_CPU_OFF,
-    # ap2mdm_active, cdsp_cvp_mem, ...).
-    test "$count" = 1744
+    echo "symbol names: $count"
+    # Exact OS2.0.4 contract: the union of exported symbols from every stock
+    # DTBO and base DTB, plus every DTBO fixup target, contains 2524 names.
+    # ABL force-applies the stock overlays and aborts on an unresolved fixup;
+    # preserve the complete symbol set while redirecting each name to the sink.
+    test "$count" = 2524
 
-    # Input-count assertions, mirroring build-bootimg.sh:107-118. Assert
-    # what this build actually consumes so a silently truncated archive
-    # fails here. The base set is all 11 entries of the stock vendor_boot
-    # DTB table (the ABL-selectable set), not just one.
-    test "$(find "$stockDtboDir" -maxdepth 1 -name 'entry.*.dtb' | wc -l)" = 38
-    test "$(find "$stockDtbDir" -maxdepth 1 -name 'dtb-*.dtb' | wc -l)" = 11
+    # Assert the complete input sets from the official dtbo.img table and
+    # vendor_boot.img DTB table; a truncated extraction must fail here.
+    test "$(find "$stockDtboDir" -maxdepth 1 -name 'entry.*.dtb' | wc -l)" = 44
+    test "$(find "$stockDtbDir" -maxdepth 1 -name 'dtb-*.dtb' | wc -l)" = 14
     echo "stock dtbo entries: $(ls $stockDtboDir | wc -l), base dtbs: $(ls $stockDtbDir | wc -l)"
 
 

@@ -3,16 +3,22 @@
   description = "NixOS for Xiaomi Pad 6 Pro (liuqin, SM8475) on latest stable Linux";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.firmwareAssets = {
+    url = "path:../liuqin-nixos-os2-firmware-assets";
+    flake = false;
+  };
+  # The sibling checkout is outside this Git tree; build/eval commands must pass
+  # `--override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets`
+  # so Nix hashes the local payload repository into the store.
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, firmwareAssets }:
     let
       lib = nixpkgs.lib;
 
-      # The requireFile payloads that have no public source count as unfree.
-      # The names live in pkgs/device-packages.nix, the same registry that
-      # classifies the device packages, so the predicate and the payloads
-      # cannot drift.  It serves the flake's own package sets and
-      # mkLiuqinSystem alike.
+      # Proprietary firmware/configuration/boot-data packages are unfree. Their
+      # output names live in the same registry that classifies device packages,
+      # so the predicate and package manifest cannot drift. This policy serves
+      # the flake's package sets and mkLiuqinSystem alike.
       allowLiuqinUnfree = pkg:
         builtins.elem (lib.getName pkg) (import ./pkgs/device-packages.nix).unfree;
 
@@ -28,7 +34,7 @@
       };
     in
     {
-      overlays.default = import ./overlay.nix;
+      overlays.default = import ./overlay.nix { inherit firmwareAssets; };
 
       lib = {
         inherit allowLiuqinUnfree;
@@ -74,8 +80,7 @@
                 # builders on an x86_64 host with no binfmt registration.
                 nixpkgs.pkgs = pkgsArm;
               } else {
-                nixpkgs.overlays = [ self.overlays.default ]
-                  ++ lib.optional (injectFrom != null) (import ./overlay-inject.nix { pkgsArm = injectFrom; });
+                nixpkgs.overlays = lib.optional (injectFrom != null) (import ./overlay-inject.nix { pkgsArm = injectFrom; });
                 nixpkgs.config.allowUnfreePredicate = allowLiuqinUnfree;
               })
               self.nixosModules.liuqin
@@ -126,6 +131,7 @@
             toplevel = cfg.system.build.liuqinLiveToplevel;
             bootargs = cfg.boot.kernelParams ++ [ "init=${toplevel}/init" ];
             mkImage = imageBootargs: pkgsArm.callPackage ./pkgs/bootimg {
+              firmwareAssets = firmwareAssets;
               kernel = cfg.boot.kernelPackages.kernel;
               gawk = pkgsHost.gawk;
               bootargs = lib.concatStringsSep " " imageBootargs;
@@ -151,6 +157,7 @@
           in
           {
             bootimg = pkgsArm.callPackage ./pkgs/bootimg {
+              firmwareAssets = firmwareAssets;
               kernel = cfg.boot.kernelPackages.kernel;
               gawk = pkgsHost.gawk;
               bootargs = lib.concatStringsSep " " (
@@ -183,6 +190,7 @@
           # no `init=` command line. Use installer-bootimg or demo-bootimg
           # for a bootable NixOS environment.
           bootimg-kernel-only = pkgsArm.callPackage ./pkgs/bootimg {
+            firmwareAssets = firmwareAssets;
             kernel = demoKernel;
             gawk = pkgsHost.gawk;
           };
@@ -206,7 +214,12 @@
           uboot-bootimg = pkgsArm.liuqinUboot.bootimg;
         };
 
-      nixosModules.liuqin = import ./modules/liuqin;
+      nixosModules.liuqin = { config, lib, ... }: {
+        imports = [ ./modules/liuqin ];
+        config = lib.mkIf config.hardware.liuqin.enable {
+          nixpkgs.overlays = [ self.overlays.default ];
+        };
+      };
 
       # The demo system: the machine configuration users copy and the BSP's
       # own target. It is a plain NixOS module (config/demo/configuration.nix)
@@ -330,6 +343,26 @@
                 ${lib.concatMapStrings (p: "echo '  ${p}' >&2\n") problems}exit 1
               ''
           );
+
+      # hexagonrpcd's Android-facing sns_reg_config path is backed by the
+      # physical sns_reg.conf package path, while sensorspd reads a separate
+      # NUL-terminated version record. Dropping either made the real DSP close
+      # its FastRPC channel during activation.
+      checks.x86_64-linux.liuqin-ssc-config-contract =
+        let
+          sensors = "${pkgsArm.liuqinSensorsConfig}/share/qcom/sm8450/Xiaomi/liuqin/sensors";
+        in
+        pkgsHost.runCommand "liuqin-ssc-config-contract"
+          { nativeBuildInputs = [ pkgsHost.coreutils ]; }
+          ''
+            cmp ${sensors}/sns_reg_config ${sensors}/sns_reg.conf
+            printf 'version=12\0' | cmp - ${sensors}/sns_reg_version
+            touch $out
+          '';
+
+      # The package's build assertions cover firmware paths requested by the
+      # board DT as well as byte identity for aliases derived from stock names.
+      checks.x86_64-linux.liuqin-firmware-contract = pkgsArm.liuqinFirmware;
 
       # The storage guard's fixture tests (fail-closed argument handling and
       # identity check, no root or block device needed) run in its checkPhase;

@@ -17,9 +17,9 @@
 # from a flake of your own) instead of tracking nixos-unstable here; two pins
 # would only drift apart.
 #
-#   nix build .#bootimg         ABL path: boot.img carrying the NixOS initrd
-#   nix build .#installer-bootimg RAM-only live installer (the install path)
-#   nix build .#uboot-bootimg   the U-Boot boot.img (built in this repo)
+#   nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#bootimg
+#   nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#installer-bootimg
+#   nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#uboot-bootimg
 #
 # To install over SSH (nixos-anywhere) instead of the telnet shell, build
 # your own installer with your key in it:
@@ -29,17 +29,26 @@
 #     authorizedKeys = [ "ssh-ed25519 AAAA..." ];
 #   }
 #
-# Evaluation needs nothing special. The example uses the BSP's native-aarch64 +
-# injection path: the closure is served by cache.nixos.org and only the
-# per-machine derivations need an aarch64 executor - binfmt on an x86_64 host,
-# or the device itself. `crossBuild = true` remains for hosts without binfmt,
-# at the cost of compiling the whole closure from source.
+# Evaluation/build needs the authorized sibling asset checkout; from this
+# directory, pass --override-input firmwareAssets
+# path:../../../liuqin-nixos-os2-firmware-assets to each Nix command. The
+# example uses the BSP's native-aarch64 + injection path: the closure is served
+# by cache.nixos.org and only the per-machine derivations need an aarch64
+# executor - binfmt on an x86_64 host, or the device itself. `crossBuild = true`
+# remains for hosts without binfmt, at the cost of compiling the whole closure
+# from source.
 {
   description = "liuqin demo machine configuration (consumer of liuqin-nixos)";
 
   inputs.liuqin.url = "github:Seeker0472/liuqin-nixos";
+  # This sibling path needs the documented --override-input when evaluating.
+  inputs.firmwareAssets = {
+    url = "path:../../../liuqin-nixos-os2-firmware-assets";
+    flake = false;
+  };
+  inputs.liuqin.inputs.firmwareAssets.follows = "firmwareAssets";
 
-  outputs = { self, liuqin }:
+  outputs = { self, liuqin, firmwareAssets }:
     let
       system = "x86_64-linux";
 

@@ -50,7 +50,7 @@ usage: liuqin-persist-provision [--persist-source DIR] [--persist-part DEV]
                                 [--registry-user USER] [--registry-group GROUP]
 
 --persist-source takes an already-mounted persist tree and skips the mount;
---ssc-config is the store directory carrying sensors/sns_reg_version.
+--ssc-config carries the static FastRPC sensor contract and version seed.
 EOF
       exit 2
     }
@@ -115,12 +115,22 @@ EOF
     # configuration in the Nix store, but seed the mutable siblings that the
     # firmware removes, creates and updates during regeneration.
     install -d -m 0750 -o "$registry_user" -g "$registry_group" "$sensor_dir"
+    if [ -n "$ssc_config" ]; then
+      [ -f "$ssc_config/sensors/sns_reg.conf" ] || {
+        echo "liuqin-persist-provision: SSC config has no FastRPC sns_reg.conf" >&2
+        exit 1
+      }
+      [ -f "$ssc_config/sensors/sns_reg_version" ] || {
+        echo "liuqin-persist-provision: SSC config has no sns_reg_version seed" >&2
+        exit 1
+      }
+    fi
     if [ ! -e "$sensor_dir/sns_reg_version" ]; then
-      if [ -n "$ssc_config" ] && [ -f "$ssc_config/sensors/sns_reg_version" ]; then
+      if [ -n "$ssc_config" ]; then
         install -m 0640 -o "$registry_user" -g "$registry_group" \
           "$ssc_config/sensors/sns_reg_version" "$sensor_dir/sns_reg_version"
       else
-        echo "liuqin-persist-provision: no sns_reg_version seeded (--ssc-config missing or incomplete)" >&2
+        echo "liuqin-persist-provision: no SSC config; leaving sns_reg_version absent" >&2
       fi
     fi
     for mutable in sensors_list.txt file1 file2; do

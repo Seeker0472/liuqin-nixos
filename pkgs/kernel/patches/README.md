@@ -39,7 +39,7 @@ patch.
 | 0013 | camera-tuning | s5kjn1 vendor modes/vflip, gt9764 autofocus, camcc/gcc GDSC always-on |
 | 0014 | board-usb-typec-dp-dt | board DTS for USB3 device, Type-C host/OTG and DP Alt Mode |
 | 0015 | audio-wcd-capture | WCD9385 RX/TX SoundWire capture graph, guarded UCM `Mic`, 2.75 V micbias (applied after 0014) |
-| 0016 | cs35l41-subsystem-id | name the four CS35L41 amplifiers so the driver picks linux-firmware's Halo build keyed by 10251826 (applied after 0015) |
+| 0016 | cs35l41-subsystem-id | name the four CS35L41 amplifiers so the driver requests OS2.0.4 aliases keyed by 10251826 (applied after 0015) |
 | 0017 | tee-qseecom-legacy-transport | legacy QSEECOM TEE transport + SCM listener/app-load + mdt image assembler |
 | 0018 | misc-fpc1020 | FPC1264 power/reset/IRQ control (/dev/fpc1020), no SPI (trustlet owns the bus) |
 | 0019 | dts-fpc1264 | fingerprint control node: GPIO40/41 + LDO9; QUP SE10 stays reserved/disabled |

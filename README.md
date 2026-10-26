@@ -1,11 +1,11 @@
 # liuqin-nixos — Xiaomi Pad 6 Pro (SM8475)
 
 NixOS support for the Xiaomi Pad 6 Pro, built around Linux 7.2.5 and the
-device patches in `pkgs/kernel/patches/`. Every proprietary payload (firmware,
-sensor configuration, stock DT artifacts) is an operator-supplied
-`requireFile` input, so the tree carries no vendor binary; the camera register
-tables in patches 0012/0013 are derived data that stays in-tree. See NOTICE
-for both boundaries.
+device patches in `pkgs/kernel/patches/`. All static vendor firmware, sensor
+configuration and stock boot artifacts come from the separate sibling
+repository `liuqin-nixos-os2-firmware-assets`; the main source tree carries no
+vendor binary. Its camera register tables in patches 0012/0013 are derived
+driver data. See NOTICE for the licensing and private-data boundaries.
 
 ## Installation model
 
@@ -16,7 +16,7 @@ described in [docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md).
 Initial installation has one supported path:
 
 ```sh
-nix build .#installer-bootimg --out-link result-installer
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#installer-bootimg --out-link result-installer
 fastboot boot result-installer/boot.img
 ```
 
@@ -160,17 +160,15 @@ sector values are embedded in this repository.
 
 ## Build outputs
 
-```sh
-nix build .#kernel
-nix build .#bootimg-kernel-only
-nix build .#demo-bootimg
-nix build .#installer-kernel
-nix build .#installer-bootimg
-nix build .#uboot            # the bootloader (u-boot-nodtb.bin + DTB)
-nix build .#uboot-bootimg    # its ABL boot.img (RAM boot it first)
-nix flake check
-nix run .#unit-verify        # strict verification of the demo's default boot transaction
-nix run .#unit-verify-tests  # positive and negative analyzer fixtures (no tablet)
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#kernel
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#bootimg-kernel-only
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#demo-bootimg
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#installer-kernel
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#installer-bootimg
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#uboot
+nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#uboot-bootimg
+nix flake check --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets
+nix run --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#unit-verify
 ```
 
 The unit verifier uses NixOS's assembled unit tree, including upstream units,
@@ -230,17 +228,24 @@ set with `injectFrom = liuqin.lib.pkgsArm`. Only the per-machine derivations
 (`/etc`, units, initrd, the images) then have to execute aarch64 code — on a
 binfmt-capable x86_64 host, or on the device itself. `crossBuild = true`
 remains available for hosts without binfmt, but it cross-compiles the entire
-closure from source (cross derivations are in no binary cache). The complete
-desktop closure still requires the operator-supplied private `requireFile`
-payloads in `data/`.
+closure from source (cross derivations are in no binary cache). Building
+requires an authorized local checkout of `liuqin-nixos-os2-firmware-assets`
+next to this repository. Because it is outside this flake's Git tree, invoke
+Nix with `--override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets`;
+this resolves the sibling checkout to a content-hashed store input.
 
 ## Use as a flake input
 
 ```nix
 {
   inputs.liuqin.url = "github:Seeker0472/liuqin-nixos";
+  inputs.firmwareAssets = {
+    url = "path:../liuqin-nixos-os2-firmware-assets";
+    flake = false;
+  };
+  inputs.liuqin.inputs.firmwareAssets.follows = "firmwareAssets";
 
-  outputs = { self, liuqin }:
+  outputs = { self, liuqin, firmwareAssets }:
     let
       system = "x86_64-linux";
       machine = liuqin.lib.mkLiuqinSystem {
@@ -259,6 +264,11 @@ payloads in `data/`.
 }
 ```
 
+The asset checkout is outside the BSP's Git tree. Build from the consumer
+checkout with
+`--override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets`
+so Nix resolves and hashes the sibling directory before building.
+
 `config/demo/` is a complete consumer flake and the repository's only
 machine configuration; the BSP builds the very same `configuration.nix` as its
 `demo` target. Copy it with
@@ -266,12 +276,13 @@ machine configuration; the BSP builds the very same `configuration.nix` as its
 `configuration.nix` for users, hostname and timezone; use the BSP's
 `installer-bootimg` for the first install.
 
-Per-device payloads are options, not hidden requireFile steps:
-`hardware.liuqin.firmware.{vpu,cs35l41}` and
-`hardware.liuqin.sensors.sscConfig` take path literals
-(`./liuqin-firmware-vpu.tar.zst`), and each falls back to the hash-pinned
-`requireFile` archive when left null. With no SSC configuration set the sensor
-stack is omitted and the module warns.
+The static firmware is not embedded in this source repository and is not
+downloaded from a public release. Provide the separate asset repository as a
+local flake input (shown above); `hardware.liuqin.sensors.enable` uses its
+OS2.0.4 configuration, and the firmware packages consume its hash-verified
+payloads. The per-device persist registry, WLAN/BT identities, speaker
+calibration, MiPPS keys and fingerprint credentials remain on the device and
+are not copied into either repository.
 
 ## Camera
 
@@ -351,26 +362,30 @@ reliable on this device and is no longer part of the kernel, cmdline or tools.
 2. applies the installer-only USB2 peripheral overlay when building
    `installer-bootimg`; the initrd then creates the downstream-compatible
    configfs NCM gadget (falling back to ECM);
-3. collects symbols referenced by all stock DTBO entries and base DTBs;
-4. redirects every exported symbol to an inert sink;
+3. collects `__symbols__` exports from every stock DTBO entry and base DTB,
+   plus all stock DTBO `__fixups__` targets;
+4. redirects every collected symbol name to an inert sink;
 5. chooses the sink phandle dynamically as `max(existing phandles) + 1`;
 6. verifies the final framebuffer geometry, identity properties and symbol
    union before invoking `mkbootimg`.
 
-The current stock archive contains 38 DTBO entries and 11 base DTBs, producing
-the asserted 1744-symbol union. The downstream 1781-symbol count comes from a
-different OS/DTB archive and is not an error in this input set.
+The official OS2.0.4 assets contain all 44 DTBO entries and 14 vendor_boot
+base DTBs. Their exported symbols plus the DTBO fixup targets form the asserted
+2524-name union; the build checks the manifested file sets, input counts and
+calculated symbol union.
 
 ## Firmware
 
-Firmware inputs are operator-supplied fixed-output archives (`requireFile`:
-local copies in `data/`, hashes in `pkgs/firmware.nix`) and are assembled by
-`pkgs/firmware.nix`. The installer copies the ath11k firmware, board data and
-signed regulatory database into stage 1 so Wi-Fi can be brought up before the
-live root is switched. The installed system carries the complete device
-firmware tree. `hardware.liuqin.firmware.{vpu,cs35l41,bootImg}` accept your
-own archives and release image by path instead of a store registration, so no
-build fetches from a third-party release asset.
+The sibling `liuqin-nixos-os2-firmware-assets` repository contains the narrow
+OS2.0.4 extraction, pinned upstream ath11k/regulatory firmware, the generated
+AudioReach topology, stock DT artifacts, and sensor/FPC payloads. Its source
+and output hashes are recorded in the repository manifests; package
+derivations verify the file manifests before use. The build has no dependency
+on the downstream v0.3.1 boot image, `requireFile`, or a public vendor release.
+The installed system forces Nixpkgs redistributable firmware off and installs
+the static asset package; the RAM installer copies only the WLAN and regulatory
+subset it needs before switch-root. Per-device persist state and fingerprint
+credentials remain outside both repositories.
 
 ## Repository map
 
@@ -383,17 +398,16 @@ modules/liuqin/           installed-system hardware and initrd modules
 pkgs/kernel/              Linux configuration and installer profile; the 7.2.5
                           device patches live in pkgs/kernel/patches/, applied
                           in filename order (index/provenance: that README.md)
-pkgs/bootimg/             ABL boot image and DTB construction, with the ABL and
-                          installer DT overlays under dts/ and the stock DT
-                          archive inputs (stock-*.nix, requireFile)
+pkgs/bootimg/             ABL boot image and DTB construction; stock DT artifacts
+                          are read from the sibling assets repository
 pkgs/u-boot/              the bootloader: the pinned base tree + patches/ + files/
-data/                     local copies of the requireFile payloads (gitignored)
-```
+../liuqin-nixos-os2-firmware-assets/
+                          private OS2.0.4 payloads, extraction/generation scripts,
+                          and source/output manifests (separate Git repository)
 
-The `data/liuqin-*.tar.zst` archives and the two `pkgs/bootimg/stock-*.tar.zst`
-archives are gitignored operator payloads; see `.gitignore` for registration
-instructions. The device has no UART; for
-bring-up use the framebuffer console and fastboot/U-Boot diagnostics.
+Legacy local `data/*.tar.zst`, `data/release-v0.3.1/boot.img` and
+`pkgs/bootimg/stock-*.tar.zst` files may remain ignored in an existing checkout;
+the build no longer reads them. Keep them as user data unless explicitly removed.
 
 ## Acknowledgements
 

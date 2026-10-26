@@ -117,8 +117,11 @@
 - LED 类设备，火把亮度 0..255（`flash_*` 是 V4L2 闪光的 strobing 接口，未用）；相机闪光与手电筒共用这颗灯。
 - GNOME Quick Settings 的 Flashlight 扩展（`pkgs/gnome-flashlight/`，**Wi-Fi 式两级**：磁贴点按开关灯、
   副标题显示亮度百分比、箭头展开二级菜单里的亮度滑条；图标取自 MDI `flashlight`/`flashlight-off`）
-  由 demo 配置经 dconf 启用。udev 用 `RUN+=chgrp video/chmod 0664` 授权 —— **LED 没有 /dev 节点，
-  `GROUP`/`MODE`/`uaccess` 对它全是空操作**（实测）。写 sysfs 不能用 `GLib.file_set_contents`
+  由主机配置经 dconf 启用。`hardware.liuqin.camera` 的 udev 规则用
+  `RUN+=chgrp video/chmod 0664` 授权 `brightness` —— **LED 没有 /dev 节点，
+  `GROUP`/`MODE`/`uaccess` 对它全是空操作**（实测）；权限必须属于硬件模块，
+  不能只放在 demo 配置，否则其他主机的扩展只能读、写入返回 `EACCES`。写 sysfs
+  不能用 `GLib.file_set_contents`
   （原子写要先在同目录建临时文件，sysfs 建不了），要直接 append；GNOME 50 没有 `St.Slider`
   （用 `ui/slider.js` 的 `Slider`）；改扩展 JS 后 GJS 模块缓存不失效，必须重启 Shell/重登。
 

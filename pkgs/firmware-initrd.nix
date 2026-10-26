@@ -9,9 +9,11 @@
 # but the installer's panel is an output-only fallback channel (there is no
 # keyboard to type on it), so the payload buys nothing here; the installed
 # system carries the full firmware set and does have touch.
-{ runCommand, firmware }:
+{ lib, runCommand, firmware }:
 
-runCommand "liuqin-initrd-firmware" { } ''
+runCommand "liuqin-initrd-firmware" {
+  meta.license = lib.licenses.unfree;
+} ''
   mkdir -p "$out/lib/firmware"
 
   cp -a ${firmware}/lib/firmware/ath11k "$out/lib/firmware/"

@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: MIT
-# NixOS owns a stable firmware union at /run/firmware. Verify that the same
-# OEM blobs are reachable there, without changing firmware_class.path.
-# Preserve the cleanup output consumed by the TOD driver: "restored" now
-# means the parameter stayed unchanged for the complete operation.
---- a/oem_runtime.py
-+++ b/oem_runtime.py
+#
+# NixOS adaptation: the module exports `LIUQIN_FPC_OEM_FIRMWARE` as the
+# packaged OS2.0.4 asset directory, so the OEM runtime verifies and loads the
+# static `fpcliu.*` files from the Nix store. Deployments without that variable
+# keep the component's colocated default. `resolve()` keeps the value absolute,
+# which the kernel parameter requires.
+#
+diff -r a/oem_runtime.py b/oem_runtime.py
+--- a/oem_runtime.py	2026-10-07 00:39:18.028384603 +0800
++++ b/oem_runtime.py	2026-10-07 00:39:18.067415508 +0800
 @@ -67,7 +67,7 @@
          listener_command = [str(provider), "--serve-authenticated" if
                              rpmb_mode == "--ufs-rpmb-authenticated" else "--serve-read-only"]

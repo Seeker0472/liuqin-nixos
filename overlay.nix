@@ -2,7 +2,7 @@
 #
 # liuqin package overlay. Everything device-specific lives here; the NixOS
 # module references pkgs.liuqin*.
-final: prev:
+{ firmwareAssets }: final: prev:
 
 {
   # --- Kernel (linuxManualConfig, aarch64 defconfig + liuqin answers) ---
@@ -49,6 +49,7 @@ final: prev:
   # --- boot.img tooling ---
   mkbootimg = final.callPackage ./pkgs/mkbootimg.nix { };
   liuqinBootimg = final.callPackage ./pkgs/bootimg {
+    firmwareAssets = firmwareAssets;
     kernel = final.liuqinKernel;
     # bootimg.nix runs its DT/symbol synthesis on the build host.  In the
     # aarch64 package set the unqualified gawk would be an aarch64 executable
@@ -63,7 +64,10 @@ final: prev:
   # adds). The boot.img is packaged by pkgs/bootimg/default.nix, the same ABL
   # pipeline as the kernel image. buildPackages is the x86_64 set that runs the
   # host tools.
-  liuqinUboot = final.callPackage ./pkgs/u-boot { hostPkgs = final.buildPackages; };
+  liuqinUboot = final.callPackage ./pkgs/u-boot {
+    hostPkgs = final.buildPackages;
+    firmwareAssets = firmwareAssets;
+  };
 
   # --- Device packages ---
   liuqinPowerKeyd = final.callPackage ./pkgs/power-keyd { };
@@ -122,7 +126,10 @@ final: prev:
   liuqinMippsd = final.callPackage ./pkgs/mipps-daemon { };
 
   liuqinHexagonrpc = final.callPackage ./pkgs/hexagonrpc { };
-  liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix { };
+  liuqinSensorsConfig = final.callPackage ./pkgs/sensors-config.nix {
+    inherit firmwareAssets;
+    python3 = final.buildPackages.python3;
+  };
 
   # libssc (and its `ssccli`) come from nixpkgs: 0.4.4, the same upstream
   # release this repository used to pin itself, but tracked by nixpkgs and
@@ -154,11 +161,18 @@ final: prev:
   # same convention as the flashlight above.
   liuqinGnomeAutoBrightness = final.callPackage ./pkgs/gnome-autobrightness { };
 
-  # Firmware tree assembled from requireFile placeholders (operator-supplied
-  # stock-ROM payloads); see pkgs/firmware.nix.
-  liuqinFirmware = final.callPackage ./pkgs/firmware.nix { };
+  # Static device firmware comes from the sibling, independently versioned
+  # assets repository; package derivations verify its recorded hashes.
+  liuqinFirmware = final.callPackage ./pkgs/firmware.nix {
+    inherit firmwareAssets;
+    python3 = final.buildPackages.python3;
+  };
   liuqinInitrdFirmware = final.callPackage ./pkgs/firmware-initrd.nix {
     firmware = final.liuqinFirmware;
+  };
+  liuqinFpcFirmware = final.callPackage ./pkgs/fingerprint/firmware.nix {
+    inherit firmwareAssets;
+    python3 = final.buildPackages.python3;
   };
 
   # --- OEM FPC1264 fingerprint stack (hardware.liuqin.fingerprint) ----------
