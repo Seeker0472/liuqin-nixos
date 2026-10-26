@@ -1,12 +1,12 @@
 # pkgs/kernel/patches — Linux 7.2.5 device patches
 
-`pkgs/kernel/default.nix` applies every `*.patch` in this directory to a pristine
-7.2.5 tree in **byte-sorted filename order**, except the patches listed in its
-`dtPatchNames` (`0014-…`, `0015-…` and `0016-…` today), which are applied
-last.  Each patch carries a prose header above its diff; keep that header
+`pkgs/kernel/default.nix` applies the patches to a pristine 7.2.5 tree in
+the explicit order recorded in `series`. Evaluation requires that this list
+contains every `*.patch` exactly once. The board DTS additions 0014–0016
+remain at the end.  Each patch carries a prose header above its diff; keep that header
 when editing one.
 
-The 22 patches are grouped by subsystem.  The first 14 were merged down from
+The 23 patches are grouped by subsystem.  The first 14 were merged down from
 a 33-patch bring-up series (the merge provenance is in each patch header);
 the merged set produces a byte-identical tree, so that part is a pure
 re-grouping.  0015 adds the WCD9385 SoundWire capture graph on top of the
@@ -14,8 +14,7 @@ board DTS the other patches build, 0016 names the four CS35L41 amplifiers so
 the driver selects this board's firmware, 0017-0019 add the fingerprint
 series (the QSEECOM TEE transport, the FPC1264 control interface and its board
 DT node), 0020 pins the WCN6855 RF rail voltages to the stock DTB, 0021
-declares the three cameras' orientation, and 0022 - the only patch authored
-against 7.2.5 rather than merged from the bring-up series - records the DWC3
+declares the three cameras' orientation, and 0022 records the DWC3
 controller state when its core soft reset times out.  That dump is what named
 the RAM installer's dead USB control channel (docs/PORTING-NOTES.md, USB3
 device), whose fix is the installer overlay in `pkgs/bootimg/dts/`, not this
@@ -27,7 +26,7 @@ patch.
 | --- | --- | --- |
 | 0001 | board-dts-bindings | the board DTS, its compatibles/bindings, dtsi fixes, dtb Makefile entry |
 | 0002 | input-hid-touchscreen | Nanosic WN8030 keyboard folio + Novatek NT36xxx touchscreen |
-| 0003 | display-panel-msm | NT36532 DSI panel, msm dirtyfb fix, warm-start fixes (stop the DSI controller, no bootloader-PLL replay) and one early DPMS off/on after the first modeset |
+| 0003 | display-panel-msm | NT36532 DSI panel, warm-start workarounds (stop the DSI controller, no bootloader-PLL replay) and one early DPMS off/on; upstream dirtyfb policy retained |
 | 0004 | audio-audioreach | audioreach/sc8280xp path, cs35l41, wm_adsp, q6apm |
 | 0005 | power-pmic-glink-mipps | PON/pmic-glink + the qcom_battmgr MiPPS ABI and CC orientation |
 | 0006 | media-iris | IRIS VPU platform for sm8450 |
@@ -47,6 +46,7 @@ patch.
 | 0020 | wcn6855-rfa-rail-voltages | pin the WCN6855 RF rail voltages to the stock DTB's init voltages |
 | 0021 | camera-orientation | declare each camera's `orientation` (s5kjn1 rear, imx596 front, sc202cs rear) so the sensor drivers report the location the camera stack needs |
 | 0022 | usb-dwc3-reset-dump | print `DCTL`/`GCTL`/`GUSB2PHYCFG0`/`GUSB3PIPECTL0`/`GSNPSID`/`revision` when the DWC3 core soft reset times out, so a stuck `CSFRST` names its own cause instead of only "soft reset failed" |
+| 0023 | phy-dp-vendor-state | reviewed DP register tables and sequencing, formerly a whole-file replacement |
 
 0017-0019 are the fingerprint (FPC1264/QSEECOM) series.  0017 and 0018 apply in
 sequence with the rest and 0019 (the board DT node) applies there as well: it
@@ -57,8 +57,8 @@ does not touch the regions the three DT patches applied last rewrite.
 The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
 it, and 0014 adds the USB/Type-C/DP nodes on top.  0015 extends the same file
 with the WCD9385 capture graph, and 0016 appends the amplifier
-`cirrus,subsystem-id` overrides.  `pkgs/kernel/default.nix` keeps all three in
-`dtPatchNames` so they are applied after the sorted series, in that order.
+`cirrus,subsystem-id` overrides. The `series` file lists all three at the end
+so they are applied after the common series, in that order.
 
 ## Adding or regenerating a patch
 
@@ -71,16 +71,21 @@ touched files and let git produce the diffs:
 
 ```sh
 # 1. extract only the files the series touches from the 7.2.5 tarball
+patchdir="$PWD/pkgs/kernel/patches" # start at the repository root
+archive=/absolute/path/to/linux-7.2.5.tar.xz
 mkdir /tmp/kfix && cd /tmp/kfix
-grep -h '^+++ b/' pkgs/kernel/patches/*.patch | sed 's|^+++ b/||' | sort -u > paths.txt
-tar -tJf linux-7.2.5.tar.xz > members.txt
+rg --no-filename '^\+\+\+ b/' "$patchdir"/*.patch | sed 's|^+++ b/||' | sort -u > paths.txt
+tar -tJf "$archive" > members.txt
 awk 'NR==FNR{m[$0]=1;next}{if (m["linux-7.2.5/"$0]) print "linux-7.2.5/"$0}' \
     members.txt paths.txt > extract.txt
-tar -xJf linux-7.2.5.tar.xz -T extract.txt && cd linux-7.2.5
+tar -xJf "$archive" -T extract.txt && cd linux-7.2.5
 git init -q && git add -A && git commit -qm pristine
 
 # 2. apply the series in build order, committing per group
-for p in $(ls <patchdir>/*.patch | sort); do patch -p1 --batch -N < "$p"; done
+while IFS= read -r p; do
+  case "$p" in ""|\#*) continue ;; esac
+  patch -p1 --batch < "$patchdir/$p"
+done < "$patchdir/series"
 git add -A && git commit -qm target
 
 # 3. regenerate a group's patch as a single diff between two commits
@@ -89,17 +94,19 @@ git diff <before> <after> > 00NN-liuqin-<group>.patch
 
 Then verify the way this series was verified: replay the regenerated patches
 onto a pristine checkout and require `git diff <target> HEAD` to be **empty**.
+The replay uses GNU patch's build-time defaults: the existing 0005 series
+needs fuzz 1 on 7.2.5. The new 0023 diff applies with zero fuzz.
 
-## Whole-file replacement: the DP half of the combo PHY
+## DP PHY vendor state
 
-`pkgs/kernel/default.nix` (postPatch) copies `pkgs/kernel/replaced/phy-qcom-qmp-combo.c`
-over `drivers/phy/qualcomm/phy-qcom-qmp-combo.c` after the series is applied
-(it is generated from the live register state of the vendor stack; see the
-comment there).  A replay therefore ends with that copy as well:
+0023 replaces the former whole-file copy with a 334-line diff applied after
+0008. The compiled driver is byte-identical to the replacement at commit
+73e8071; the accidental `.c.orig` backup in 0008 has also been removed.
+Kernel upgrades now have to reconcile changes to the affected code.
 
-```sh
-cp pkgs/kernel/replaced/phy-qcom-qmp-combo.c <pristine>/drivers/phy/qualcomm/
-```
-
-Without it the diff is non-empty, and the file is the one part of the kernel
-tree that `check-patch-hunks.py` cannot see.
+`../tools/dp-gen-vendor-tables.py` is the original table generator. It takes
+operator-supplied live register captures plus a driver source tree (including
+its QMP headers), and prints candidate C tables. The capture is not included;
+0023 contains the reviewed values and subsequent manual COM/PD_CTL fixes.
+Re-running the generator alone does not reproduce the entire patch. Keep the
+current HBR2 limitation until new link rates are validated on hardware.

@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: MIT
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   cfg = config.hardware.liuqin;
@@ -60,8 +65,19 @@ in
             inherit (cfg.firmware) vpu cs35l41;
             releaseBootImg = cfg.firmware.bootImg;
           };
+
+      # hardware.firmware is the merged buildEnv in the pinned NixOS module;
+      # use its immutable store path, not the mutable current-system link.
+      firmwareLowerDirs =
+        lib.optionalString cfg.fingerprint.enable "${cfg.fingerprint.firmwareDir}:"
+        + "${firmwareTree}/lib/firmware:${config.hardware.firmware}/lib/firmware:/var/lib/firmware";
     in
     {
+      assertions = lib.optional cfg.fingerprint.enable {
+        assertion = builtins.match "/[A-Za-z0-9_./-]+" cfg.fingerprint.firmwareDir != null;
+        message = "hardware.liuqin.fingerprint.firmwareDir must be an absolute path without mount-option separators or whitespace";
+      };
+
       # TODO(touch-drift): with an external display connected the touchscreen is
       # mapped to the wrong output by Mutter and the finger coordinates drift.
       # Measured root cause: the touchscreen is an I2C device with neither USB
@@ -94,8 +110,7 @@ in
       # placing a second tree below /lib/firmware makes systemd's initrd image
       # builder fail. Use the same writable firmware_class.path that carries
       # the device-specific calibration files after switch-root.
-      boot.initrd.systemd.contents."/var/lib/firmware".source =
-        "${firmwareTree}/lib/firmware";
+      boot.initrd.systemd.contents."/var/lib/firmware".source = "${firmwareTree}/lib/firmware";
 
       # The firmware loader reads exactly one directory (firmware_class.path;
       # fw_path_para is a single char[256] with no ':') and /lib/firmware does
@@ -140,10 +155,21 @@ in
           what = "overlay";
           where = "/run/firmware";
           type = "overlay";
-          options = "ro,lowerdir=${firmwareTree}/lib/firmware:/run/current-system/firmware:/var/lib/firmware";
+          # Put the OEM directory first when enabled: its 0700 root keeps
+          # the merged tree private, as the OEM source directory was. Kernel
+          # firmware requests use kernel credentials; session clients do not
+          # consume this tree. An empty OEM directory leaves audio available.
+          options = "ro,lowerdir=${firmwareLowerDirs}";
+          # Options-only mount changes are reloaded by NixOS, but overlayfs
+          # needs an unmount/mount to replace its lower layers. A unit-level
+          # trigger makes every lowerdir change a stop/start instead.
+          restartTriggers = [ firmwareLowerDirs ];
           wantedBy = [ "sound.target" ];
           before = [ "sound.target" ];
-          after = [ "liuqin-persist-provision.service" ];
+          after = [
+            "liuqin-persist-provision.service"
+            "systemd-tmpfiles-setup.service"
+          ];
           partOf = [ "liuqin-persist-provision.service" ];
           # A mount unit normally counts as a local file system: systemd adds
           # an implicit Before=local-fs.target.  That cycles here - the
@@ -158,12 +184,28 @@ in
           # `systemd-analyze verify` on the generated unit is clean.
           unitConfig = {
             DefaultDependencies = false;
-            RequiresMountsFor = "/var/lib/firmware";
+            RequiresMountsFor = [
+              "/var/lib/firmware"
+            ]
+            ++ lib.optional cfg.fingerprint.enable cfg.fingerprint.firmwareDir;
             Conflicts = [ "umount.target" ];
             Before = [ "umount.target" ];
           };
         }
       ];
+
+      # NixOS activation sets firmware_class.path in the udevd snippet on
+      # every switch. Retain a mounted union until its restart transaction;
+      # the loader unit restores the system tree before unmount and selects
+      # the replacement union only after it mounts successfully.
+      system.activationScripts.liuqin-firmware-path = {
+        deps = [ "udevd" ];
+        text = ''
+          if ${pkgs.util-linux}/bin/mountpoint -q /run/firmware; then
+            ${pkgs.liuqinFirmwareLoaderPath}/bin/liuqin-firmware-loader-path /run/firmware
+          fi
+        '';
+      };
 
       # The loader switch: only after the union (Requires/After above) so that
       # the card probe earlier in the boot still sees the activation script's
@@ -173,8 +215,13 @@ in
         description = "Point the firmware loader at the firmware union";
         wantedBy = [ "sound.target" ];
         requires = [ "run-firmware.mount" ];
+        partOf = [ "run-firmware.mount" ];
         after = [ "run-firmware.mount" ];
         before = [ "sound.target" ];
+        # Keep the loader active until the mount's post-activation restart:
+        # its ExecStop must run before the union disappears, not before
+        # activation reselects it. After= reverses this order on shutdown.
+        stopIfChanged = false;
         # The parameter exists whenever firmware_class is in the kernel; the
         # condition keeps a module-only build from creating a stray file.
         unitConfig.ConditionPathExists = "/sys/module/firmware_class/parameters/path";
@@ -182,6 +229,7 @@ in
           Type = "oneshot";
           RemainAfterExit = true;
           ExecStart = "${pkgs.liuqinFirmwareLoaderPath}/bin/liuqin-firmware-loader-path /run/firmware";
+          ExecStop = "${pkgs.liuqinFirmwareLoaderPath}/bin/liuqin-firmware-loader-path ${config.hardware.firmware}/lib/firmware";
         };
       };
     }

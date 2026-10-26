@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: MIT
-#
-# NixOS adaptation: the OEM runtime points the kernel's firmware_class.path at
-# the OEM firmware directory next to itself.  A store path cannot carry
-# per-device firmware, so the operator-supplied directory
-# (hardware.liuqin.fingerprint.firmwareDir, exported as
-# LIUQIN_FPC_OEM_FIRMWARE) wins when set and the component's colocated default
-# is kept for every other deployment.  resolve() keeps the value absolute,
-# which the kernel parameter requires.
-#
-diff -r a/oem_runtime.py b/oem_runtime.py
---- a/oem_runtime.py	2026-10-07 00:39:18.028384603 +0800
-+++ b/oem_runtime.py	2026-10-07 00:39:18.067415508 +0800
+# NixOS owns a stable firmware union at /run/firmware. Verify that the same
+# OEM blobs are reachable there, without changing firmware_class.path.
+# Preserve the cleanup output consumed by the TOD driver: "restored" now
+# means the parameter stayed unchanged for the complete operation.
+--- a/oem_runtime.py
++++ b/oem_runtime.py
 @@ -67,7 +67,7 @@
          listener_command = [str(provider), "--serve-authenticated" if
                              rpmb_mode == "--ufs-rpmb-authenticated" else "--serve-read-only"]
@@ -20,3 +14,55 @@ diff -r a/oem_runtime.py b/oem_runtime.py
      expected = json.loads((firmware / "SHA256.json").read_text())
      for name, digest in expected.items():
          if hashlib.sha256((firmware / name).read_bytes()).hexdigest() != digest:
+@@ -77,6 +77,16 @@
+     state.mkdir(mode=0o700, exist_ok=True)
+     os.chmod(state, 0o700)
+     parameter = Path("/sys/module/firmware_class/parameters/path")
++    # The system owns this path. Never replace it for an individual TEE
++    # operation: audio and remoteproc can request firmware concurrently.
++    lookup = Path("/run/firmware")
++    if parameter.read_bytes().rstrip(b"\n") != os.fsencode(lookup):
++        print("shared firmware lookup is not ready; start liuqin-firmware-loader-path.service", file=sys.stderr)
++        return 2
++    for name, digest in expected.items():
++        if hashlib.sha256((lookup / name).read_bytes()).hexdigest() != digest:
++            print("OEM firmware is missing or shadowed in the shared lookup tree", file=sys.stderr)
++            return 2
+     if match:
+         client_name = "fpc_build_info"
+         client = [str(here / client_name), *arguments]
+@@ -104,7 +114,7 @@
+         cancelled = True
+     signal.signal(signal.SIGTERM, cancel_operation)
+     signal.signal(signal.SIGINT, cancel_operation)
+-    # All users share one SPI sensor, listener set and firmware path.
++    # All users share one sensor and listener set; firmware lookup is read-only.
+     with open(state / "operation.lock", "a+b") as operation, tempfile.TemporaryFile(mode="w+b", dir=state) as log:
+         os.fchmod(operation.fileno(), 0o600)
+         try:
+@@ -112,7 +122,8 @@
+         except BlockingIOError:
+             print("oem_runtime=BUSY", file=sys.stderr)
+             return 1
+-        # sysfs adds exactly one newline. Write NUL when restoring an empty value.
++        # Keep the cleanup protocol consumed by the TOD driver; the global
++        # path must remain unchanged, including across failed operations.
+         old_value = parameter.read_bytes()[:-1]
+         listener = subprocess.Popen([*listener_command, "--state-dir", str(state / "ta-files")],
+                                     stdout=log, stderr=log)
+@@ -134,7 +145,6 @@
+             else:
+                 print("OEM listener readiness was not observed", file=sys.stderr)
+                 return 1
+-            parameter.write_bytes(os.fsencode(firmware) + b"\0")
+             duration = 900 if enrol else 180 if match else 70
+             # Only the explicit opaque credential FDs cross this boundary.
+             # authorize_oem keeps FPC open while Gatekeeper signs its challenge.
+@@ -164,7 +174,6 @@
+                 except subprocess.TimeoutExpired:
+                     continue
+         finally:
+-            parameter.write_bytes(old_value + b"\0")
+             if listener.poll() is None:
+                 listener.terminate()
+                 try:

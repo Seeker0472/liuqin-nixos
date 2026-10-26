@@ -169,8 +169,35 @@ nix build .#installer-bootimg
 nix build .#uboot            # the bootloader (u-boot-nodtb.bin + DTB)
 nix build .#uboot-bootimg    # its ABL boot.img (RAM boot it first)
 nix flake check
-nix run .#unit-verify        # systemd's ordering analysis over the demo units
+nix run .#unit-verify        # strict verification of the demo's default boot transaction
+nix run .#unit-verify-tests  # positive and negative analyzer fixtures (no tablet)
 ```
+
+The unit verifier uses NixOS's assembled unit tree, including upstream units,
+drop-ins and dependency links, and asks systemd to verify `default.target` and
+everything it reaches. It deliberately does not start every installed optional,
+template and initrd unit in one synthetic transaction. Missing dependencies or
+executables in the boot transaction fail the check as well as ordering cycles.
+Its fixture tests run outside the build sandbox because systemd's system-manager
+analyzer needs `/run/systemd` even without a running manager. The ordinary
+flake checks cover patch/config/manifest integrity, storage guards and the
+fingerprint runtime's read-only firmware-path contract.
+
+Kernel consumers can use `boot.kernelPatches` and package `.override` as in
+NixOS. Board patches stay first; consumer patches follow them. Direct
+`structuredExtraConfig` overrides merge over the board's initial answers.
+The late board/installer fragments still enforce the built-ins needed to boot;
+changing those invariants requires changing the corresponding fragment too.
+The [configuration ownership guide](pkgs/kernel/CONFIGURATION.md) documents
+these stages and the `liuqin-kernel-config-policy` check, which rejects
+duplicate owners and undeclared transitions and produces a per-symbol report.
+
+The GNOME posture client owns the folio's accelerometer claim while an active,
+unlocked panel-only tablet session needs it. In laptop posture it reapplies the
+seeded DSI landscape transform; extended desktops retain their current modes
+and arrangement and are reflowed when the panel's logical dimensions change.
+Mirrored layouts, and tablet posture with an external display, remain under
+GNOME's control. See the [sensor notes](docs/PORTING-NOTES.md#sensors).
 
 `installer-bootimg` is the installer artifact; its display profile keeps
 ABL's framebuffer alive (`earlycon=simplefb`, `keep_bootcon`, `console=tty0`)

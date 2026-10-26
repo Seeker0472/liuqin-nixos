@@ -130,14 +130,6 @@
     pkgs.liuqinGnomeAutoBrightness
   ];
 
-  # Hand the flash LED's brightness attribute to the video group (the camera
-  # stack's group): the LED class device has no /dev node, so udev's
-  # GROUP/MODE/uaccess have nothing to act on - the attribute itself has to be
-  # adjusted from a rule.
-  services.udev.extraRules = ''
-    SUBSYSTEM=="leds", KERNEL=="white:flash", RUN+="${pkgs.coreutils}/bin/chgrp video /sys/class/leds/white:flash/brightness", RUN+="${pkgs.coreutils}/bin/chmod 0664 /sys/class/leds/white:flash/brightness"
-  '';
-
   # Enable the Quick Settings extensions for the user: the flashlight's state
   # is the LED itself, and the automatic-brightness tile drives
   # gnome-settings-daemon's own ambient switch, so neither needs more

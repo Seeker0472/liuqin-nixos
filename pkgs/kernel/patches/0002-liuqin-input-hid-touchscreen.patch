@@ -1,5 +1,6 @@
-Input: the Nanosic WN8030 keyboard cover (HID, with its selftest) and the
-Novatek NT36xxx touchscreen including the firmware-update path.
+Input: the Nanosic WN8030 keyboard cover (HID) and the
+Novatek NT36xxx touchscreen including the firmware-update path.  The folio's
+backlight is exposed as the liuqin-keyboard::kbd_backlight LED.
 
 Merged from: bring-up patches 0002, 0003
 
@@ -101,13 +102,14 @@ Merged from: bring-up patches 0002, 0003
 +    };
 --- a/drivers/hid/Kconfig
 +++ b/drivers/hid/Kconfig
-@@ -837,6 +837,23 @@ config HID_MULTITOUCH
+@@ -837,6 +837,24 @@ config HID_MULTITOUCH
  	  To compile this driver as a module, choose M here: the
  	  module will be called hid-multitouch.
  
 +config HID_NANOSIC
 +	tristate "Nanosic WN8030 keyboard bridge"
 +	depends on I2C
++	depends on LEDS_CLASS
 +	help
 +	  Support for the Nanosic WN8030 bridge chip, which connects a
 +	  detachable magnetic keyboard folio to the host over I2C. It is
@@ -137,7 +139,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,2077 @@
+@@ -0,0 +1,2240 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -189,6 +191,7 @@ Merged from: bring-up patches 0002, 0003
 +#include <linux/i2c.h>
 +#include <linux/input.h>
 +#include <linux/interrupt.h>
++#include <linux/leds.h>
 +#include <linux/mod_devicetable.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
@@ -329,6 +332,34 @@ Merged from: bring-up patches 0002, 0003
 +
 +static const u8 nanosic_led_command[NANOSIC_LED_COMMAND_LEN] = {
 +	0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0x26, 0x01,
++};
++
++/*
++ * Keyboard backlight. Another management command of the same shape: feature
++ * byte 0x23, the level as its data byte, and the payload's sum as its
++ * companion. Captured from stock Android 2026-10-14 at every level the
++ * framework pushed:
++ *
++ *	32 00 4e 31 80 38 23 01 00 5b   backlight off
++ *	32 00 4e 31 80 38 23 01 64 bf   backlight full
++ *
++ * The level is a percentage and 100 is the keypad's ceiling, not the
++ * framework's choice: the framework's own curve tops out at 100, and levels
++ * above it (200, 250, 255 were pushed through the wire) are applied as 100 -
++ * the keypad answered every one of them with "22 31 38 80 23 01 64 93" and
++ * nothing else. That echo is the MCU reporting what it applied; it walks the
++ * ramp (a level of 100 answers 97, 98, 100), and it is a vendor subpacket, so
++ * the parse table already discards it.
++ */
++#define NANOSIC_BACKLIGHT_COMMAND_LEN	NANOSIC_VERSION_COMMAND_LEN
++#define NANOSIC_BACKLIGHT_LEVEL_OFFSET	9
++#define NANOSIC_BACKLIGHT_COMPANION_OFFSET	10
++#define NANOSIC_BACKLIGHT_COMPANION_BASE	0x5b
++#define NANOSIC_BACKLIGHT_MAX		100
++#define NANOSIC_BACKLIGHT_RETRIES	2
++
++static const u8 nanosic_backlight_command[NANOSIC_BACKLIGHT_COMMAND_LEN] = {
++	0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0x23, 0x01,
 +};
 +
 +static const u8 nanosic_hall_command[NANOSIC_HALL_COMMAND_LEN] = {
@@ -697,6 +728,7 @@ Merged from: bring-up patches 0002, 0003
 +	NANOSIC_I2C_VERSION_READ,
 +	NANOSIC_I2C_HALL_WRITE,
 +	NANOSIC_I2C_LED_WRITE,
++	NANOSIC_I2C_BACKLIGHT_WRITE,
 +	NANOSIC_I2C_STATUS_WRITE,
 +};
 +
@@ -742,6 +774,14 @@ Merged from: bring-up patches 0002, 0003
 +	u8 last_output[NANOSIC_OUTPUT_MAX];
 +	size_t last_output_len;
 +	u64 folio_irq_count;
++
++	/*
++	 * Keyboard backlight. The level the user asked for lives in
++	 * led_classdev::brightness; the hardware level is whatever the keypad
++	 * last applied, so a folio that returns, a keypad that wakes and a
++	 * resume all replay the former.
++	 */
++	struct led_classdev backlight;
 +
 +	/* Serialises the wake line, the awake flag and the I2C buffers. */
 +	struct mutex lock;
@@ -839,6 +879,8 @@ Merged from: bring-up patches 0002, 0003
 +		return "hall-write";
 +	case NANOSIC_I2C_LED_WRITE:
 +		return "led-write";
++	case NANOSIC_I2C_BACKLIGHT_WRITE:
++		return "backlight-write";
 +	case NANOSIC_I2C_STATUS_WRITE:
 +		return "status-write";
 +	default:
@@ -1131,6 +1173,89 @@ Merged from: bring-up patches 0002, 0003
 +}
 +
 +/*
++ * Send a backlight level as the management command the keypad applies. It is
++ * best effort by construction: the keypad ignores commands while it sleeps -
++ * Android's own framework only pushes the level when its status says the
++ * keypad is usable, and keeps the value to replay on wake - and the level
++ * itself lives in led_classdev::brightness, so a command that misses is
++ * replayed when the folio returns, when the keypad wakes and on resume.
++ */
++static int nanosic_send_backlight_command_locked(struct nanosic *nano, u8 level)
++{
++	u8 command[NANOSIC_BACKLIGHT_COMMAND_LEN];
++	struct i2c_msg msg = {
++		.addr = nano->client->addr,
++		.len = sizeof(command),
++		.buf = command,
++	};
++	bool was_awake;
++	unsigned int attempt;
++	int ret;
++
++	lockdep_assert_held(&nano->lock);
++
++	/* The bridge takes its own slave address as the register byte. */
++	if (nano->client->addr != nanosic_backlight_command[0])
++		return -ENXIO;
++
++	memcpy(command, nanosic_backlight_command, sizeof(command));
++	command[NANOSIC_BACKLIGHT_LEVEL_OFFSET] = level;
++	command[NANOSIC_BACKLIGHT_COMPANION_OFFSET] =
++		NANOSIC_BACKLIGHT_COMPANION_BASE + level;
++
++	/*
++	 * After a dropped wake line the bridge needs its I2C back; the vendor
++	 * measured up to 25 ms for that, the same as the version request.
++	 */
++	was_awake = nano->awake;
++	nanosic_wake(nano);
++	if (!was_awake)
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++
++	for (attempt = 0; attempt < NANOSIC_BACKLIGHT_RETRIES; attempt++) {
++		ret = nanosic_i2c_transfer(nano, &msg, 1,
++					   NANOSIC_I2C_BACKLIGHT_WRITE);
++		if (!ret)
++			return 0;
++
++		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
++	}
++
++	return ret;
++}
++
++/*
++ * The backlight is a LED class device because that is the interface keyboard
++ * backlights have: UPower takes every LED whose name contains "kbd_backlight"
++ * and GNOME's brightness slider follows it, and systemd-backlight@ saves and
++ * restores that same name across reboots (99-systemd.rules matches
++ * *kbd_backlight*). 0 is off and 100 is the keypad's full brightness.
++ */
++static int nanosic_backlight_set(struct led_classdev *led_cdev,
++				 enum led_brightness brightness)
++{
++	struct nanosic *nano = container_of(led_cdev, struct nanosic, backlight);
++	int ret = 0;
++
++	scoped_guard(mutex, &nano->lock) {
++		/*
++		 * A suspended bridge is off the bus. The level is already in
++		 * led_classdev::brightness, and nanosic_resume sends it.
++		 */
++		if (nano->suspended)
++			return 0;
++
++		ret = nanosic_send_backlight_command_locked(nano, brightness);
++	}
++
++	if (ret)
++		dev_dbg(&nano->client->dev,
++			"backlight command failed: %d\n", ret);
++
++	return ret;
++}
++
++/*
 + * The keyboard's LEDs. hid-input sends the LED state through
 + * ll_driver->request(HID_REQ_SET_REPORT) when the transport has one; without
 + * it the core falls back to hid_hw_output_report() and then to
@@ -1195,11 +1320,19 @@ Merged from: bring-up patches 0002, 0003
 +
 +	/*
 +	 * A folio that comes back has had its LEDs dark since it lost power;
-+	 * hand it the state it missed.
++	 * hand it the state it missed. The keypad likewise ignores commands
++	 * while it sleeps, so this transition - its idle heartbeat resuming,
++	 * which is what a stale window followed by a fresh one means - is also
++	 * the moment to replay the backlight level.
 +	 */
-+	if (!was_present && nano->folio_present && nano->last_output_len)
-+		nanosic_send_led_command_locked(nano, nano->last_output,
-+						nano->last_output_len);
++	if (!was_present && nano->folio_present) {
++		if (nano->last_output_len)
++			nanosic_send_led_command_locked(nano, nano->last_output,
++							nano->last_output_len);
++
++		nanosic_send_backlight_command_locked(nano,
++						      nano->backlight.brightness);
++	}
 +
 +	/*
 +	 * Presence. The folded hall is proof, keypad reports and the status
@@ -2088,6 +2221,21 @@ Merged from: bring-up patches 0002, 0003
 +	if (ret)
 +		return ret;
 +
++	/*
++	 * The backlight is part of the folio's user-facing surface. It starts
++	 * out off, and stays off until something asks: the level a freshly
++	 * powered keypad comes up with is not knowable (a replay of 0 is sent
++	 * the first time presence resolves), and a keyboard that lights up
++	 * because a driver was loaded is not a default. systemd-backlight@
++	 * restores the last level from userspace where that is wanted.
++	 */
++	nano->backlight.name = "liuqin-keyboard::kbd_backlight";
++	nano->backlight.max_brightness = NANOSIC_BACKLIGHT_MAX;
++	nano->backlight.brightness_set_blocking = nanosic_backlight_set;
++	ret = devm_led_classdev_register(dev, &nano->backlight);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register backlight\n");
++
 +	ret = devm_request_irq(dev, nano->tablet_mode_irq, nanosic_tablet_irq, 0,
 +			       "nanosic-tablet-mode", nano);
 +	if (ret)
@@ -2121,6 +2269,15 @@ Merged from: bring-up patches 0002, 0003
 +	 * than re-arm idle_work or raise the bridge wake line behind our back.
 +	 */
 +	scoped_guard(mutex, &nano->lock) {
++		/*
++		 * The keypad powers its own backlight and would keep it lit
++		 * through the tablet's sleep, so ask for it off while the
++		 * bridge still has its I2C. led_classdev::brightness is left
++		 * alone - it holds the level the user asked for, not the level
++		 * the hardware is at - and is replayed on return to runtime.
++		 */
++		nanosic_send_backlight_command_locked(nano, LED_OFF);
++
 +		WRITE_ONCE(nano->suspended, true);
 +		gpiod_set_value_cansleep(nano->wake_gpio, 0);
 +		nano->awake = false;
@@ -2147,6 +2304,10 @@ Merged from: bring-up patches 0002, 0003
 +			nano->data_pending = false;
 +			nanosic_receive_frame(nano);
 +		}
++
++		/* Restore brightness without replacing the wake failure. */
++		nanosic_send_backlight_command_locked(nano,
++						      nano->backlight.brightness);
 +	}
 +
 +	return ret;
@@ -2177,6 +2338,10 @@ Merged from: bring-up patches 0002, 0003
 +			nano->data_pending = false;
 +			nanosic_receive_frame(nano);
 +		}
++
++		/* The keypad sat out the suspend with its backlight dark. */
++		nanosic_send_backlight_command_locked(nano,
++						      nano->backlight.brightness);
 +	}
 +
 +	/* The bridge has not seen the halls since before suspend. */
@@ -6506,634 +6671,3 @@ Merged from: bring-up patches 0002, 0003
 +	{.id = {0xFF, 0xFF, 0xFF, 0x76, 0x66, 0x03}, .mask = {0, 0, 0, 1, 1, 1},
 +		.mmap = &NT36676F_memory_map, .hwinfo = &NT36676F_hw_info}
 +};
---- /dev/null
-+++ b/tools/testing/selftests/hid/nanosic-static.py
-@@ -0,0 +1,628 @@
-+#!/usr/bin/env python3
-+# SPDX-License-Identifier: GPL-2.0
-+"""Host-only regression tests for the WN8030 transport and power model."""
-+
-+import pathlib
-+import re
-+import unittest
-+
-+
-+ROOT = pathlib.Path(__file__).resolve().parents[4]
-+DRIVER = (ROOT / "drivers/hid/hid-nanosic.c").read_text()
-+BINDING = (
-+    ROOT / "Documentation/devicetree/bindings/input/nanosic,wn8030.yaml"
-+).read_text()
-+DTS = (
-+    ROOT / "arch/arm64/boot/dts/qcom/sm8475-xiaomi-liuqin.dts"
-+).read_text()
-+I2C_CORE = (ROOT / "drivers/i2c/i2c-core-base.c").read_text()
-+
-+
-+def function_body(name: str) -> str:
-+    match = re.search(rf"\b{name}\s*\([^;]*?\)\s*\{{", DRIVER, re.S)
-+    if not match:
-+        raise AssertionError(f"cannot isolate {name}()")
-+    opening = match.end() - 1
-+    depth = 0
-+    for position in range(opening, len(DRIVER)):
-+        if DRIVER[position] == "{":
-+            depth += 1
-+        elif DRIVER[position] == "}":
-+            depth -= 1
-+            if depth == 0:
-+                return DRIVER[opening + 1 : position]
-+    raise AssertionError(f"unterminated {name}()")
-+
-+
-+class PowerModel:
-+    """Small executable model of the lock-serialised driver state."""
-+
-+    timeout = 20
-+
-+    def __init__(self):
-+        self.now = 0
-+        self.deadline = self.timeout
-+        self.awake = True
-+        self.suspended = False
-+        self.pending = True
-+        self.data_pending = False
-+        self.wakeup_events = 0
-+        self.reads = 0
-+
-+    def wake(self):
-+        self.awake = True
-+        self.deadline = self.now + self.timeout
-+        self.pending = True
-+
-+    def idle_worker_after_lock(self):
-+        if self.suspended:
-+            self.pending = False
-+        elif self.now < self.deadline:
-+            self.pending = True
-+        else:
-+            self.awake = False
-+            self.pending = False
-+
-+    def data_irq(self):
-+        if self.suspended:
-+            self.data_pending = True
-+            self.wakeup_events += 1
-+            return
-+        self.wake()
-+        self.reads += 1
-+
-+    def suspend(self):
-+        self.suspended = True
-+        self.awake = False
-+        self.pending = False
-+
-+    def resume(self):
-+        self.suspended = False
-+        self.wake()
-+        if self.data_pending:
-+            self.data_pending = False
-+            self.reads += 1
-+
-+
-+PACKETS = {
-+    0x02: (8, 8),
-+    0x05: (9, 9),
-+    0x06: (5, 3),
-+    0x19: (21, 21),
-+    0x22: (16, 0),
-+    0x23: (32, 0),
-+}
-+
-+VERSION_COMMAND = bytes([
-+    0x4C, 0x32, 0x00, 0x4F, 0x30, 0x80, 0x18, 0x01, 0x00, 0x18,
-+]) + bytes(57)
-+
-+
-+def parse_fixture(frame: bytes):
-+    if len(frame) < 3 or frame[0] != 0x57 or frame[2] == 0:
-+        return []
-+    if frame[2] not in (0x39, 0x4A, 0x5B, 0x6C):
-+        return []
-+
-+    reports = []
-+    pos = 3
-+    while pos < len(frame):
-+        packet = PACKETS.get(frame[pos])
-+        if packet is None:
-+            break
-+        wire_len, report_len = packet
-+        if not wire_len or report_len > wire_len or wire_len > len(frame) - pos:
-+            break
-+        if report_len:
-+            reports.append(frame[pos : pos + report_len])
-+        pos += wire_len
-+    return reports
-+
-+
-+def extract_version_fixture(frame: bytes):
-+    if len(frame) < 3 or frame[0] != 0x57:
-+        return None
-+    if frame[2] not in (0x39, 0x4A, 0x5B, 0x6C):
-+        return None
-+
-+    pos = 3
-+    while pos < len(frame):
-+        packet = PACKETS.get(frame[pos])
-+        if packet is None or packet[0] > len(frame) - pos:
-+            return None
-+        if (frame[pos] == 0x23 and frame[pos + 2:pos + 5] ==
-+                bytes([0x18, 0x80, 0x01])):
-+            raw_version = frame[pos + 7:pos + 27].split(b"\x00", 1)[0]
-+            if not raw_version or any(byte < 0x20 or byte > 0x7E
-+                                      for byte in raw_version):
-+                return None
-+            return raw_version.decode("ascii")
-+        pos += packet[0]
-+    return None
-+
-+
-+def source_version_command() -> bytes:
-+    size_match = re.search(
-+        r"#define\s+NANOSIC_VERSION_COMMAND_LEN\s+(\d+)", DRIVER
-+    )
-+    array_match = re.search(
-+        r"static const u8 nanosic_version_command"
-+        r"\[NANOSIC_VERSION_COMMAND_LEN\]\s*=\s*\{(.*?)\};",
-+        DRIVER,
-+        re.S,
-+    )
-+    if not size_match or not array_match:
-+        raise AssertionError("cannot isolate firmware-version command")
-+    size = int(size_match.group(1))
-+    prefix = bytes(int(token, 16) for token in
-+                   re.findall(r"0x([0-9a-fA-F]{2})", array_match.group(1)))
-+    if len(prefix) > size:
-+        raise AssertionError("firmware-version initializer exceeds array")
-+    return prefix + bytes(size - len(prefix))
-+
-+
-+def version_query_recovery_fixture(write_results):
-+    """Model the bounded write/reset portion of an on-demand query."""
-+    reset_attempted = False
-+    resets = 0
-+
-+    for attempt, result in enumerate(write_results):
-+        retries_left = attempt + 1 < len(write_results)
-+        if (result in ("ENXIO", "EIO", "ETIMEDOUT") and
-+                not reset_attempted and retries_left):
-+            resets += 1
-+            reset_attempted = True
-+            continue
-+        if result == "OK":
-+            return True, resets, attempt + 1
-+
-+    return False, resets, len(write_results)
-+
-+
-+class NanosicProtocolFixtures(unittest.TestCase):
-+    def test_keyboard_and_consumer_use_wire_lengths(self):
-+        keyboard = bytes([0x05]) + bytes(8)
-+        consumer_wire = bytes([0x06, 1, 2, 0xAA, 0xBB])
-+        frame = bytes([0x57, 7, 0x39]) + keyboard + consumer_wire
-+        self.assertEqual(parse_fixture(frame), [keyboard, consumer_wire[:3]])
-+
-+    def test_short_header_and_short_report_are_rejected(self):
-+        self.assertEqual(parse_fixture(b"\x57\x00"), [])
-+        self.assertEqual(parse_fixture(bytes([0x57, 0, 0x39, 0x05, 0])), [])
-+
-+    def test_unknown_report_ends_frame_without_resynchronising(self):
-+        frame = bytes([0x57, 0, 0x39, 0x24, 0x05]) + bytes(8)
-+        self.assertEqual(parse_fixture(frame), [])
-+
-+    def test_vendor_firmware_command_is_byte_exact_and_zero_padded(self):
-+        self.assertEqual(len(VERSION_COMMAND), 67)
-+        self.assertEqual(source_version_command(), VERSION_COMMAND)
-+
-+    def test_vendor_version_report_is_extracted_without_hid_dependency(self):
-+        report = bytearray(32)
-+        report[0] = 0x23
-+        report[2:5] = bytes([0x18, 0x80, 0x01])
-+        report[7:18] = b"WN8030-1.2\x00"
-+        frame = bytes([0x57, 4, 0x39]) + bytes(report) + bytes(33)
-+        self.assertEqual(extract_version_fixture(frame), "WN8030-1.2")
-+
-+    def test_version_report_rejects_wrong_direction_and_control_bytes(self):
-+        report = bytearray(32)
-+        report[0] = 0x23
-+        report[2:5] = bytes([0x80, 0x18, 0x01])
-+        report[7:11] = b"bad\x00"
-+        frame = bytes([0x57, 4, 0x39]) + bytes(report) + bytes(33)
-+        self.assertIsNone(extract_version_fixture(frame))
-+
-+        report[2:5] = bytes([0x18, 0x80, 0x01])
-+        report[7:11] = b"a\x01b\x00"
-+        frame = bytes([0x57, 4, 0x39]) + bytes(report) + bytes(33)
-+        self.assertIsNone(extract_version_fixture(frame))
-+
-+    def test_version_write_timeout_gets_one_reset_then_retries(self):
-+        self.assertEqual(
-+            version_query_recovery_fixture(["ETIMEDOUT", "OK"]),
-+            (True, 1, 2),
-+        )
-+        self.assertEqual(
-+            version_query_recovery_fixture(
-+                ["ETIMEDOUT", "ETIMEDOUT", "ETIMEDOUT"]
-+            ),
-+            (False, 1, 3),
-+        )
-+
-+
-+class NanosicPowerInterleavings(unittest.TestCase):
-+    def test_stale_idle_worker_cannot_undo_concurrent_data_wake(self):
-+        model = PowerModel()
-+        model.now = model.deadline
-+        # The worker has started but is waiting for the lock. The IRQ wins it.
-+        model.data_irq()
-+        model.idle_worker_after_lock()
-+        self.assertTrue(model.awake)
-+        self.assertTrue(model.pending)
-+        self.assertEqual(model.deadline, model.now + model.timeout)
-+
-+    def test_irq_during_suspend_only_requests_resume(self):
-+        model = PowerModel()
-+        model.suspend()
-+        model.data_irq()
-+        self.assertFalse(model.awake)
-+        self.assertFalse(model.pending)
-+        self.assertEqual(model.reads, 0)
-+        self.assertEqual(model.wakeup_events, 1)
-+        model.resume()
-+        self.assertTrue(model.awake)
-+        self.assertTrue(model.pending)
-+        self.assertEqual(model.reads, 1)
-+        self.assertFalse(model.data_pending)
-+
-+
-+class NanosicSourceContracts(unittest.TestCase):
-+    def test_idle_worker_rechecks_deadline_and_suspend_state(self):
-+        body = function_body("nanosic_idle_work")
-+        self.assertIn("if (nano->suspended)", body)
-+        self.assertIn("time_before(jiffies, nano->wake_deadline)", body)
-+        self.assertLess(body.index("time_before"), body.index("wake_gpio, 0"))
-+
-+    def test_suspend_blocks_rearm_before_cancelling_work(self):
-+        body = function_body("nanosic_suspend")
-+        self.assertLess(body.index("WRITE_ONCE(nano->suspended, true)"),
-+                        body.index("cancel_delayed_work_sync"))
-+        self.assertLess(body.index("wake_gpio, 0"),
-+                        body.index("cancel_delayed_work_sync"))
-+        self.assertIn("goto restore_runtime", body)
-+
-+    def test_driver_and_i2c_core_do_not_double_claim_dedicated_wake_irq(self):
-+        suspend = function_body("nanosic_suspend")
-+        resume = function_body("nanosic_resume")
-+        probe = function_body("nanosic_probe")
-+        irqs_get = function_body("nanosic_irqs_get")
-+        self.assertIn("enable_irq_wake(nano->data_irq)", suspend)
-+        self.assertIn("disable_irq_wake(nano->data_irq)", resume)
-+        self.assertNotIn("wakeup_irq", suspend)
-+        self.assertNotIn("wakeup_irq", resume)
-+        self.assertNotIn("nanosic-wakeup", probe)
-+        self.assertNotIn('fwnode_irq_get_byname(dev_fwnode(dev), "wakeup")', irqs_get)
-+        self.assertIn('fwnode_irq_get_byname(fwnode, "wakeup")', I2C_CORE)
-+        self.assertIn("dev_pm_set_dedicated_wake_irq(dev, wakeirq)", I2C_CORE)
-+
-+    def test_normal_data_irq_has_no_unconditional_vendor_delay(self):
-+        body = function_body("nanosic_receive_frame")
-+        first_read = body.index("ret = nanosic_read_frame")
-+        retry_sleep = body.index("usleep_range")
-+        self.assertLess(first_read, retry_sleep)
-+        self.assertIn("if (ret)", body[first_read:retry_sleep])
-+        self.assertIn("NANOSIC_I2C_RETRY_US", body)
-+        self.assertNotIn("mdelay", body)
-+
-+    def test_transport_identity_and_frame_lengths_remain_defensive(self):
-+        self.assertNotIn("hid->driver_data", DRIVER)
-+        parse = function_body("nanosic_parse_frame")
-+        self.assertIn("len < NANOSIC_FRAME_HDR_LEN", parse)
-+        self.assertIn("pkt->wire_len > left", parse)
-+        self.assertIn("pkt->report_len > pkt->wire_len", parse)
-+
-+    def test_dt_contract_has_two_irqs_and_soc_regulator(self):
-+        self.assertEqual(BINDING.count("minItems: 2"), 2)
-+        self.assertRegex(DTS, r"&soc\s*\{[\s\S]*?keyboard_vdd_regulator:")
-+        keyboard = DTS.split("keyboard@4c {", 1)[1].split("\n\t};", 1)[0]
-+        # No second DT reference to the hall lines: on 7.2.5 the shared-GPIO
-+        # proxy path then breaks gpio-keys' own probe with -EBUSY.
-+        self.assertNotIn("hall-n-gpios", DTS)
-+        self.assertNotIn("hall-s-gpios", DTS)
-+        self.assertNotIn("hall-", BINDING)
-+        self.assertIn('interrupt-names = "data", "wakeup", "tablet-mode";',
-+                      keyboard)
-+        self.assertIn("wakeup-source;", keyboard)
-+        self.assertRegex(keyboard,
-+                         r"interrupts-extended\s*=\s*<&tlmm 50[^>]*>,\s*"
-+                         r"<&tlmm 46[^>]*>,\s*<&tlmm 23[^>]*>;")
-+        # The folio-folded hall is owned by the bridge driver, active-low.
-+        self.assertIn("tablet-mode-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;", keyboard)
-+        gpio_keys = DTS.split("gpio-keys {", 1)[1].split("\n\t};", 1)[0]
-+        self.assertNotIn("event-hall-tablet-mode", gpio_keys)
-+        self.assertNotIn("linux,code = <SW_TABLET_MODE>", gpio_keys)
-+
-+    def test_hall_command_is_the_vendor_uplink_frame(self):
-+        command = DRIVER.split("nanosic_hall_command[", 1)[1].split("};", 1)[0]
-+        self.assertIn(
-+            "0x4c, 0x32, 0x00, 0x4f, 0x20, 0x80, 0x80, 0xe1, 0x01",
-+            command,
-+        )
-+        self.assertRegex(DRIVER, r"#define NANOSIC_HALL_LEVEL_OFFSET\t9")
-+        write = function_body("nanosic_write_hall_command")
-+        self.assertIn(
-+            "command[NANOSIC_HALL_LEVEL_OFFSET] = nanosic_hall_level(nano)",
-+            write,
-+        )
-+        level = function_body("nanosic_hall_level")
-+        self.assertIn("test_bit(SW_LID, dev->sw)", level)
-+        # EV_SW state lives in the sw bitmap; key would read all zero and
-+        # silently pin the switch to 0. The tablet nibble is the switch the
-+        # driver derives and reports, not a bitmap read.
-+        self.assertNotIn("dev->key", level)
-+        self.assertIn("((!lid) << 4) | nano->tablet_mode", level)
-+        self.assertIn(
-+            "nanosic_i2c_transfer(nano, &msg, 1, NANOSIC_I2C_HALL_WRITE)",
-+            write,
-+        )
-+        self.assertIn("hall_send_count++", write)
-+
-+    def test_hall_handler_uses_the_gpio_keys_switch_states(self):
-+        # The lines stay with gpio-keys; a second DT reference would trip the
-+        # shared-GPIO proxy path that breaks that device's probe.
-+        self.assertNotIn("nanosic_hall_gpios_get", DRIVER)
-+        self.assertNotIn("hall-n-gpios", DTS)
-+        self.assertNotIn("hall-s-gpios", DTS)
-+        connect = function_body("nanosic_hall_connect")
-+        self.assertNotIn("gpiod", connect)
-+        self.assertIn("nano->hall_dev = dev;", connect)
-+        self.assertIn("handler->private", connect)
-+        self.assertIn("input_open_device(handle)", connect)
-+        self.assertIn("nanosic_hall_push(nano, NANOSIC_HALL_ATTACH_DELAY_MS)",
-+                      connect)
-+        handler = function_body("nanosic_hall_handler_get")
-+        self.assertIn("input_register_handler", handler)
-+        self.assertIn("nanosic_hall_handler_put", handler)
-+        # input_match_device() stops its id walk at a zero entry and checks
-+        # every bitmap unconditionally: the entry must carry non-zero flags
-+        # and the capability bitmaps, and no match() callback is needed.
-+        self.assertIn("id_table = nanosic_hall_ids", handler)
-+        ids = DRIVER.split("nanosic_hall_ids[] = {", 1)[1].split("};", 1)[0]
-+        self.assertIn("INPUT_DEVICE_ID_MATCH_EVBIT", ids)
-+        self.assertIn("INPUT_DEVICE_ID_MATCH_SWBIT", ids)
-+        self.assertIn("evbit = { BIT_MASK(EV_SW) }", ids)
-+        # Only the lid hall remains in gpio-keys; the folio-folded hall is
-+        # reported by this driver.
-+        self.assertIn("swbit = { BIT_MASK(SW_LID) },", ids)
-+        self.assertNotIn("driver_info", ids)
-+        self.assertNotIn(".match", handler)
-+        probe = function_body("nanosic_probe")
-+        self.assertIn("nanosic_hall_handler_get(nano)", probe)
-+
-+    def test_folio_input_is_muted_when_folded(self):
-+        # The gate is the hall line alone: presence is a liveness guess that a
-+        # sleeping keypad can expire, and a stale guess must never swallow a
-+        # keystroke.
-+        muted = function_body("nanosic_input_muted")
-+        self.assertIn("return nano->folio_folded;", muted)
-+        self.assertNotIn("tablet_mode", muted)
-+        self.assertNotIn("folio_present", muted)
-+        parse = function_body("nanosic_parse_frame")
-+        self.assertIn("pkt->dest >= 0 && !nanosic_input_muted(nano)", parse)
-+
-+    def test_tablet_mode_hall_is_owned_by_the_bridge(self):
-+        # Measured 2026-10-08 on the unit: gpio23 reads low with the folio
-+        # folded onto the back (tablet posture) and high with the keyboard
-+        # deployed in front *and* with the folio removed. The hall alone
-+        # cannot express "no keyboard attached", so the driver owns the line
-+        # and derives the switch from it - plus the keypad's own answer to the
-+        # status probe (see test_absence_comes_from_the_keypad_status_probe).
-+        report = function_body("nanosic_folio_report")
-+        self.assertIn("nano->folio_folded || nanosic_folio_absent(nano)",
-+                      report)
-+        self.assertIn(
-+            "input_report_switch(nano->folio_dev, SW_TABLET_MODE, value)",
-+            report,
-+        )
-+
-+    def test_absence_comes_from_the_keypad_status_probe(self):
-+        # Observed on the unit 2026-10-09: after a quiet stretch the switch
-+        # flipped to tablet mode with the folio still attached, so the keypad
-+        # stops its idle frames on its own and silence cannot mean "detached".
-+        # The vendor module carries the answer - it sends "request keypad hall
-+        # status" (nanosic_driver.ko .rodata+0xef14) and prints the reply's
-+        # byte 9 as "Connected=%d Power=%d POGOPIN=%s" - so this driver asks
-+        # too and believes the status word instead of the silence.
-+        cmd = DRIVER.split("nanosic_keypad_status_command[", 1)[1].split("};",
-+                                                                       1)[0]
-+        self.assertIn("0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0xa1, 0x01",
-+                      cmd)
-+        self.assertRegex(DRIVER, r"#define NANOSIC_KEYPAD_STATUS_OFFSET\t9")
-+        send = function_body("nanosic_write_keypad_status_command")
-+        self.assertIn("NANOSIC_I2C_STATUS_WRITE", send)
-+        self.assertIn("attempt < NANOSIC_KEYPAD_STATUS_RETRIES", send)
-+
-+        # The reply is decoded where it arrives: the vendor signature marks
-+        # the report and byte 9 is the status word whose bit 0 is "connected";
-+        # the keypad's own input reports are proof as well.
-+        parse = function_body("nanosic_parse_frame")
-+        self.assertIn("p[2] == NANOSIC_KEYPAD_STATUS_MARK_1 &&", parse)
-+        self.assertIn("p[3] == NANOSIC_KEYPAD_STATUS_MARK_2 &&", parse)
-+        self.assertIn("p[4] == NANOSIC_KEYPAD_STATUS_MARK_3", parse)
-+        self.assertIn("nano->keypad_status = p[NANOSIC_KEYPAD_STATUS_OFFSET];",
-+                      parse)
-+        self.assertIn("nano->keypad_present = nano->keypad_status & 1;",
-+                      parse)
-+        self.assertIn("nano->keypad_present = 1;", parse)
-+
-+        # The quiet window is resolved by asking, and one lost transfer is
-+        # tolerated: the verdict needs NANOSIC_KEYPAD_PROBE_MISSES silences.
-+        work = function_body("nanosic_tablet_work")
-+        self.assertIn("NANOSIC_KEYPAD_PROBE_WAIT_MS", work)
-+        self.assertIn("NANOSIC_KEYPAD_PROBE_MS", work)
-+        self.assertIn("NANOSIC_KEYPAD_PROBE_MISSES", work)
-+        self.assertIn("NANOSIC_KEYPAD_PROBE_RETRY_MS", work)
-+        self.assertIn("nanosic_keypad_status_command", DRIVER)
-+        self.assertIn("keypad_probe_misses = 0", work)
-+        probe_fn = function_body("nanosic_probe")
-+        self.assertIn("nano->keypad_present = 1;", probe_fn)
-+        self.assertIn("nano->keypad_probe_at = jiffies -", probe_fn)
-+
-+        # No DT knob: the probe answers the question the property used to
-+        # guess at, so the binding carries no heartbeat property.
-+        self.assertNotIn("keypad-idle-heartbeat", BINDING)
-+        self.assertNotIn("keypad-idle-heartbeat", DTS)
-+
-+    def test_folio_liveness_is_refreshed_by_frames_and_resume(self):
-+        # The hall reads the same with the keyboard deployed and with the
-+        # folio removed, and so is every bridge reply - it is on the tablet
-+        # side and answers either way (measured 2026-10-09).  The data
-+        # interrupt separates activity from silence, so the window is
-+        # re-checked on every arriving frame and restarted after resume; none
-+        # of attach, detach and resume has an interrupt of its own.
-+        data_irq = function_body("nanosic_data_irq")
-+        self.assertIn("nano->last_irq = jiffies;", data_irq)
-+        resume = function_body("nanosic_resume")
-+        self.assertIn("nano->last_irq = jiffies;", resume)
-+        present = function_body("nanosic_folio_present")
-+        self.assertIn(
-+            "nano->last_irq + msecs_to_jiffies(NANOSIC_FOLIO_IDLE_MS)",
-+            present,
-+        )
-+        work = function_body("nanosic_tablet_work")
-+        self.assertIn("nano->folio_folded || nanosic_folio_present(nano)", work)
-+        self.assertIn("NANOSIC_FOLIO_POLL_MS", work)
-+        self.assertIn("NANOSIC_FOLIO_DEBOUNCE_MS",
-+                      function_body("nanosic_tablet_irq"))
-+        # No I2C during probe: the bridge's boot-to-application time is not
-+        # fixed, so the first probe rides the attach delay instead.
-+        irqs = function_body("nanosic_irqs_get")
-+        self.assertIn('fwnode_irq_get_byname(dev_fwnode(dev), "tablet-mode")',
-+                      irqs)
-+        probe_fn = function_body("nanosic_probe")
-+        self.assertIn("devm_request_irq(dev, nano->tablet_mode_irq,", probe_fn)
-+        self.assertIn("NANOSIC_HALL_ATTACH_DELAY_MS", probe_fn)
-+        self.assertIn("nano->last_irq = jiffies - ", probe_fn)
-+
-+    def test_capslock_led_uses_the_keypads_management_command(self):
-+        # The keypad ignores the HID output report - the vendor kernel builds
-+        # it and then refuses to write it ("would not write i2c cmd ->
-+        # [[[0502]]]", captured from stock Android 2026-10-09) - and takes a
-+        # management command instead, captured once per toggle:
-+        #   32 00 4e 31 80 38 26 01 01 5f   caps on
-+        #   32 00 4e 31 80 38 26 01 00 5e   caps off
-+        cmd = DRIVER.split("nanosic_led_command[", 1)[1].split("};", 1)[0]
-+        self.assertIn("0x4c, 0x32, 0x00, 0x4e, 0x31, 0x80, 0x38, 0x26, 0x01",
-+                      cmd)
-+        self.assertRegex(DRIVER, r"#define NANOSIC_LED_STATE_OFFSET\t9")
-+        self.assertRegex(DRIVER, r"#define NANOSIC_LED_COMPANION_OFFSET\t10")
-+        self.assertRegex(DRIVER, r"#define NANOSIC_LED_COMPANION_BASE\t0x5e")
-+        send = function_body("nanosic_send_led_command_locked")
-+        self.assertIn("data[len - 1] & 0x02", send)
-+        self.assertIn("command[NANOSIC_LED_STATE_OFFSET] = caps", send)
-+        self.assertIn("NANOSIC_LED_COMPANION_BASE + caps", send)
-+        self.assertIn("NANOSIC_I2C_LED_WRITE", send)
-+        req = function_body("nanosic_hid_request")
-+        self.assertIn("static void nanosic_hid_request", DRIVER)
-+        self.assertIn("HID_REQ_SET_REPORT", req)
-+        self.assertIn("HID_OUTPUT_REPORT", req)
-+        self.assertIn("hid_output_report(report, buf)", req)
-+        self.assertIn("nano->hid[NANOSIC_HID_KEYBOARD]", req)
-+        self.assertIn("nanosic_send_led_command_locked(nano, buf, len)", req)
-+        ll = DRIVER.split("nanosic_hid_ll_driver = {", 1)[1].split("};", 1)[0]
-+        self.assertIn(".request = nanosic_hid_request", ll)
-+        # A folio that comes back gets the state it missed while unpowered.
-+        work = function_body("nanosic_tablet_work")
-+        self.assertIn("was_present = nano->folio_present;", work)
-+        self.assertIn("!was_present && nano->folio_present", work)
-+        self.assertIn("nanosic_send_led_command_locked(nano, nano->last_output",
-+                      work)
-+
-+    def test_folio_input_device_and_attributes(self):
-+        create = function_body("nanosic_folio_input_create")
-+        self.assertIn('input->name = "liuqin-folio";', create)
-+        self.assertIn("input_set_capability(input, EV_SW, SW_TABLET_MODE)",
-+                      create)
-+        self.assertIn(
-+            "input_report_switch(input, SW_TABLET_MODE, nano->tablet_mode)",
-+            create,
-+        )
-+        self.assertIn("input_register_device(input)", create)
-+        self.assertIn("&dev_attr_folio_present.attr,", DRIVER)
-+        self.assertIn("&dev_attr_tablet_mode.attr,", DRIVER)
-+
-+    def test_hall_state_is_pushed_on_events_and_after_power_transitions(self):
-+        work = function_body("nanosic_hall_work")
-+        self.assertIn("guard(mutex)(&nano->lock)", work)
-+        self.assertIn("nano->suspended", work)
-+        self.assertIn("nanosic_wake(nano)", work)
-+        self.assertIn("attempt < NANOSIC_HALL_RETRIES", work)
-+        event = function_body("nanosic_hall_event")
-+        self.assertIn("SW_LID", event)
-+        self.assertNotIn("SW_TABLET_MODE", event)
-+        self.assertIn("nanosic_hall_push(nano, 0)", event)
-+        suspend = function_body("nanosic_suspend")
-+        self.assertIn("cancel_delayed_work_sync(&nano->hall_work)", suspend)
-+        self.assertIn("cancel_delayed_work_sync(&nano->tablet_work)", suspend)
-+        resume = function_body("nanosic_resume")
-+        self.assertIn("nanosic_hall_push(nano, 0)", resume)
-+        self.assertIn("mod_delayed_work(system_wq, &nano->tablet_work, 0)",
-+                      resume)
-+        reset = function_body("nanosic_reset_bridge")
-+        self.assertIn("nanosic_hall_push(nano, 0)", reset)
-+        self.assertIn("cancel_delayed_work_sync(&nano->hall_work)",
-+                      function_body("nanosic_hall_handler_put"))
-+
-+    def test_diagnostics_are_on_demand_bounded_and_lock_serialised(self):
-+        show = function_body("firmware_version_show")
-+        query = function_body("nanosic_query_firmware_version")
-+        write = function_body("nanosic_write_version_command")
-+        probe = function_body("nanosic_probe")
-+        self.assertIn("guard(mutex)(&nano->lock)", show)
-+        self.assertIn("lockdep_assert_held(&nano->lock)", query)
-+        self.assertIn("attempt < NANOSIC_VERSION_RETRIES", query)
-+        self.assertIn("nanosic_read_frame(nano, NANOSIC_I2C_VERSION_READ)",
-+                      query)
-+        self.assertIn("NANOSIC_I2C_VERSION_WRITE", write)
-+        self.assertNotIn("nanosic_query_firmware_version", probe)
-+        self.assertNotIn("nanosic_write_version_command", probe)
-+
-+    def test_version_transport_failure_gets_one_vendor_exact_reset_recovery(self):
-+        query = function_body("nanosic_query_firmware_version")
-+        reset = function_body("nanosic_reset_bridge")
-+        needs_reset = function_body("nanosic_version_error_needs_reset")
-+        receive = function_body("nanosic_receive_frame")
-+        self.assertIn("nanosic_version_error_needs_reset(ret)", query)
-+        self.assertIn(
-+            "ret == -ENXIO || ret == -EIO || ret == -ETIMEDOUT",
-+            needs_reset,
-+        )
-+        self.assertNotIn("-EPROTO", needs_reset)
-+        self.assertNotIn("-EAGAIN", needs_reset)
-+        self.assertIn("!reset_attempted", query)
-+        self.assertEqual(query.count("nanosic_reset_bridge(nano)"), 1)
-+        self.assertLess(reset.index("reset_gpio, 1"),
-+                        reset.index("NANOSIC_RESET_ASSERT_MS"))
-+        self.assertLess(reset.index("NANOSIC_RESET_ASSERT_MS"),
-+                        reset.index("reset_gpio, 0"))
-+        self.assertLess(reset.index("reset_gpio, 0"),
-+                        reset.index("NANOSIC_RESET_READY_MS"))
-+        self.assertNotIn("nanosic_reset_bridge", receive)
-+
-+    def test_health_counters_cover_transport_and_reports(self):
-+        health = function_body("bridge_health_show")
-+        transfer = function_body("nanosic_i2c_transfer")
-+        parse = function_body("nanosic_parse_frame")
-+        irq = function_body("nanosic_data_irq")
-+        for field in ("irq", "i2c_transfers", "i2c_errors", "bad_magic",
-+                      "valid_reports", "hall_sends", "last_i2c_errno",
-+                      "last_i2c_operation", "last_i2c_error_transfer",
-+                      "reset_recoveries"):
-+            self.assertIn(field, health)
-+        self.assertIn("i2c_transfer_count++", transfer)
-+        self.assertIn("i2c_error_count++", transfer)
-+        self.assertIn("last_i2c_errno = ret", transfer)
-+        self.assertIn("last_i2c_operation = operation", transfer)
-+        self.assertIn("bad_magic_count++", parse)
-+        self.assertIn("valid_report_count++", parse)
-+        self.assertIn("irq_count++", irq)
-+
-+    def test_read_only_diagnostics_are_removed_before_devm_teardown(self):
-+        remove = function_body("nanosic_remove")
-+        self.assertEqual(DRIVER.count("DEVICE_ATTR_RO("), 4)
-+        self.assertNotRegex(DRIVER, r"DEVICE_ATTR_(?:RW|WO)\(")
-+        self.assertIn("sysfs_remove_group", remove)
-+        self.assertIn(".remove = nanosic_remove", DRIVER)
-+
-+    def test_no_private_control_or_firmware_loading_surface(self):
-+        code = re.sub(r"/\*.*?\*/", "", DRIVER, flags=re.S)
-+        self.assertNotIn("misc_register", code)
-+        self.assertNotIn("request_firmware", code)
-+        self.assertNotIn("DEVICE_ATTR_RW", code)
-+        self.assertNotIn("DEVICE_ATTR_WO", code)
-+
-+
-+if __name__ == "__main__":
-+    unittest.main(verbosity=2)

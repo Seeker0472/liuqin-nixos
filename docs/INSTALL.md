@@ -332,10 +332,12 @@ be extracted - the per-account credential is created on the device).
 - **OEM firmware.**  `fpcliu.mdt` plus its `b00`-`b08` segments come from the
   stock ROM (the MIUI V14 extraction in
   `liuqin-mainline-blobs/extracted/NON-HLOS/image/` is the copy used here).
-  Install it where the runtime points the kernel's firmware loader:
+  Install it into the OEM layer of the system-owned firmware union:
 
   ```sh
   # device, as root
+  # Stop fingerprint operations and unmount before changing an overlay lower layer.
+  systemctl stop fprintd.service run-firmware.mount
   install -d -m 0700 /var/lib/liuqin-fpc-oem/firmware
   install -m 0600 fpcliu.mdt fpcliu.b0* /var/lib/liuqin-fpc-oem/firmware/
   # the runtime verifies every file against this manifest (name -> sha256)
@@ -343,7 +345,14 @@ be extracted - the per-account credential is created on the device).
   { printf '{'; sep=''; for f in fpcliu.*; do
       printf '%s"%s": "%s"' "$sep" "$f" "$(sha256sum "$f" | cut -d' ' -f1)"; sep=', '
     done; printf '}\n'; } > SHA256.json
+  systemctl start liuqin-firmware-loader-path.service fprintd.service
   ```
+
+  The runtime verifies the same files through `/run/firmware` and never
+  rewrites `firmware_class.path`. Re-mount the union after changing the OEM
+  files; do not modify an overlay lower layer while it is in use. The OEM
+  directory keeps the merged lookup root private (0700) when fingerprint
+  support is enabled; kernel firmware loads still have access.
 
 - **Account credential (once per account).**  `sudo liuqin-fpc-credential
   --create <user>`: root, a local terminal (not SSH), and it authenticates the

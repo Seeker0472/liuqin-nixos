@@ -52,7 +52,7 @@ in
     # cross GNOME closure into the device system; natively it is three files
     # of C and shell.
     liuqinPowerKeyd = "cross would pull the cross GNOME closure into the device system";
-    # Single-shot shell commands and data leaves with no closure of their own.
+    # Session/runtime scripts and data leaves with no cross-built device code.
     liuqinScreenRefresh = "shell script";
     liuqinBacklightDefault = "shell script";
     liuqinPersistProvision = "shell script";
@@ -62,7 +62,7 @@ in
     liuqinBtNv = "manual BT NV/RF table writer, run by hand";
     liuqinSlpi = "shell script";
     liuqinSensorProxyRefresh = "shell script";
-    liuqinPanelPosture = "shell script";
+    liuqinPanelPosture = "Python/GI session client; keep native with the GNOME runtime";
     liuqinUsbLogin = "shell script";
     liuqinStorageGuard = "shell script (fail-closed fixture tests in its checkPhase)";
     mkLiuqinUsbGadget = "configfs gadget shell factory, parameterised per consumer";

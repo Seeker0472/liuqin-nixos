@@ -305,16 +305,13 @@ in
       initrd-find-etc.serviceConfig.ExecStartPre = [ "${plantSysrootInit}" ];
     };
 
-  # The panel is the only channel that survives a USB failure, and it starts
-  # out showing nothing the console drew before the DRM fbdev took over: that
-  # went to a different buffer. One blank/unblank makes fbcon redraw the whole
-  # console buffer (its scrollback included) into the framebuffer the panel
-  # scans, so the complete boot log ends up visible. Per-draw flushing is
-  # handled in the kernel by 0003-liuqin-display-panel-msm.patch (the msm
-  # dirtyfb fix) and needs nothing from userspace. Only the RAM installer runs
-  # this blank, where it lands before any DRM master exists; on the installed
-  # system the same late blank is refused by the DRM master and left the panel
-  # dark, so that unit is gone (modules/liuqin/display.nix).
+  # The panel is the only channel that survives a USB failure. One
+  # blank/unblank makes fbcon redraw the whole console buffer (its scrollback
+  # included), so the complete boot log ends up visible. Only the RAM
+  # installer runs this blank, where it lands before any DRM master exists;
+  # on the installed system the same late blank is refused by the DRM master
+  # and left the panel dark, so that unit is gone
+  # (modules/liuqin/display.nix). The kernel keeps upstream's dirtyfb policy.
   #
   # initrd systemd stops its own services at switch_root. Recreate the same
   # gadget/control channel in the live NixOS stage so the operator can keep

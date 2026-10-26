@@ -25,13 +25,14 @@ Companion documents: `README.md` (build outputs and configuration model),
 
 | Subsystem | Status | One-line limit |
 | --- | --- | --- |
-| DSI display / DRM / backlight | verified | one fixed 120 Hz mode; the U-Boot path needed an early pipeline stop/start to keep the picture, now in patch 0003 |
-| Touch, pen, keyboard folio, touchpad, keys | verified | touch drifts when an external DP monitor is bound (Mutter heuristic); touch resume retries firmware |
+| DSI display / DRM / backlight | historically verified; regression open | fixed 120 Hz; user reports internal-panel failures in newer variants; the early pipeline cycle remains a workaround |
+| Touch, pen, keyboard folio, touchpad, keys | historically verified; regression open | old touch retained; refactor has IRQ/idle-ESD defects; external-DP coordinate drift remains unresolved |
+| Keyboard backlight (`liuqin-keyboard::kbd_backlight`) | user-verified | LED class, 0..100; accepted from the operator's hardware test; aborted-suspend replay additionally checked in a host harness |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths broken; see `docs/TODO/CAMERA-MAINLINE.md` |
 | Audio playback (CS35L41) | verified | four speakers play; the USB-C/FSA4480 headset route is not ported |
 | USB3 device (peripheral) | verified | 10-hotplug stability record still open; the cover-close suspend loop re-enumerates the gadget, see `docs/TODO/LID-SUSPEND-LOOP.md` |
 | Type-C host + OTG power | verified | 10-hotplug record still open |
-| DP Alt Mode | verified | — |
+| DP Alt Mode | historically verified; regression open | user reports external-display failures; 0023 extraction is byte-identical to the previous whole-file driver |
 | Standard PD / PPS | ADSP-owned | no AP-side control; measured working, not formally accepted |
 | Xiaomi MiPPS (67 W) | verified | keys are operator-supplied; `reverseAuth` (cmd 8) unverified |
 | Sensors (SSC/SLPI) | partly verified | accelerometer + ambient light live on the SensorProxy D-Bus API (four orientations and all five tilt states measured 2026-10-07); gyroscope has no userspace consumer; CCT/RGB, light-sensor identity, fusion and suspend/resume unverified |
@@ -42,6 +43,75 @@ Companion documents: `README.md` (build outputs and configuration model),
 | Fingerprint (FPC1264) | verified | one finger per account; enrolment needs a password login (or the polkit prompt) to authorise it; press firmly |
 | Microphone capture (WCD9385) | verified | AMIC1 -> ADC1 -> TX macro -> `TX_CODEC_DMA_TX_3`; the vendor has no AP-visible DMIC |
 | U-Boot SuperSpeed | not implemented | U-Boot is USB2 fastboot |
+
+### 2026-10-25 branch integration review
+
+`integration/2026-10-25-reviewed` starts from `deprecated/integration/2026-10-24-clean`.
+It is a review candidate, **not a hardware-accepted release**. The original
+main worktree, its index and its four modified files are preserved; no old
+branches or worktrees have been deleted.
+
+| Branch family | Decision |
+| --- | --- |
+| `deprecated/feat/keyboard-backlight` | Keep the user-tested LED implementation and board-owned permissions; replay requested brightness if suspend aborts after turning it off. |
+| `deprecated/refactor/bsp-safe-cleanups` | Keep explicit patch/config ownership, shared fingerprint firmware lookup and strict unit verification; its posture client was selectively replaced with the separately tested typed client below. |
+| `refactor/touchscreen-nt36xxx` | Do not integrate: missing rising-edge IRQ trigger, unconditional idle timeout disabling input, and incomplete ESD-work quiescing are behavioral regressions. Keep the old follower driver, not a wholesale rollback of the input patch containing the LED feature. |
+| Sensor/posture refactor (`ac9be69` / `f77bcdf`) | Integrate the typed session client after live external-DP validation, but keep its policy narrow: laptop posture rotates DSI-1 and preserves/reflows extended layouts; tablet posture with external or mirrored outputs remains desktop-managed. |
+| `deprecated/feat/automatic-brightness`, detached camera/restructure worktrees | Automatic brightness was already fast-forwarded into main; no branch merge needed. |
+| `deprecated/*` | Historical bring-up implementations consolidated into main; do not merge obsolete histories wholesale. |
+| `iris/encoder-fix`, `iris/encoder-bringup` | Hold: latest recorded encoder still resets the device; error suppression, STOP and metadata lifetime remain problematic. Do not import scratch driver changes. Keep the OTA-era VPU firmware pin; it fixes a stock-firmware ABI mismatch but does not make the experimental encoder safe. |
+| `bt-table-stream` | Hold: default-enabled service lacks the `dmesg` runtime dependency, masks HCI failures, and uses historical log counts rather than a reliable controller-setup lifecycle. |
+| `deprecated/docs/display-camera-review` | Keep its evidence/experimental plan in the porting notes, not as a claim that either workaround has been removed. |
+| `deprecated/integration/2026-10-24`, `deprecated/integration/2026-10-24-clean`, `deprecated/test/*` | Retained as comparison refs only; their selected changes are represented in the reviewed integration, not separate merge candidates. |
+
+**Display correction.** Remove the entire `msm_fb.c` hunk from 0003, including
+the `vmap_count` override inherited by main. The local dirtyfb experiment was
+withdrawn on 2026-10-12: its visual A/B showed no difference, while skip counters
+only demonstrated branch execution. Pristine 7.2.5
+`drm_atomic_helper_dirtyfb()` sets damage clips and commits; it is not a generic
+CPU cache-publication operation. Restoring upstream policy avoids the
+unjustified commits, but does not prove this was the unique black-screen cause.
+Keep the existing DSI/panel handoff workarounds pending controlled boot tests.
+
+**DP extraction check.** Applying 0008 then 0023 to pristine 7.2.5 produces
+exactly the former `replaced/phy-qcom-qmp-combo.c`:
+SHA-256 `05c2eeda9598b3a3c970c20ca7e07bc548ab161663178ac4dc8b2baee216f402`.
+`deprecated/test/clean-old-dp-phy` therefore changed packaging, not the final
+PHY source. Neither this equivalence nor an enabled connector establishes
+visible output.
+
+**Do not infer an A/B result from branch names.** `deprecated/test/no-dirtyfb`
+only reverted the newer dirtyfb instrumentation, leaving main's older
+override. `deprecated/test/old-touch` was based on that branch.
+`deprecated/test/no-posture-old-touch` retained the newer dirtyfb patch and
+added board LED rules; “no-posture” reverted the refactor, not the posture
+service. These refs were renamed under `deprecated/` after review; compare each
+with its immediate parent and identify the actual booted derivation.
+
+**Device evidence and safety boundary.** The booted kernel was
+`fibflmja2hs3x1g5hhai9h5zxccqsi39-linux-aarch64-unknown-linux-gnu-7.2.5`;
+its retained derivation identifies the old-touch/old-DP test, despite the host
+flake naming the clean branch. The old driver failed its first A0-to-A1/ReK
+wait, then recovered after the early panel cycle. This predates the rejected
+refactor and must not be hidden by bypassing firmware readiness.
+
+The GDM greeter's compositor reported only DSI-1, with power-save mode 3.
+A reversible D-Bus request for mode 0 enabled DSI, changed `bl_power` to 0
+with brightness 1500, increased both DSI interrupt counters, and completed
+touch follower resume #8. Power-save mode 3 was restored. No physical touch,
+stylus, external-monitor or visible-pixel acceptance was performed.
+
+The mounted root `/dev/sda36` reported 785 filesystem errors and a block-bitmap
+checksum failure in this boot. No deployment, reboot, partition write or
+online fsck was attempted. Back up and check/repair the root **unmounted from
+a recovery environment** before new-kernel hardware acceptance. Do not run
+`e2fsck -y` against the mounted root.
+
+The keyboard smoke compiled the actual `nanosic_suspend()` body with injected
+wake-IRQ and I2C results: old code failed brightness restoration; the correction
+passed 14 rollback/normal-suspend cases, preserving the original wake error.
+Source-string selftests and the drvPath-only override check were removed:
+neither establishes driver behavior or resolved Kconfig values.
 
 ### Display
 
@@ -104,8 +174,8 @@ generation) — `UpdateSplashMemInfo()` looks `/reserved-memory/splash_region` u
 in the DTB of the image it is about to jump to and, when the node is missing,
 calls `DisableDisplay()`: display power off, display clocks off, TE/RST reset.
 With the node present ABL instead leaves the display alive, which is what the
-U-Boot image relies on for its menu; what reaches Linux is that *powered* state
-with the link already idle (measured 2026-10-07, above), not a live pipeline.
+U-Boot image relies on for its menu. The evidence above does not establish
+that U-Boot stops the inherited display pipeline before entering Linux.
 Android's kernel does the opposite of a cold start and *adopts* ABL's running
 pipeline (`techpack/display/msm/dsi/dsi_display.c`:
 `dsi_display_cont_splash_config()` sets `is_cont_splash_enabled`, and
@@ -114,11 +184,10 @@ enable not required"; ABL even hands the DSI PLL calibration codes over through
 `/soc/dsi_pll_codes`).  Mainline drm/msm has no such path, and the other
 mainline ports that boot from this bootloader keep the node anyway (Nothing
 milos, `sm8450-samsung-r0q`, `sm8550-samsung-q5q`, `sm8650-ayaneo-pocket-s2`),
-so on mainline the first modeset always programs the display from scratch.  The
-measurements above show that doing so needs no power cycle and no workaround:
-what ABL leaves behind here (the panel's rails up, an idle DSI link, a stopped
-DPU) is harmless, and the only thing that ever kept this panel dark was the
-port's own blank/unblank workarounds.
+so the first Linux modeset must establish its own hardware state. The measured
+need for one early stop/start contradicts the former claim that this handoff
+was harmless and needed no workaround. The exact first-enable defect remains
+open; see `docs/TODO/DISPLAY-CAMERA-REVIEW.md` for the controlled boot comparison.
 
 ### Touch and input
 
@@ -195,24 +264,27 @@ port's own blank/unblank workarounds.
   portrait), and does not persist `ApplyMonitorsConfig` calls at all - a
   transient call is undone by the next screen-state change and no
   `monitors.xml` is written.
-  `liuqin-panel-posture` (`pkgs/panel-posture.nix`, a session user service)
-  therefore watches the driver's `tablet_mode` attribute every 0.25 s: a
-  posture change is the user's own action and is repaired at once - measured
-  2026-10-09 against a stubbed mutter, <1 s from the flip to the applied
-  transform, where the single 3 s pass left the panel in the gravity pose for
-  up to 3 s + 1 s after the keyboard was deployed.  The repairs no user action
-  triggers (mutter's blank/lock reset, a fallback that died) repeat on the
-  ~3 s watchdog instead.  Entering the laptop
-  posture it re-applies the rotation `monitors.xml` configures, verifies the
-  transform actually moved and retries.  The *persistent* method is the one
-  that works - measured 2026-10-09, the temporary method returns success and
-  changes nothing - and mutter writes no file either way, so the configured
-  `monitors.xml` stays the source of truth.  Entering tablet mode the service
-  checks that something is polling the proxy, and when mutter's own claim has
-  been lost (it is one-shot, see the sensor section below) the service claims
-  the accelerometer itself and follows `AccelerometerOrientation` directly -
-  `right-up` is the 270 deg landscape pose, `normal` the native portrait -
-  until the posture changes back.
+  `liuqin-panel-posture` (`pkgs/panel-posture/`, a session user service)
+  therefore watches the driver's `tablet_mode` attribute every 0.25 s and
+  owns one explicit accelerometer claim while an active, unlocked, visible
+  panel-only tablet session needs it.  Posture and D-Bus property changes
+  bypass the ~3 s watchdog delay.
+
+  The original shell parsed `GetCurrentState` with greedy regular expressions
+  and submitted a replacement containing only DSI-1.  With DP-1 connected it
+  selected DP-1's transform, coordinates and `2560x1600` mode as if they
+  belonged to DSI-1; the invalid request was silently ignored and a request
+  that succeeded would have removed the external output.  This was reproduced
+  on the tablet on 2026-10-25.
+
+  The typed client now finds each monitor by its complete Mutter monitor spec,
+  preserves every current mode, scale, transform, primary flag and supported
+  output property, and changes only DSI-1's transform.  If the panel's logical
+  width or height changes, monitors to its right or below move by the same
+  delta so the extended desktop remains non-overlapping.  Live validation with
+  DSI-1 plus DP-1 repaired transform `0` to `3`, moved DP-1 from x=900 to
+  x=1440, and kept both connectors enabled.  Mirrored layouts, and tablet
+  posture while an external output is active, remain desktop-managed.
 - **The keypad's CapsLock LED takes its own management command.**  `hid-input`
   sends the LED state through `ll_driver->request(HID_REQ_SET_REPORT)`, which
   this transport did not implement at all (no `.request`, no
@@ -232,13 +304,51 @@ port's own blank/unblank workarounds.
   usages were not captured - and only the keyboard HID device may set reports;
   the last state is re-sent when a removed folio comes back, since its LED has
   been dark while it was unpowered.
+- **The backlight is a LED class device.**  The keypad takes its level as a
+  management command of the same family as the CapsLock one - feature byte
+  `0x23`, the level as the data byte, the payload's sum as the companion -
+  captured from stock Android 2026-10-14 by tracing the I2C bus
+  (`/sys/kernel/tracing/events/i2c`) while the framework pushed brightness
+  changes.  Only the framework's own path gets its commands onto the wire: the
+  vendor module accepts writes through `/dev/nanodev0` and never transmits
+  them (60 s of writes, 1425 register reads and not one payload write traced),
+  which is why the frames below were read off the framework's slider, not off
+  direct writes:
+
+      32 00 4e 31 80 38 23 01 00 5b   backlight off
+      32 00 4e 31 80 38 23 01 64 bf   backlight full
+
+  The wire frame is the usual 67 bytes (register byte, payload, zero padding),
+  and the level is a percentage whose ceiling belongs to the keypad: 200, 250
+  and 255 pushed through `keyboard_back_light_brightness` did go out on the
+  wire (`... c8 23`, `... fa 55`, `... ff 5a`) and were all applied as 100 -
+  the keypad answers each command with the level it applied it at,
+  `22 31 38 80 23 01 <lvl> <sum>`, ramping 97, 98, 100 on the way up and never
+  reporting more than 100.  Nothing on Android adjusts brightness by hand:
+  the setting is driven by the ambient auto-adjust path
+  (`keyboard_back_light_automatic_adjustment`, on by default, its curve topped
+  at 100 and halved for a BLE keyboard), and the settings UI
+  (`MiuiPhysicalKeyboardFragment`) only carries the on/off switch.  The driver
+  exposes the whole range as `liuqin-keyboard::kbd_backlight` - the name UPower
+  picks up on (`kbd_backlight` substring) and systemd-backlight@ saves and
+  restores (`*kbd_backlight*` in 99-systemd.rules) - so the last level survives
+  a reboot and anything that speaks the LED class drives it.  GNOME carries no
+  keyboard-backlight control of its own (the shell's slider is gone). The board
+  module `modules/liuqin/leds.nix`, not just the demo, grants the `video` group
+  brightness access alongside the flash LED, so sessions can use
+  `brightnessctl` or `echo N > .../brightness` (0..100).
+  The keypad ignores commands while it sleeps and the level lives in
+  `led_classdev::brightness`, so it is replayed when the keypad wakes (the
+  liveness window going stale and coming back, which is what a folio return
+  looks like too), on resume, and when a failed wake-IRQ setup aborts suspend.
+  Suspend asks for the backlight off without overwriting the requested level.
 - Touch resume repeatedly retries the firmware download and can end in
   `resume failed closed`; the input device reappears after recovery.  The
   installer does not ship the touchscreen firmware payload (its panel is
   output-only); the installed system carries it.
 - **Touch drift with an external DP monitor.** With a DP display attached,
   touch coordinates drift.  Root cause is Mutter's touchscreen-to-output
-  association: the I2C touchscreen reports vendor/product `0x0000` and no
+  association: the SPI touchscreen reports vendor/product `0x0000` and no
   resolution, and the DSI output is `unknown/unknown/unknown`, so the
   same-vendor/product and same-size heuristics cannot bind it.  Two
   attempts failed and must not be repeated blindly: (1) the relocatable
@@ -1061,7 +1171,7 @@ both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
   pushed and collected it.  Diffs between vendor-live and our registers
   (`dp-reg-diff.py`) distinguished stable configuration differences from
   dynamic state, and `dp-gen-vendor-tables.py` generated the C tables that
-  are now in `pkgs/kernel/replaced/phy-qcom-qmp-combo.c`.
+  are now in `0023-liuqin-phy-dp-vendor-state.patch`.
 - **The probe was removed from this repository during consolidation and is
   archived under `liuqin-audit/kernel-exp/dp-dump-probe/`** (source,
   `Makefile`, `default.nix`), together with the build/collect scripts
@@ -1080,23 +1190,25 @@ both sides (vendor 5.10 Android and mainline 7.2.5) from one source:
 
 ## 4. Kernel patch series
 
-`pkgs/kernel/default.nix` applies every `pkgs/kernel/patches/*.patch` to a pristine
-7.2.5 tree in **byte-sorted filename order**, except the patches listed in
-its `dtPatchNames` (`0014-…`/`0015-…`/`0016-…` today), which are applied
-last.  The 21 patches are grouped by subsystem; the first 14 were merged down
-from a 33-patch bring-up series (the provenance is in each patch header),
-producing a byte-identical tree.  0015/0016 add the WCD9385 capture graph and
-the CS35L41 amplifier naming; 0017-0019 add the legacy QSEECOM TEE transport,
-the FPC1264 misc driver and its board DTS; 0020 raises the WCN6855 RF rail
-minimums; and 0021 sets the camera orientation properties.
+`pkgs/kernel/default.nix` applies the patches to a pristine 7.2.5 tree in the
+explicit order recorded in `pkgs/kernel/patches/series`.  Evaluation requires
+that the list contains every `*.patch` exactly once.  The 23 patches are
+grouped by subsystem; the first 14 were merged down from a 33-patch bring-up
+series (the provenance is in each patch header), producing a byte-identical
+tree.  0015/0016 add the WCD9385 capture graph and the CS35L41 amplifier
+naming; 0017-0019 add the legacy QSEECOM TEE transport, the FPC1264 misc
+driver and its board DTS; 0020 raises the WCN6855 RF rail minimums; 0021 sets
+the camera orientation properties; 0022 records the DWC3 controller state when
+its core soft reset times out; and 0023 carries the reviewed DP PHY vendor
+register tables.
 
-### The 22 patches
+### The 23 patches
 
 | # | patch | what |
 | --- | --- | --- |
 | 0001 | `board-dts-bindings` | board DTS, compatibles/bindings, sm8450/sm8475 dtsi fixes, dtb Makefile entry |
 | 0002 | `input-hid-touchscreen` | Nanosic WN8030 keyboard folio + Novatek NT36xxx touchscreen |
-| 0003 | `display-panel-msm` | NT36532 DSI panel, msm dirtyfb fix, warm-start fixes (stop the DSI controller, no bootloader-PLL replay) and one early DPMS off/on after the first modeset |
+| 0003 | `display-panel-msm` | NT36532 DSI panel, warm-start workarounds (stop the DSI controller, no bootloader-PLL replay) and one early DPMS off/on; upstream dirtyfb policy retained |
 | 0004 | `audio-audioreach` | audioreach/sc8280xp path, cs35l41, wm_adsp, q6apm |
 | 0005 | `power-pmic-glink-mipps` | PON/pmic-glink + qcom_battmgr MiPPS ABI and CC orientation |
 | 0006 | `media-iris` | IRIS VPU platform for sm8450 |
@@ -1115,14 +1227,15 @@ minimums; and 0021 sets the camera orientation properties.
 | 0019 | `dts-fpc1264` | board DTS for the FPC1264 control interface (GPIO40 finger IRQ, GPIO41 reset, PM8350C LDO9 supply; spi10 stays disabled) |
 | 0020 | `wcn6855-rfa-rail-voltages` | raise the pm8350_s11/s12 and pm8350c_s1 minimums to the stock 952/1256/1880 mV so the WCN6855 WLAN/BT RF domains keep their range |
 | 0021 | `camera-orientation` | set the `orientation` property on the board's S5KJN1, IMX596 and SC202CS camera nodes |
-| 0022 | `usb-dwc3-soft-reset` | the DWC3 core soft reset's poll budget and probe retry, so a controller handed over mid-settle does not cost the whole boot its USB (the signature and measurement are in §1, USB3 device) |
+| 0022 | `usb-dwc3-reset-dump` | record `DCTL`/`GCTL`/`GUSB2PHYCFG0`/`GUSB3PIPECTL0`/`GSNPSID`/`revision` when the DWC3 core soft reset times out, so a stuck `CSFRST` names its own cause |
+| 0023 | `phy-dp-vendor-state` | reviewed DP register tables and sequencing, formerly the whole-file `replaced/phy-qcom-qmp-combo.c` copy |
 
 ### Why 0014, 0015 and 0016 are applied last
 
 The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
 it, and 0014 adds the USB/Type-C/DP nodes (connector, FSA4480 SBU mux,
-912 mV PLL rail) on top.  `pkgs/kernel/default.nix` keeps 0014 in `dtPatchNames`
-so it is applied after the sorted series; the earlier USB3/Type-C/DP DT
+912 mV PLL rail) on top.  The `series` file lists 0014 after the common
+series, and 0015/0016 after it; the earlier USB3/Type-C/DP DT
 patches could not coexist as separate patches because they add the same
 `pm8350_l1` regulator and `&usb_1_qmpphy` node and the Type-C `&usb_1` hunk
 rewrites the node USB3 had changed, so they were merged into this one patch
@@ -1131,15 +1244,17 @@ the same list because they extend the same board DTS (the WCD9385 codec with
 its capture links and audio routing, and the amplifier `cirrus,subsystem-id`
 overrides), so they are applied after 0014 as well.
 
-### One file is replaced, not patched
+### DP PHY vendor state (0023)
 
-`pkgs/kernel/replaced/phy-qcom-qmp-combo.c` is copied over the tree in `postPatch`.
-The DP side of the combo PHY is a wholesale replacement whose values are the
-vendor's live register state; upstream shares the same DP block between the
-`sm8350` and `sm8450` cfgs, so a unified diff cannot distinguish them and
-patch fuzz would hit the wrong cfg.  The file is generated by
-`liuqin-audit/kernel-exp/dp-gen-vendor-tables.py` plus the COM/PD_CTL fixes
-(see §3.3).
+`0023-liuqin-phy-dp-vendor-state.patch` carries the DP side of the combo PHY;
+it replaces the former wholesale `pkgs/kernel/replaced/phy-qcom-qmp-combo.c`
+copy.  The values are the vendor's live register state, and upstream shares
+the same DP block between the `sm8350` and `sm8450` cfgs, so the reviewed
+values and sequencing are kept as a diff applied after 0008.  The compiled
+driver is byte-identical to the old replacement at 73e8071.  The generator is
+`pkgs/kernel/tools/dp-gen-vendor-tables.py`; the earlier audit copy and the
+live captures are under `liuqin-audit/kernel-exp/` and
+`liuqin-audit/out/dp-vendor-golden-20261006/` (see §3.3).
 
 ### Config assertions, not just patches
 

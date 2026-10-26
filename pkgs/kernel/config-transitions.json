@@ -1,0 +1,93 @@
+{
+  "board": [
+    {
+      "from": "m",
+      "to": "y",
+      "reason": "Preserve the validated staged boot recipe: generate-config.pl receives the original modular answers; olddefconfig then promotes the complete boot dependency chains. Removing an initial module answer needs a separate Kconfig equivalence check.",
+      "symbols": [
+        "ATH11K",
+        "ATH11K_PCI",
+        "BACKLIGHT_CLASS_DEVICE",
+        "BACKLIGHT_KTZ8866",
+        "BATTERY_QCOM_BATTMGR",
+        "BT",
+        "BT_HCIUART",
+        "BT_QCA",
+        "CFG80211",
+        "CPU_FREQ_GOV_CONSERVATIVE",
+        "CPU_FREQ_GOV_POWERSAVE",
+        "DRM",
+        "DRM_DISPLAY_HELPER",
+        "DRM_KMS_HELPER",
+        "DRM_MSM",
+        "DRM_PANEL_NOVATEK_NT36532",
+        "FB_SIMPLE",
+        "INPUT_EVDEV",
+        "INPUT_PM8941_PWRKEY",
+        "MAC80211",
+        "MHI_BUS",
+        "NVMEM_REBOOT_MODE",
+        "NVMEM_SPMI_SDAM",
+        "OVERLAY_FS",
+        "PCI_PWRCTRL_PWRSEQ",
+        "PHY_QCOM_QMP_COMBO",
+        "POWER_RESET_QCOM_PON",
+        "POWER_SEQUENCING_QCOM_WCN",
+        "QCOM_APR",
+        "QCOM_MDT_LOADER",
+        "QCOM_PDR_HELPERS",
+        "QCOM_PMIC_GLINK",
+        "QCOM_Q6V5_PAS",
+        "QCOM_STATS",
+        "QCOM_SYSMON",
+        "QRTR_MHI",
+        "RFKILL",
+        "RPMSG_QCOM_GLINK_SMEM",
+        "RTC_DRV_PM8XXX",
+        "SM_DISPCC_8450",
+        "SM_GPUCC_8450",
+        "SND",
+        "SND_SOC",
+        "SND_SOC_CS35L41_I2C",
+        "SND_SOC_LPASS_MACRO_COMMON",
+        "SND_SOC_LPASS_RX_MACRO",
+        "SND_SOC_LPASS_TX_MACRO",
+        "SND_SOC_LPASS_VA_MACRO",
+        "SND_SOC_QCOM",
+        "SND_SOC_SC8280XP",
+        "SND_SOC_WCD938X_SDW",
+        "SOUND",
+        "SOUNDWIRE",
+        "SOUNDWIRE_QCOM",
+        "TOUCHSCREEN_NT36523_SPI",
+        "TYPEC",
+        "TYPEC_MUX_FSA4480",
+        "TYPEC_UCSI",
+        "UCSI_PMIC_GLINK",
+        "UHID",
+        "USB_STORAGE",
+        "USB_UAS"
+      ]
+    }
+  ],
+  "installer": [
+    {
+      "from": "m",
+      "to": "y",
+      "reason": "The RAM installer needs the magnetic folio input without loading modules.",
+      "symbols": [
+        "HID_MULTITOUCH",
+        "HID_NANOSIC"
+      ]
+    },
+    {
+      "from": "y",
+      "to": "n",
+      "reason": "The installer uses the peripheral-only USB rescue path and excludes host controllers.",
+      "symbols": [
+        "USB_XHCI_HCD",
+        "USB_XHCI_PLATFORM"
+      ]
+    }
+  ]
+}
