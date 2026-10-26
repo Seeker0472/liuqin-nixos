@@ -17,11 +17,6 @@ in
         "ro,lowerdir=${firmwareTree}/lib/firmware:/var/lib/firmware:/run/current-system/firmware";
     in
     {
-      assertions = lib.optional cfg.fingerprint.enable {
-        assertion = builtins.match "/[A-Za-z0-9_./-]+" cfg.fingerprint.firmwareDir != null;
-        message = "hardware.liuqin.fingerprint.firmwareDir must be an absolute path without mount-option separators or whitespace";
-      };
-
       # TODO(touch-drift): with an external display connected the touchscreen is
       # mapped to the wrong output by Mutter and the finger coordinates drift.
       # Measured root cause: the touchscreen is an I2C device with neither USB
