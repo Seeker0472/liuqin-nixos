@@ -35,17 +35,20 @@ This repository is MIT-licensed overall (see LICENSE), except:
 * pkgs/hexagonrpc/patches/*.patch and pkgs/iio-sensor-proxy/patches/*.patch
   are patches to hexagonrpc (GPL-2.0) and iio-sensor-proxy (GPL-3.0 / LGPL);
   they retain their downstream headers.
-* pkgs/firmware.nix, pkgs/sensors-config.nix and pkgs/bootimg/stock-*.nix
-  reference proprietary Qualcomm/Xiaomi binaries that are NOT redistributable.
-  They are consumed as `requireFile` inputs supplied by the operator: the
-  archives are neither committed nor part of the flake source, and the tree
-  itself carries no vendor binary. That includes the downstream v0.3.1
-  release image whose ramdisk carries the bulk firmware tree - it is an
-  operator input too, so no build reaches for a third-party release asset.
-  The data/liuqin-*.tar.zst working copies, data/release-v0.3.1/boot.img
-  (matched by the `*.img` rule) and the two pkgs/bootimg/stock-*.tar.zst
-  archives are listed in .gitignore.
-  History note: stock-dtbo-entries.tar.zst and stock-base-dtbs.tar.zst were
+* Static Qualcomm/Xiaomi firmware, sensor configuration and stock boot DT
+  artifacts are stored in the separate sibling repository
+  `liuqin-nixos-os2-firmware-assets`, not in this source tree. The root flake
+  consumes it through a local path input; builds do not fetch vendor payloads
+  from a public release or use the downstream v0.3.1 boot image.
+  The asset repository extracts the required files from official OS2.0.4
+  images, records source/output hashes and provenance, and includes selected
+  pinned upstream firmware plus the generated AudioReach topology. OEM payloads
+  remain proprietary and NOT redistributable; keep the asset repository private
+  and do not publish it without authorization.
+  Legacy `data/liuqin-*.tar.zst`, `data/release-v0.3.1/boot.img` (matched by
+  `*.img`) and `pkgs/bootimg/stock-*.tar.zst` files remain ignored user data and
+  are no longer consumed.
+  History note: `stock-dtbo-entries.tar.zst` and `stock-base-dtbs.tar.zst` were
   tracked in earlier commits; those commits still contain them. Publishing
   from that history needs a rewrite
   (`git filter-repo --path-glob 'data/*.tar.zst'

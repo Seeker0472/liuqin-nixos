@@ -98,37 +98,11 @@ in
         Qualcomm SSC sensor stack (SLPI lifecycle, hexagonrpcd, iio-sensor-proxy)'')
         // { default = true; };
 
-      sscConfigHash = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          sha256 (SRI form) of liuqin-ssc-config.tar.zst: the stock ROM's
-          vendor/etc/sensors/config, optionally with sns_reg.conf and
-          sns_reg_version, archived deterministically. Operator-only data; see
-          docs/PORTING-NOTES.md. Config-only archives are accepted and the
-          audited plain-text registry contract is synthesized. Ignored when
-          `sscConfig` is set; with neither set the SSC stack is left out and
-          the module warns.'';
-      };
-
-      sscConfig = lib.mkOption {
-        type = lib.types.nullOr lib.types.path;
-        default = null;
-        example = "./liuqin-ssc-config.tar.zst";
-        description = ''
-          Path to your own liuqin-ssc-config.tar.zst (same archive content as
-          `sscConfigHash`), taken from your stock ROM dump. A path literal
-          (`./liuqin-ssc-config.tar.zst`) needs no `nix-store --add-fixed`
-          step, so this is the friendlier of the two inputs; it takes
-          precedence over `sscConfigHash`. With neither set the SSC stack is
-          left out and the module warns.'';
-      };
     };
   };
 
   config =
     lib.mkIf cfg.enable {
-      nixpkgs.overlays = [ (import ../../overlay.nix) ];
 
       boot.kernelPackages = pkgs.linuxPackagesFor cfg.package;
 

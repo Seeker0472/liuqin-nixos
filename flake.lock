@@ -1,5 +1,17 @@
 {
   "nodes": {
+    "firmwareAssets": {
+      "flake": false,
+      "locked": {
+        "path": "../liuqin-nixos-os2-firmware-assets",
+        "type": "path"
+      },
+      "original": {
+        "path": "../liuqin-nixos-os2-firmware-assets",
+        "type": "path"
+      },
+      "parent": []
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1789149629,
@@ -18,6 +30,7 @@
     },
     "root": {
       "inputs": {
+        "firmwareAssets": "firmwareAssets",
         "nixpkgs": "nixpkgs"
       }
     }

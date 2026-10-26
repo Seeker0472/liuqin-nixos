@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: MIT
 #
-# NixOS adaptation: the OEM runtime points the kernel's firmware_class.path at
-# the OEM firmware directory next to itself.  A store path cannot carry
-# per-device firmware, so the operator-supplied directory
-# (hardware.liuqin.fingerprint.firmwareDir, exported as
-# LIUQIN_FPC_OEM_FIRMWARE) wins when set and the component's colocated default
-# is kept for every other deployment.  resolve() keeps the value absolute,
+# NixOS adaptation: the module exports `LIUQIN_FPC_OEM_FIRMWARE` as the
+# packaged OS2.0.4 asset directory, so the OEM runtime verifies and loads the
+# static `fpcliu.*` files from the Nix store. Deployments without that variable
+# keep the component's colocated default. `resolve()` keeps the value absolute,
 # which the kernel parameter requires.
 #
 diff -r a/oem_runtime.py b/oem_runtime.py

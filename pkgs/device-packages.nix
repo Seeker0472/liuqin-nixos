@@ -18,9 +18,8 @@
 #           carries its reason.
 #
 # The flake's allowUnfreePredicate matches derivation names against `unfree`:
-# nixpkgs' requireFile marks its fixed-output derivations unfree, so every
-# operator-supplied payload counts here (pkgs/firmware.nix,
-# pkgs/sensors-config.nix, pkgs/bootimg/stock-*.nix).
+# proprietary static firmware and NixOS-generated compressed variants are
+# classified by output name; individual derivations carry `meta.license = unfree`.
 let
   fpcReason = "OEM FPC1264 stack: built natively today; the cross path in overlay.nix is unexercised, and injecting would change the installed closure";
 in
@@ -43,6 +42,7 @@ in
     "liuqinIioSensorProxy"
     # Firmware trees.
     "liuqinFirmware"
+    "liuqinFpcFirmware"
     "liuqinInitrdFirmware"
   ];
 
@@ -82,11 +82,13 @@ in
   };
 
   unfree = [
-    "liuqin-ssc-config.tar.zst"
-    "liuqin-firmware-vpu.tar.zst"
-    "liuqin-firmware-cs35l41.tar.zst"
-    "stock-base-dtbs.tar.zst"
-    "stock-dtbo-entries.tar.zst"
-    "boot.img"
+    "liuqin-firmware"
+    "liuqin-firmware-zstd"
+    "liuqin-ssc-config"
+    "liuqin-fpc-firmware"
+    "liuqin-fpc-firmware-zstd"
+    "liuqin-initrd-firmware"
+    "liuqin-bootimg"
+    "liuqin-initrd-firmware-zstd"
   ];
 }
