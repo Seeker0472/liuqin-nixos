@@ -139,7 +139,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,2240 @@
+@@ -0,0 +1,2262 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -957,12 +957,19 @@ Merged from: bring-up patches 0002, 0003
 + * folio-folded hall is owned by this driver; the level byte the bridge
 + * receives carries the switch that line feeds.
 + */
++static bool nanosic_lid_closed(struct nanosic *nano)
++{
++	return nano->hall_dev && test_bit(SW_LID, nano->hall_dev->sw);
++}
++
++static enum led_brightness nanosic_effective_backlight(struct nanosic *nano)
++{
++	return nanosic_lid_closed(nano) ? LED_OFF : nano->backlight.brightness;
++}
++
 +static unsigned int nanosic_hall_level(struct nanosic *nano)
 +{
-+	struct input_dev *dev = nano->hall_dev;
-+	unsigned int lid = test_bit(SW_LID, dev->sw) ? 1 : 0;
-+
-+	return ((!lid) << 4) | nano->tablet_mode;
++	return ((!nanosic_lid_closed(nano)) << 4) | nano->tablet_mode;
 +}
 +
 +/*
@@ -1053,6 +1060,9 @@ Merged from: bring-up patches 0002, 0003
 +	return ret;
 +}
 +
++static int nanosic_send_backlight_command_locked(struct nanosic *nano,
++						  u8 level);
++
 +static void nanosic_hall_work(struct work_struct *work)
 +{
 +	struct nanosic *nano = container_of(work, struct nanosic,
@@ -1078,13 +1088,25 @@ Merged from: bring-up patches 0002, 0003
 +	for (attempt = 0; attempt < NANOSIC_HALL_RETRIES; attempt++) {
 +		ret = nanosic_write_hall_command(nano);
 +		if (!ret)
-+			return;
++			break;
 +
 +		/* Retry only an observed failure, like the frame read path. */
 +		usleep_range(NANOSIC_I2C_RETRY_US, NANOSIC_I2C_RETRY_US + 500);
 +	}
++	if (ret)
++		dev_dbg(&nano->client->dev, "hall command failed: %d\n", ret);
 +
-+	dev_dbg(&nano->client->dev, "hall command failed: %d\n", ret);
++	/*
++	 * A closed cover suppresses only the hardware level: the LED class keeps
++	 * the user's requested brightness, which an open event restores. This
++	 * also prevents a brightness change made while closed from lighting the
++	 * keypad inside the cover.
++	 */
++	ret = nanosic_send_backlight_command_locked(
++		nano, nanosic_effective_backlight(nano));
++	if (ret)
++		dev_dbg(&nano->client->dev,
++			"lid backlight command failed: %d\n", ret);
 +}
 +
 +static void nanosic_hall_push(struct nanosic *nano, unsigned int delay_ms)
@@ -1242,7 +1264,7 @@ Merged from: bring-up patches 0002, 0003
 +		 * A suspended bridge is off the bus. The level is already in
 +		 * led_classdev::brightness, and nanosic_resume sends it.
 +		 */
-+		if (nano->suspended)
++		if (nano->suspended || nanosic_lid_closed(nano))
 +			return 0;
 +
 +		ret = nanosic_send_backlight_command_locked(nano, brightness);
@@ -1330,8 +1352,8 @@ Merged from: bring-up patches 0002, 0003
 +			nanosic_send_led_command_locked(nano, nano->last_output,
 +							nano->last_output_len);
 +
-+		nanosic_send_backlight_command_locked(nano,
-+						      nano->backlight.brightness);
++		nanosic_send_backlight_command_locked(
++			nano, nanosic_effective_backlight(nano));
 +	}
 +
 +	/*
@@ -2306,8 +2328,8 @@ Merged from: bring-up patches 0002, 0003
 +		}
 +
 +		/* Restore brightness without replacing the wake failure. */
-+		nanosic_send_backlight_command_locked(nano,
-+						      nano->backlight.brightness);
++		nanosic_send_backlight_command_locked(
++			nano, nanosic_effective_backlight(nano));
 +	}
 +
 +	return ret;
@@ -2340,8 +2362,8 @@ Merged from: bring-up patches 0002, 0003
 +		}
 +
 +		/* The keypad sat out the suspend with its backlight dark. */
-+		nanosic_send_backlight_command_locked(nano,
-+						      nano->backlight.brightness);
++		nanosic_send_backlight_command_locked(
++			nano, nanosic_effective_backlight(nano));
 +	}
 +
 +	/* The bridge has not seen the halls since before suspend. */

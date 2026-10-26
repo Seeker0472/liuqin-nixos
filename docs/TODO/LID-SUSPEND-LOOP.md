@@ -1,9 +1,9 @@
-# 盒盖 suspend 循环（lid-suspend-loop）
+# 盒盖 suspend 循环（默认合盖策略已移除）
 
-合盖后每 ~28 s 一轮 suspend/resume 的机理、证据与处置。
-循环的**驱动者已定位**（静态核对 systemd v261.2 源码 + 本机运行时属性，2026-10-07 晚）；
-**唤醒源尚未定位**，需要一次在机测量（见「下一步测量」）。配置侧的锚点是
-`modules/liuqin/gnome.nix` 的 `FIXME(lid-suspend-loop)`。
+本文保留旧的“合盖即 suspend”循环证据和仍未完成的唤醒源定位。循环驱动者已经
+定位；现在的默认策略不再经过该路径：logind 忽略 lid action，GNOME 会话立即锁屏/
+熄屏，开盖亮出仍锁定的屏幕。实现位于 `modules/liuqin/gnome.nix`、
+`pkgs/lid-policy/` 和 `pkgs/kernel/patches/0002-liuqin-input-hid-touchscreen.patch`。
 
 ## 现象与代价
 
@@ -96,48 +96,38 @@ SW_TABLET_MODE、Volume Up、pmic_glink 的 ADSP 侧电源/UCSI 栈。
 `wakeup-source`，驱动 `nanosic_suspend()` 还会 `enable_irq_wake(nano->data_irq)`，且
 suspended 期间对到达的数据帧调 `pm_wakeup_event()`（`pkgs/kernel/patches/0002-…patch`）。
 
-## 下一步测量
+## 已采用的处置
 
-1. `pkgs/kernel/config.nix` 打开 `CONFIG_PM_DEBUG`（`CONFIG_PM_SLEEP_DEBUG` 是
-   `def_bool y depends on PM_DEBUG && PM_SLEEP`，本机现为未设置）→ 解锁
-   `/sys/power/pm_wakeup_irq`（上一次唤醒的 IRQ 号）与 `pm_debug_messages`。
-   合盖跑一轮后 `cat /sys/power/pm_wakeup_irq`，按上表映射设备。
-2. 不重编内核的替代：合盖前后各存一份
-   `grep -E "Hall|nanosic|4-004c|glink|mhi|fingerprint|temp-alarm|rtc" /proc/interrupts`，
-   睡眠期间只有唤醒 IRQ 的计数会增长；root 下还可读
-   `/sys/kernel/debug/wakeup_sources`（`CONFIG_DEBUG_FS=y`，debugfs 已挂）的
-   `active_count`/`event_count` 增量。
-3. 对照实验：**拔掉调试线（纯电池）**、**拆掉 folio 键盘**，各自再合盖一次 ——
-   区分"线缆/充电栈"、"键盘 MCU"、"板载 hall/PMIC"。
-4. 机理复核：`systemctl service-log-level systemd-logind debug` 后合盖，logind 应持续打印
-   `Ignoring lid switch request, system startup or resume too close.`（holdoff 正在拦
-   `button_recheck`）。
+`modules/liuqin/gnome.nix` 明确把 `HandleLidSwitch`、
+`HandleLidSwitchExternalPower`、`HandleLidSwitchDocked` 全部设为 `ignore`，避免
+供电或扩展坞识别状态变化后重新落入 suspend。图形会话中的
+`liuqin-lid-policy` 直接读取 UPower 的 `LidIsClosed`：
 
-## 候选修复（均未实施）
+1. 合盖调用 `org.gnome.ScreenSaver.Lock`，再把 Mutter `PowerSaveMode` 设为 `3`；
+2. 开盖只把 `PowerSaveMode` 设为 `0`，不解锁；
+3. 会话启动时若盖子本来就是关闭状态，也会应用同一动作；
+4. 服务自己的 runtime marker 区分“由合盖熄屏”和“用户按电源键熄屏”，所以在普通
+   开盖状态启动服务不会错误地点亮屏幕。
 
-- **A. 立刻消掉循环**（推荐，符合本仓库"power key 归 `liuqin-power-keyd`"的设计）：
-  `services.logind.settings.Login.HandleLidSwitch = "ignore"`；合盖语义改为"锁屏 + 息屏"，
-  复用 `liuqin-power-keyd` 现有的 blank 动作（`loginctl lock-sessions` +
-  `org.gnome.ScreenSaver.SetActive true` +
-  `org.gnome.Mutter.DisplayConfig PowerSaveMode = 3`，见
-  `pkgs/power-keyd/liuqin-power-key-action.sh`）——需要把 lid switch 接进该 daemon（现在只
-  按名字打开 `pmic_pwrkey` 设备，要再加 `gpio-keys` 的 `EV_SW`/`SW_LID`）。
-  **注意**：`HandleLidSwitch=ignore` 之后没有任何东西会息屏（用户库 `idle-delay=0`、
-  `sleep-inactive-*='nothing'`），必须显式 DPMS off；代价是合盖不入睡，待机功耗高于 suspend。
-- **B. 根因**：按测量结果处理唤醒源（`power/wakeup` 的 udev 规则 / 驱动层按 lid 状态屏蔽 /
-  固件侧）。注意"合盖期间屏蔽 hall 唤醒"会同时牺牲"开盖唤醒屏幕"这个体验，取舍要先定。
-- **C. 若必须保留"合盖即 suspend"**：由系统级服务持有 `handle-lid-switch` 的 **block**
-  inhibitor（`systemd-inhibit --what=handle-lid-switch --mode=block sleep infinity`，
-  可用 `BindsTo=sys-subsystem-net-devices-usb0.device` 绑调试线）。已核对
-  `src/login/logind-inhibit.c`：`manager_handle_action()` 对 `INHIBIT_HANDLE_LID_SWITCH`
-  的抑制器检查是无条件的（`LidSwitchIgnoreInhibited=` 只作用于 sleep 抑制器检查），且无
-  session 的 PID 视为"全局活跃"（`pidref_is_active_session()` 返回 1）⇒ root/系统抑制器
-  有效。GNOME 自己用的就是这个机制（gsd-power `sync_lid_inhibitor()`，
-  `LID_CLOSE_SAFETY_TIMEOUT = 8 s`）。
-- **无效做法**：调大 `HoldoffTimeoutSec`（只把周期拉长）；依赖
-  `HandleLidSwitchExternalPower`/`HandleLidSwitchDocked`（本机不生效，见机理第 6 条）；
-  屏蔽"USB 唤醒"（没有启用的 USB 唤醒源）；指望 `LidSwitchIgnoreInhibited`（不作用于 lid
-  抑制器）。
+键盘驱动读取同一个 `SW_LID` 状态。合盖只把发给硬件的有效背光设为 `0`，
+`led_classdev::brightness` 中的用户请求值不变；开盖、folio 重新出现或 resume 时
+恢复该值。即使用户在合盖期间移动 Quick Settings 滑块，也不会把盖内键盘点亮。
+
+该策略的明确代价是：合盖不进入系统 suspend，待机功耗高于 deep sleep。它解决的是
+默认合盖行为和重复 suspend，不等于找到了旧循环里的未知唤醒源。
+
+## 仍可进行的 suspend 唤醒源测量
+
+这些测量只影响手动 suspend 或未来重新评估“合盖即 suspend”，不阻塞当前 lid 策略：
+
+1. `pkgs/kernel/config.nix` 打开 `CONFIG_PM_DEBUG`，读取
+   `/sys/power/pm_wakeup_irq` 并按上表映射设备；
+2. 或在 suspend 前后比较 `/proc/interrupts` 和
+   `/sys/kernel/debug/wakeup_sources`；
+3. 分别在纯电池、拆掉 folio 的条件下对照，区分充电栈、键盘 MCU 与板载
+   hall/PMIC；
+4. 若未来恢复“合盖即 suspend”，必须先消除未知唤醒，再重新验证 logind holdoff，
+   不能仅调大 `HoldoffTimeoutSec`。
 
 ## 参考
 
@@ -148,7 +138,8 @@ suspended 期间对到达的数据帧调 `pm_wakeup_event()`（`pkgs/kernel/patc
   （`execute_shutdown_or_sleep()` 里的 `manager_set_lid_switch_ignore(…
   HoldoffTimeoutUSec)`、`method_do_shutdown_or_sleep()`）、`src/login/logind-inhibit.c`
   （`manager_is_inhibited()`、`pidref_is_active_session()`）。
-- 本仓库：`pkgs/kernel/patches/0001-…patch`（两个 hall 都是 `wakeup-source`）、
-  `0002-…patch`（hid-nanosic 的 status pin / `enable_irq_wake(data_irq)` /
-  suspended 期间的 `pm_wakeup_event()`）、`pkgs/power-keyd/liuqin-power-key-action.sh`
-  （blank 动作）、`modules/liuqin/gnome.nix`（`FIXME(lid-suspend-loop)`）。
+- 本仓库：`pkgs/kernel/patches/0001-…patch`（lid hall 的
+  `wakeup-source`）、`0002-…patch`（hid-nanosic 的 status pin、
+  `enable_irq_wake(data_irq)`、suspend 唤醒和合盖背光抑制）、
+  `pkgs/lid-policy/main.py`（锁屏/DPMS 状态机）以及
+  `modules/liuqin/gnome.nix`（logind 与 user service 接线）。

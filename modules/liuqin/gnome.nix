@@ -3,21 +3,29 @@
 # GNOME desktop policy for liuqin: power-key daemon, dconf defaults, logind
 # delegation, dmabuf workarounds, and the GSettings schema the session
 # helper reads.
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   cfg = config.hardware.liuqin;
   power-keyd = pkgs.liuqinPowerKeyd;
 
   # GSettings schema dir for the liuqin power policy, compiled with glib.
-  powerSchemas = pkgs.runCommand "liuqin-power-schemas" {
-    nativeBuildInputs = [ pkgs.glib ];
-  } ''
-    mkdir -p $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
-    cp ${../../pkgs/power-keyd/io.github.liuqin.power.gschema.xml} \
-      $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas/
-    glib-compile-schemas $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
-  '';
+  powerSchemas =
+    pkgs.runCommand "liuqin-power-schemas"
+      {
+        nativeBuildInputs = [ pkgs.glib ];
+      }
+      ''
+        mkdir -p $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
+        cp ${../../pkgs/power-keyd/io.github.liuqin.power.gschema.xml} \
+          $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas/
+        glib-compile-schemas $out/share/gsettings-schemas/liuqin-power/glib-2.0/schemas
+      '';
 
   # Seeded mutter display configuration: the built-in panel's fixed rotation
   # for the laptop posture (the option description carries the semantics).
@@ -45,7 +53,7 @@ let
 
   sessionHome =
     config.users.users.${cfg.desktop.gnome.sessionUser}.home
-    or "/home/${cfg.desktop.gnome.sessionUser}";
+      or "/home/${cfg.desktop.gnome.sessionUser}";
 in
 {
   options.hardware.liuqin.desktop.gnome = {
@@ -60,7 +68,12 @@ in
     };
 
     panelOrientation = lib.mkOption {
-      type = lib.types.enum [ "normal" "left" "right" "upside-down" ];
+      type = lib.types.enum [
+        "normal"
+        "left"
+        "right"
+        "upside-down"
+      ];
       default = "right";
       description = ''
         Fixed rotation for the built-in panel, seeded into
@@ -88,43 +101,43 @@ in
     services.desktopManager.gnome.enable = lib.mkDefault true;
     services.xserver.enable = lib.mkDefault true;
     services.displayManager.gdm.enable = lib.mkDefault true;
+    # The lid policy and keyboard-backlight tile consume UPower's standard
+    # system-bus properties/interfaces.
+    services.upower.enable = true;
 
-    # logind's default power-off on a single press is a desktop-tower
-    # assumption; on a tablet the power button is the wake button. All
-    # policy is delegated to liuqin-power-keyd below.
+    # logind's default suspend action is deliberately disabled for every lid
+    # context.  It delays closes during its 30-second post-resume holdoff and,
+    # after an unintended wake, repeatedly suspends while the lid remains
+    # closed.  The GNOME session policy below instead locks and blanks
+    # immediately on close, then lights the still-locked session on open.
+    # Power-key policy remains delegated to liuqin-power-keyd.
     services.logind.settings.Login = {
       HandlePowerKey = "ignore";
       HandlePowerKeyLongPress = "ignore";
+      HandleLidSwitch = "ignore";
+      HandleLidSwitchExternalPower = "ignore";
+      HandleLidSwitchDocked = "ignore";
     };
-
-    # FIXME(lid-suspend-loop, 2026-10-07): HandleLidSwitch is not set here, so
-    # logind's default (suspend) applies.  The loop this described is logind's
-    # own lid recheck, not a client request: while the lid is closed,
-    # `button_recheck()` re-runs the lid action on every event-loop turn, gated
-    # only by `HoldoffTimeoutUSec` (30 s, re-armed on every sleep start and
-    # counting monotonic time, which stops during suspend) - hence a new
-    # suspend ~28 s after each resume as long as the still-unidentified wake
-    # source keeps waking the unit.  `Suspending...` is logind's own message
-    # (the D-Bus `Suspend()` path does not log it), so there is no requester to
-    # find, and USB cannot be the waker (the host sees the device disconnect;
-    # dwc3/USB wakeup is disabled).  Decide the cover policy here once the
-    # waker is measured - see docs/TODO/LID-SUSPEND-LOOP.md.
 
     # GTK/WebKit dmabuf corruption on the Adreno 730: force the
     # memory-copy upload path until the kernel coherency story is fixed.
     environment.sessionVariables = {
-    # GDK_DISABLE=dmabuf deliberately NOT set: measured 2026-10-03, the
-    # dmabuf path works and the variable only makes GTK4's camera sink fail
-    # to transform frames (black viewfinder).  The actual camera-path issue
-    # is the pipewire/portal format handshake, tracked in
-    # docs/PORTING-NOTES.md (Camera).
+      # GDK_DISABLE=dmabuf deliberately NOT set: measured 2026-10-03, the
+      # dmabuf path works and the variable only makes GTK4's camera sink fail
+      # to transform frames (black viewfinder).  The actual camera-path issue
+      # is the pipewire/portal format handshake, tracked in
+      # docs/PORTING-NOTES.md (Camera).
       WEBKIT_DISABLE_DMABUF_RENDERER = "1";
     };
 
     # zenity (dialog) and gnome-session (gnome-session-quit) are looked up on
     # PATH by liuqin-power-menu inside the user session; keep them explicit
     # here since pkgs/power-keyd/default.nix no longer carries them in a passthru.
-    environment.systemPackages = [ pkgs.zenity pkgs.gnome-session powerSchemas ];
+    environment.systemPackages = [
+      pkgs.zenity
+      pkgs.gnome-session
+      powerSchemas
+    ];
 
     # The power policy schema (read by liuqin-power-key-action through
     # GSETTINGS_SCHEMA_DIR, set by the service environment below).
@@ -133,7 +146,10 @@ in
     systemd.services.liuqin-power-keyd = {
       description = "liuqin Android-style power-key policy";
       wantedBy = [ "multi-user.target" ];
-      after = [ "systemd-udevd.service" "systemd-logind.service" ];
+      after = [
+        "systemd-udevd.service"
+        "systemd-logind.service"
+      ];
       wants = [ "systemd-logind.service" ];
       path = with pkgs; [
         systemd
@@ -169,7 +185,10 @@ in
         # session's dconf/GSettings over /run/user, so persistent homes stay
         # read-only rather than inaccessible.
         ProtectHome = "no";
-        ReadOnlyPaths = [ "/home" "/root" ];
+        ReadOnlyPaths = [
+          "/home"
+          "/root"
+        ];
         ReadWritePaths = [ "/run/user" ];
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
@@ -253,6 +272,23 @@ in
         ExecStart = "${pkgs.liuqinPanelPosture}/bin/liuqin-panel-posture --laptop-rotation ${cfg.desktop.gnome.panelOrientation}";
         Restart = "on-failure";
         RestartSec = 2;
+      };
+    };
+
+    # UPower reports the hall switch immediately, independent of logind's lid
+    # action holdoff.  Keep this in the graphical session so it can use
+    # ScreenSaver.Lock and Mutter's writable PowerSaveMode directly.
+    systemd.user.services.liuqin-lid-policy = {
+      description = "Lock and blank the liuqin panel on folio close";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.liuqinLidPolicy}/bin/liuqin-lid-policy --state-dir %t/liuqin-lid-policy";
+        Restart = "on-failure";
+        RestartSec = 2;
+        RuntimeDirectory = "liuqin-lid-policy";
+        RuntimeDirectoryMode = "0700";
       };
     };
 

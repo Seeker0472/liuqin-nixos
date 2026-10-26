@@ -1,0 +1,7 @@
+{
+  "uuid": "liuqin-keyboard-backlight@liuqin",
+  "name": "Keyboard Backlight",
+  "description": "Control the Xiaomi Pad 6 Pro keyboard folio backlight from the Quick Settings menu.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1
+}

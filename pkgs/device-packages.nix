@@ -63,6 +63,7 @@ in
     liuqinSlpi = "shell script";
     liuqinSensorProxyRefresh = "shell script";
     liuqinPanelPosture = "Python/GI session client; keep native with the GNOME runtime";
+    liuqinLidPolicy = "Python/GI GNOME lid-policy client";
     liuqinUsbLogin = "shell script";
     liuqinStorageGuard = "shell script (fail-closed fixture tests in its checkPhase)";
     mkLiuqinUsbGadget = "configfs gadget shell factory, parameterised per consumer";
@@ -70,6 +71,7 @@ in
     liuqinAlsaUcm = "data-only leaf (UCM2 files)";
     liuqinGnomeFlashlight = "data-only leaf (GNOME Shell extension files)";
     liuqinGnomeAutoBrightness = "data-only leaf (GNOME Shell extension files)";
+    liuqinGnomeKeyboardBacklight = "data-only leaf (GNOME Shell extension files)";
     # OEM FPC1264 fingerprint stack.
     liuqinFpcOemLibfprintTod = fpcReason;
     liuqinFpcOemSrc = "vendored OEM component source tree (a path, not a package)";

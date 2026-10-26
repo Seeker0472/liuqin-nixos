@@ -356,16 +356,17 @@ open; see `docs/TODO/DISPLAY-CAMERA-REVIEW.md` for the controlled boot compariso
   exposes the whole range as `liuqin-keyboard::kbd_backlight` - the name UPower
   picks up on (`kbd_backlight` substring) and systemd-backlight@ saves and
   restores (`*kbd_backlight*` in 99-systemd.rules) - so the last level survives
-  a reboot and anything that speaks the LED class drives it.  GNOME carries no
-  keyboard-backlight control of its own (the shell's slider is gone). The board
-  module `modules/liuqin/leds.nix`, not just the demo, grants the `video` group
-  brightness access alongside the flash LED, so sessions can use
-  `brightnessctl` or `echo N > .../brightness` (0..100).
+  a reboot and anything that speaks the LED class drives it. GNOME no longer
+  supplies this control itself, so `liuqin-gnome-keyboard-backlight` adds a
+  Quick Settings toggle and `0..100` slider over UPower's standard
+  `KbdBacklight` interface. The board module `modules/liuqin/leds.nix`, not
+  just the demo, also grants the `video` group direct brightness access.
   The keypad ignores commands while it sleeps and the level lives in
   `led_classdev::brightness`, so it is replayed when the keypad wakes (the
   liveness window going stale and coming back, which is what a folio return
   looks like too), on resume, and when a failed wake-IRQ setup aborts suspend.
-  Suspend asks for the backlight off without overwriting the requested level.
+  Suspend and a closed cover both ask for the physical backlight off without
+  overwriting that requested level; opening the cover restores it.
 - Touch resume repeatedly retries the firmware download and can end in
   `resume failed closed`; the input device reappears after recovery.  The
   installer does not ship the touchscreen firmware payload (its panel is
@@ -876,30 +877,25 @@ data. Mutable registry contents are copied from persist and remain per-device.
   boots; the driver then trips the vb2 `start_streaming()` cleanup WARN).  The
   gate is `iris_fmts_sm8450_dec` in patch 0006 - do not point sm8450 back at
   `iris_fmts_vpu3x_dec`, which carries AV1 for the VPU3 platforms.
-- **TODO(lid-suspend-loop)**: closing the folio cover turns into a
-  suspend/resume loop.  **Measured** 2026-10-07: `Lid closed.` 11:17:04 →
-  `Lid opened.` 11:41:09, 15 suspends in the window, resume → next
-  `Suspending...` 27.3-27.8 s on all 14 cycles (the sleeps themselves are cut
-  short after 3-162 s by a wake source that is still unidentified).  The pace
-  is logind's own lid recheck, not a client: while the lid is closed
-  `button_recheck()` re-runs the lid action on every event-loop turn, gated
-  only by `HoldoffTimeoutUSec` (30 s, re-armed on every sleep start; monotonic
-  time stops during suspend, hence ~28 s).  `Suspending...` is logind's own
-  message (`handle_action_execute()`; the D-Bus `Suspend()` path does not log
-  it), so there is no requester to identify - the earlier reading of that line
-  as an unidentified D-Bus request was wrong, and `liuqin-power-keyd` staying
-  silent fits it.  USB cannot be the waker either (the host sees the device
-  disconnect and dwc3/USB wakeup is disabled), so "ignore USB wakeups while
-  docked" is a no-op; `HandleLidSwitchExternalPower`/`Docked` never apply here
-  (no external power reported while on the cable, no external display).  Per
-  cycle the host sees the gadget re-enumerate (`usb 1-2: new high-speed USB
-  device`), ath11k re-downloads firmware (`mhi0: Requested to power ON`,
-  `chip_id`/`fw_version` again), NetworkManager re-associates
-  (`DEAUTH_LEAVING` from the suspend path) and the touch controller re-flashes
-  its firmware (`nvt_update_firmware … #20`).  Next: identify the waker with
-  `CONFIG_PM_DEBUG` (`/sys/power/pm_wakeup_irq`) or `/proc/interrupts` deltas,
-  then decide the cover policy - mechanics, wake-source inventory and the
-  options are in `docs/TODO/LID-SUSPEND-LOOP.md`.
+- **Lid policy no longer suspends on cover close; device acceptance is
+  pending.**  The former default was logind `HandleLidSwitch=suspend`.
+  Measured 2026-10-07, one closed-lid window contained 15 suspends: unintended
+  wakes were followed by logind's own lid recheck and another suspend
+  27.3-27.8 s later.  A live pre-change check also showed the user-visible
+  holdoff directly: closes at 20:53:50 and 20:54:37 did not suspend until
+  20:54:14 and 20:55:03. `modules/liuqin/gnome.nix` now sets all three logind
+  lid actions to `ignore`; the graphical-session `liuqin-lid-policy` reads
+  UPower's immediate `LidIsClosed`, calls `org.gnome.ScreenSaver.Lock`, blanks
+  through Mutter `PowerSaveMode=3`, and sets `PowerSaveMode=0` on open without
+  unlocking.  This chosen policy trades higher closed-cover standby power for
+  deterministic lock/blank behavior and removes the suspend loop.  The
+  keyboard driver independently suppresses its physical backlight while
+  closed and restores the unchanged LED-class level on open.
+  The old loop's requester analysis remains useful: `Suspending...` was
+  logind's internal action, not D-Bus; USB was not wake-enabled; and the
+  unknown wake source still matters to explicit/manual suspend. Mechanics and
+  the remaining wake-source measurement plan stay in
+  `docs/TODO/LID-SUSPEND-LOOP.md`.
 - **TODO(rootfs-ext4)**: the root filesystem reports
   `EXT4-fs error (device sda36): ext4_validate_block_bitmap: bad block bitmap
   checksum` at switch-root and again at 11:33 (**measured** 2026-10-07,

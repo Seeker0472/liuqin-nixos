@@ -57,9 +57,9 @@ in the BSP.
 ## Updating
 
 `nix flake update` advances the `liuqin` input to the newest BSP `main`; the
-nixpkgs pin follows the BSP's own lockfile. The asset repository remains a
-separate local path input and must be updated independently when its contents
-change. Pin the BSP input to a revision for reproducibility:
+nixpkgs pin follows the BSP's own lockfile. The private asset input remains
+independently pinned to its Git revision and content hash. Pin the BSP input to
+a revision for reproducibility:
 
 ```nix
 inputs.liuqin.url = "github:Seeker0472/liuqin-nixos/<rev>";

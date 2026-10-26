@@ -198,6 +198,19 @@ and arrangement and are reflowed when the panel's logical dimensions change.
 Mirrored layouts, and tablet posture with an external display, remain under
 GNOME's control. See the [sensor notes](docs/PORTING-NOTES.md#sensors).
 
+The GNOME lid client reads UPower's immediate `LidIsClosed` state while
+logind ignores lid actions in every power/dock context. Closing the cover
+locks the session and sets Mutter DPMS off; opening it restores DPMS without
+unlocking. This deliberately does not suspend: it avoids logind's post-resume
+holdoff and the measured suspend/re-wake loop at the cost of higher closed-cover
+standby power. The keyboard driver suppresses the physical backlight while the
+cover is closed without replacing the requested level.
+
+The keyboard-folio backlight is exposed through UPower as a `0..100` LED and
+the supplied GNOME Quick Settings tile mirrors the flashlight interaction:
+the tile toggles it, while its submenu slider sets the level and restores the
+last nonzero level after a toggle.
+
 `installer-bootimg` is the installer artifact; its display profile keeps
 ABL's framebuffer alive (`earlycon=simplefb`, `keep_bootcon`, `console=tty0`)
 and hands the console over to the fbdev DRM client. `installer-kernel`

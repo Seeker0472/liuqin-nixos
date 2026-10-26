@@ -61,10 +61,12 @@
     mipps.enable = true;
   };
 
-
   # ssh-ng:// deployments (lq-deploy-direct) need the machine user to be
   # trusted by the remote daemon; the legacy ssh:// store did not.
-  nix.settings.trusted-users = [ "root" "liuqin" ];
+  nix.settings.trusted-users = [
+    "root"
+    "liuqin"
+  ];
 
   networking.hostName = "liuqin";
   networking.networkmanager.enable = true;
@@ -79,7 +81,13 @@
   users.users.liuqin = {
     isNormalUser = true;
     description = "liuqin user";
-    extraGroups = [ "wheel" "networkmanager" "video" "input" "audio" ];
+    extraGroups = [
+      "wheel"
+      "networkmanager"
+      "video"
+      "input"
+      "audio"
+    ];
     initialPassword = "liuqin";
     openssh.authorizedKeys.keys = [
       # /home/seeker/.ssh/id_liuqin.pub
@@ -111,23 +119,22 @@
   # (Audio) for the verified state and the remaining limits.
   environment.systemPackages = [
     pkgs.alsa-utils
-    # Flashlight Quick Settings toggle + brightness slider for the rear flash
-    # LED (overlay package, see pkgs/gnome-flashlight).
+    # Quick Settings controls for the rear flash LED and keyboard-folio
+    # backlight, plus the automatic-brightness toggle.
     pkgs.liuqinGnomeFlashlight
-    # Automatic-brightness Quick Settings toggle over gnome-settings-daemon's
-    # ambient switch (overlay package, see pkgs/gnome-autobrightness).
+    pkgs.liuqinGnomeKeyboardBacklight
     pkgs.liuqinGnomeAutoBrightness
   ];
 
-  # Enable the Quick Settings extensions for the user: the flashlight's state
-  # is the LED itself, and the automatic-brightness tile drives
-  # gnome-settings-daemon's own ambient switch, so neither needs more
-  # configuration.
+  # Enable the Quick Settings extensions for the user.  The keyboard tile
+  # uses UPower's standard KbdBacklight interface; the other two retain their
+  # existing LED and gnome-settings-daemon backends.
   programs.dconf.profiles.user.databases = [
     {
       settings."org/gnome/shell" = {
         enabled-extensions = [
           "liuqin-flashlight@liuqin"
+          "liuqin-keyboard-backlight@liuqin"
           "liuqin-autobrightness@liuqin"
         ];
       };
