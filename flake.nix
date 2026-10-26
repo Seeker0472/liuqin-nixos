@@ -211,6 +211,8 @@
           # the kernel image).
           uboot = pkgsArm.liuqinUboot.uboot;
           uboot-bootimg = pkgsArm.liuqinUboot.bootimg;
+          # Installable Android KernelSU ZIP; packaging runs on the build host.
+          ksu-return-to-uboot = pkgsHost.callPackage ./pkgs/ksu-return-to-uboot { };
         };
 
       nixosModules.liuqin = { config, lib, ... }: {
@@ -262,6 +264,8 @@
         self.nixosConfigurations.demo.config.system.build.toplevel;
       checks.x86_64-linux.eval-installer =
         self.nixosConfigurations.liuqin-installer.config.system.build.toplevel;
+      checks.x86_64-linux.liuqin-ksu-return-to-uboot =
+        self.packages.x86_64-linux.ksu-return-to-uboot;
 
       # Device-free hygiene, run by `nix flake check` on any host: no tablet,
       # no sibling checkout, no network.

@@ -295,7 +295,13 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
   (`Device Error`) while `fastboot flash` still works — use the cold start
   for RAM boots.
 - **Reboot** from a running system: `systemctl reboot`.
-- Coming back from Android: `adb reboot bootloader` → ABL's fastboot →
+- To return to U-Boot automatically on the next normal reboot after Android
+  finishes booting, install the [KernelSU module](../pkgs/ksu-return-to-uboot/README.md)
+  on Android. It selects B through Android's Boot Control HAL, which must
+  update the GPT type-GUID roles and UFS boot LUN along with the slot attributes.
+  The module checks `boot_b`'s Android image magic and liuqin U-Boot log
+  prefix before switching.
+- Manual return from Android: `adb reboot bootloader` → ABL's fastboot →
   `fastboot reboot`.  The stock fastboot client refuses `set_active` there
   (`Device does not support slots`: its `has-slot` probe fails against this
   ABL's narrow getvar surface), so send the raw command (`set_active:b`) —

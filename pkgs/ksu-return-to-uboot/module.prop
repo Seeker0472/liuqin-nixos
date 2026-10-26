@@ -1,0 +1,6 @@
+id=liuqin_return_to_uboot
+name=Liuqin Return to U-Boot
+version=1.0.0
+versionCode=1
+author=liuqin-nixos
+description=Select slot B through Android's boot HAL after Android finishes booting.

@@ -158,6 +158,11 @@ the device menu can boot any generation NixOS keeps. Partition creation is
 an explicit, operator-reviewed action from the live environment; no fixed
 sector values are embedded in this repository.
 
+To make the next normal reboot from Android return to the U-Boot menu, install
+the [KernelSU return-to-U-Boot module](pkgs/ksu-return-to-uboot/README.md)
+on Android. It selects slot B through Android's Boot Control HAL after boot
+completion; it requires this project's U-Boot image already in `boot_b`.
+
 ## Build outputs
 
 ```sh
@@ -168,6 +173,7 @@ nix build .#installer-kernel
 nix build .#installer-bootimg
 nix build .#uboot
 nix build .#uboot-bootimg
+nix build .#ksu-return-to-uboot
 nix flake check
 nix run .#unit-verify
 ```
