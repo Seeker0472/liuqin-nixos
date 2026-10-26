@@ -4,12 +4,11 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.firmwareAssets = {
-    url = "path:../liuqin-nixos-os2-firmware-assets";
+    url = "git+ssh://git@github.com/Seeker0472/liuqin-firmware-assets-OS2.git?ref=main";
     flake = false;
   };
-  # The sibling checkout is outside this Git tree; build/eval commands must pass
-  # `--override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets`
-  # so Nix hashes the local payload repository into the store.
+  # flake.lock pins the private asset repository to an exact revision and
+  # content hash; authorized builders fetch it through their GitHub SSH access.
 
   outputs = { self, nixpkgs, firmwareAssets }:
     let

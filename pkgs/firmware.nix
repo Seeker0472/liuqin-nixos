@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT (expression; payloads are proprietary)
 # Copy the complete, manifest-verified OS2.0.4 asset tree. The asset source is
-# the separate liuqin-nixos-os2-firmware-assets repository; no downstream
+# the separate liuqin-firmware-assets-OS2 repository; no downstream
 # release image or runtime Nixpkgs firmware package is consumed here.
 { lib, runCommand, python3, firmwareAssets }:
 

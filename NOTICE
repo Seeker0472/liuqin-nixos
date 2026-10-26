@@ -36,10 +36,10 @@ This repository is MIT-licensed overall (see LICENSE), except:
   are patches to hexagonrpc (GPL-2.0) and iio-sensor-proxy (GPL-3.0 / LGPL);
   they retain their downstream headers.
 * Static Qualcomm/Xiaomi firmware, sensor configuration and stock boot DT
-  artifacts are stored in the separate sibling repository
-  `liuqin-nixos-os2-firmware-assets`, not in this source tree. The root flake
-  consumes it through a local path input; builds do not fetch vendor payloads
-  from a public release or use the downstream v0.3.1 boot image.
+  artifacts are stored in the separate private repository
+  `liuqin-firmware-assets-OS2`, not in this source tree. The root flake pins
+  that GitHub repository by revision and content hash; builds do not use the
+  downstream v0.3.1 boot image or any public vendor release.
   The asset repository extracts the required files from official OS2.0.4
   images, records source/output hashes and provenance, and includes selected
   pinned upstream firmware plus the generated AudioReach topology. OEM payloads

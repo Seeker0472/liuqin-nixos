@@ -3,14 +3,19 @@
     "firmwareAssets": {
       "flake": false,
       "locked": {
-        "path": "../liuqin-nixos-os2-firmware-assets",
-        "type": "path"
+        "lastModified": 1793017115,
+        "narHash": "sha256-89u8dl5K169+U7jIV06JdDa3gqZlpFKUbwc8yh2Rp3U=",
+        "ref": "main",
+        "rev": "68cdcd86f8e4247d477850116d0cca0477cfa3a3",
+        "revCount": 1,
+        "type": "git",
+        "url": "ssh://git@github.com/Seeker0472/liuqin-firmware-assets-OS2.git"
       },
       "original": {
-        "path": "../liuqin-nixos-os2-firmware-assets",
-        "type": "path"
-      },
-      "parent": []
+        "ref": "main",
+        "type": "git",
+        "url": "ssh://git@github.com/Seeker0472/liuqin-firmware-assets-OS2.git"
+      }
     },
     "nixpkgs": {
       "locked": {

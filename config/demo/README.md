@@ -25,12 +25,10 @@ Comments refer to paths in the BSP repository (`docs/…`, `pkgs/…`); the BSP'
 
 ## Asset repository
 
-Builds require an authorized local checkout of the separate
-`liuqin-nixos-os2-firmware-assets` repository. When invoking Nix from
-`config/demo/`, pass
-`--override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets`
-to hash the sibling checkout into the store; update both input paths if you
-copy this template elsewhere. The nested
+Builds require GitHub SSH access to the private
+`liuqin-firmware-assets-OS2` repository. The consumer's lock file pins its
+revision and content hash; no sibling checkout or `--override-input` is
+required. The nested
 `inputs.liuqin.inputs.firmwareAssets.follows = "firmwareAssets"` wiring makes
 the BSP and consumer use the same assets.
 
@@ -46,9 +44,9 @@ registry, MiPPS keys and RPMB state are not stored in the asset repository.
 ## Build and install
 
 ```sh
-nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#installer-bootimg   # RAM installer; the only first-install path
-nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#bootimg             # bootable image for the U-Boot/ABL path
-nix build --override-input firmwareAssets path:../../../liuqin-nixos-os2-firmware-assets .#uboot-bootimg       # the U-Boot boot.img
+nix build .#installer-bootimg   # RAM installer; the only first-install path
+nix build .#bootimg             # bootable image for the U-Boot/ABL path
+nix build .#uboot-bootimg       # the U-Boot boot.img
 ```
 
 The install and update flow — fastboot-booting the RAM installer, the telnet

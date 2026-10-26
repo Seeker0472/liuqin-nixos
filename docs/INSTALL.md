@@ -106,21 +106,20 @@ When the display never comes up, work from the U-Boot/fastboot and pstore
 channels instead — `PORTING-NOTES.md` §3.1 is the list.
 
 ## 2. Building
-The build consumes static payloads from the separate sibling repository
-`liuqin-nixos-os2-firmware-assets`. Keep that authorized checkout beside this
-repository; no downstream release image or per-device persist data is a build
-input. Because the sibling is outside this flake's Git tree, every Nix command
-must pass `--override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets`;
-Nix then hashes the checkout into a store input.
+The build consumes static payloads from the separate private repository
+`liuqin-firmware-assets-OS2`; no downstream release image or per-device
+persist data is a build input. Authorized builders fetch the repository
+through GitHub SSH, while `flake.lock` pins its exact revision and content
+hash.
 
 
 ```sh
-nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#uboot-bootimg --out-link result-uboot
-nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#installer-bootimg --out-link result-installer
+nix build .#uboot-bootimg --out-link result-uboot
+nix build .#installer-bootimg --out-link result-installer
 
 # the installed system plus the loader step that /boot needs
-nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.toplevel
-LOADER=$(nix eval --raw --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.installBootLoader)
+nix build .#nixosConfigurations.demo.config.system.build.toplevel
+LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
 ```
 
 The x86_64 → aarch64 cross set (`pkgsArm`) builds the device packages once on
@@ -214,8 +213,8 @@ or over Wi-Fi (the tablet's DHCP address).
 
 ```sh
 # host: build the system and the loader script once
-nix build --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.toplevel
-LOADER=$(nix eval --raw --override-input firmwareAssets path:../liuqin-nixos-os2-firmware-assets .#nixosConfigurations.demo.config.system.build.installBootLoader)
+nix build .#nixosConfigurations.demo.config.system.build.toplevel
+LOADER=$(nix eval --raw .#nixosConfigurations.demo.config.system.build.installBootLoader)
 ```
 
 ### a. Binary cache (small HTTP server)
@@ -334,7 +333,7 @@ come from the OS2.0.4 asset repository. Gatekeeper/RPMB state remains per-device
 ### Static firmware and account credential
 
 The static `fpcliu.mdt` and `b00`-`b08` files are packaged from
-`liuqin-nixos-os2-firmware-assets`; the enabled module installs that immutable
+`liuqin-firmware-assets-OS2`; the enabled module installs that immutable
 package and points the OEM runtime at it. No firmware files need to be copied
 onto the device. The asset repository contains proprietary payloads extracted
 from official OS2.0.4 images, not per-device credentials, Gatekeeper state or
