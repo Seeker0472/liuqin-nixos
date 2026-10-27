@@ -56,7 +56,7 @@ algorithms:
           step_fine: 0.25       # dioptres between fine scan samples
           contrast_ratio: 0.75  # end a scan below this fraction of the peak
           retrigger_ratio: 0.75 # scene change: a 33% contrast/channel shift
-          retrigger_delay: 10   # ... followed by this many *stable* ticks (RPi default)
+          retrigger_delay: 10   # includes the scene-change sample in the count
           step_ticks: 0         # extra ticks between scan steps
       # Provisional dioptre->DAC map, anchored at the one measured point
       # (30 cm ~ 3.33 D ~ DAC 512, sweep 2026-10-07).  Replace with the

@@ -34,7 +34,8 @@
   对比度 AF 是 simple IPA 里的一个算法（`src/ipa/simple/algorithms/af.cpp`），
   扫描逻辑移植自 RPi IPA 的 `Af`（BSD-2）：粗扫起点离峰太近时反向、对比度掉到峰值
   75% 提前终止、细扫三点 + 抛物线拟合锁到子步长、Settle 只在峰确实被跨越时报
-  Focused；连续模式按 RPi 语义触发重扫：**场景变化（对比度或任一通道均值偏离参考 >25%）之后平稳 `retrigger_delay`(10) 个 tick** 就重扫（不是"持续变化"——那会导致一次性场景变化永不重扫，也是 2026-10-07 修的"停在模糊位不动"）；锁在差位置时该规则会周期性成立，自带重试。
+  Focused；重触发条件见下文。
+
   参数是 RPi schema
   （`ranges`/`speeds`/`map`，单位屈光度；`map` = 屈光度→DAC，暂定线性、待 V 曲线标定）；
   统计 tick = 4 帧，armed 后按流帧数 `skip_frames` 起步；
@@ -134,12 +135,16 @@
   桌面对话期驱动不 suspend 也不再影响线圈）。
 - 对焦是流中动作：`v4l2-ctl -d <dw9768-subdev> --set-ctrl focus_absolute=<dac>`；
   536 是 30 cm 标定点。找节点：`media-ctl -p -d /dev/media0 | grep -A3 dw9768`。
-- 自动对焦的形状：默认 `AfModeContinuous`，以统计 tick（4 帧）为单位推进；一次扫描 =
-  起点 → 粗扫（对比度掉到峰值 75% 即止；若起点离峰太近则反向重扫）→ 细扫三点 +
-  抛物线拟合 → Settle 验证（峰未被跨越时报 Failed）；失败就停在拟合峰，不自动重试
-  （等场景变化）。每个采样点都打日志。
+- 自动对焦默认使用 `AfModeContinuous`。扫描完成后，若对比度或任一通道均值
+  相对当前参考跨过 `retrigger_ratio`（宽摄为 0.75），变化采样将计数置为 1；
+  随后未再次变化的统计 tick 递增，达到 `retrigger_delay`（宽摄为 10）即重扫，
+  即变化采样本身计入阈值。`AfStateFailed` 本身不会触发重试；
+  `AfModeAuto` 则在一次触发完成后回到空闲，需新的 `AfTriggerStart`。
+  每个采样点都会记录日志。
+
   手动标定：capture script 逐 DAC 设 `LensPosition`（AfMode=Manual）并读 `FocusFoM`
   元数据。AF 日志：`LIBCAMERA_LOG_LEVELS=IPASoftAf:0`。
+
 
 **探测与恢复**
 - sensor 模块被 blacklist，由 `liuqin-camera-probe`（3 次、间隔 5 s）晚加载；失败时**每颗相机都消失**，
