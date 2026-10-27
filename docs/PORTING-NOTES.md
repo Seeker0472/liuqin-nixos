@@ -27,7 +27,7 @@ the current firmware set.
 | Xiaomi MiPPS (67 W) | verified with operator-provided keys | reverse authentication (command 8) is unverified |
 | Sensors (SSC/SLPI) | previously partly verified | OS2.0.4 configuration and SLPI behavior need hardware validation |
 | Wi-Fi / Bluetooth | previously verified | OS2.0.4 WLAN/BTFM payloads need hardware validation |
-| Storage (UFS, root guard) | root guard verified | no offline filesystem check has been run |
+| Storage (UFS, root guard) | root guard verified; prior ext4 issue owner-reported fixed | latest retained logs had no matching errors |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones versus 81 on Android; no IPA |
 | Fingerprint (FPC1264) | previously verified | OS2.0.4 firmware needs hardware validation |
@@ -125,12 +125,11 @@ and BTFM files still need validation. The old-payload Bluetooth range
 workaround is `sudo liuqin-bt-nv`; controller setup resets its table, so replay
 it after each power toggle and after `liuqin-bt-preconfigure` completes.
 
-An earlier kernel log recorded an ext4 block-bitmap checksum error on
-`/dev/sda36`, still reported on 2026-10-26. No matching error appeared in the
-2026-10-27 retained logs, but no offline filesystem check has run. Never run
-`e2fsck` on the mounted root; check from the RAM installer only after confirming
-it is unmounted. Closing the folio locks and blanks the panel but does not
-suspend, avoiding the measured suspend/re-wake loop; see
+An ext4 block-bitmap checksum error on `/dev/sda36` was reported through
+2026-10-26. The 2026-10-27 retained logs had no matching errors; the owner
+reports the issue has since been fixed. The repair method is not recorded here.
+Closing the folio locks and blanks the panel but does not suspend, avoiding
+the measured suspend/re-wake loop; see
 [LID-SUSPEND-LOOP.md](TODO/LID-SUSPEND-LOOP.md).
 
 ### Video (VPU)
