@@ -1,167 +1,34 @@
 # liuqin-nixos — Xiaomi Pad 6 Pro (SM8475)
 
-NixOS support for the Xiaomi Pad 6 Pro, built around Linux 7.2.5 and the
-device patches in `pkgs/kernel/patches/`. All static vendor firmware, sensor
-configuration and stock boot artifacts come from the separate private
-repository `liuqin-firmware-assets-OS2`; the main source tree carries no
-vendor binary. Its camera register tables in patches 0012/0013 are derived
-driver data. See NOTICE for the licensing and private-data boundaries.
+NixOS support for the Xiaomi Pad 6 Pro (liuqin, SM8475), built around Linux
+7.2.5 and the device patches in `pkgs/kernel/patches/`.
 
-## Installation model
+Static vendor firmware, sensor configuration and stock boot artifacts live in
+the private `liuqin-firmware-assets-OS2` repository. Builds therefore require
+GitHub SSH access to that repository; `flake.lock` pins its revision and
+content hash. No vendor binaries are included here, and per-device identities,
+calibration, credentials and persist data stay on the tablet. Camera register
+tables in patches 0012/0013 are derived driver data; see `NOTICE` for licensing
+and private-data boundaries.
 
-For the exercised installation, update and recovery procedure, see
-[docs/INSTALL.md](docs/INSTALL.md). The boot chain and generation menu are
-described in [docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md).
+## Installation
 
-Initial installation has one supported path:
+The only supported first-install path boots the RAM-only NixOS installer:
 
 ```sh
 nix build .#installer-bootimg --out-link result-installer
 fastboot boot result-installer/boot.img
 ```
 
-The image is RAM-only and must not be flashed to `boot_a` or `boot_b`. It is a
-small NixOS live environment with:
+Do not flash this image to `boot_a` or `boot_b`. The installer deliberately
+does not partition or format storage; partition creation requires measuring
+the device's GPT and is an operator-reviewed, potentially destructive step.
+The live USB telnet shell is an unauthenticated root channel for a directly
+connected trusted host only.
 
-- Wi-Fi through NetworkManager and the device's ath11k firmware;
-- a USB2 peripheral NCM control channel at `192.168.7.2`, with ECM fallback,
-  DHCP and a temporary root telnet shell on port `2323`;
-- the ABL simple-framebuffer early console and tested display hand-off;
-- `nixos-install`, filesystem tools and a root tty.
-
-After connecting the tablet to a Linux host, let the host obtain an address
-through USB DHCP and connect to the installer shell with:
-
-```sh
-telnet 192.168.7.2 2323
-```
-
-If the host does not obtain an address automatically, assign `192.168.7.1/24`
-to the host-side USB network interface (replace `<usb-if>` with the name shown
-by `ip link`) and retry the same command:
-
-```sh
-sudo ip address replace 192.168.7.1/24 dev <usb-if>
-telnet 192.168.7.2 2323
-```
-
-This is an unauthenticated root channel intended only for a direct, trusted
-USB cable during installation.
-
-The live environment also carries `VARIANT_ID=installer` and accepts root SSH
-keys through `liuqin.lib.mkLiuqinInstallerSystem { authorizedKeys = [ ... ]; }`,
-which installs them as root's `authorized_keys`. With a
-key built into the image, the RAM installer is a standard NixOS installer
-target: nixos-anywhere detects it from that tag and skips its kexec bootstrap
-(its built-in kexec image is x86_64-only), so the documented remote flow
-applies verbatim:
-
-```sh
-fastboot boot result-installer/boot.img
-nixos-anywhere --flake .#mypad --target-host root@192.168.7.2
-```
-
-The target partition, labels and marker still have to satisfy the storage
-guard (see below), so the partition is created and measured first as in the
-manual flow; the closure is copied into the target like any other NixOS
-install.
-
-From the live tty, connect Wi-Fi with `nmtui` or `nmcli`, measure the device's
-GPT, create or select the target partition, and prepare its identity before
-mounting it at `/mnt`:
-
-- `storage.layout = "linux-partition"` (the dual-boot/demo layout) requires a
-  GPT partition label of `linux` and an ext4 filesystem label of `LIUQIN_ROOT`.
-- `storage.layout = "whole-userdata"` (the default minimal layout) requires a
-  GPT partition label of `userdata` and the same ext4 filesystem label. This
-  layout consumes Android's userdata partition.
-
-For a newly-created dual-boot partition, the relevant commands are equivalent
-to:
-
-```sh
-sgdisk --change-name=PARTNO:linux /dev/DEVICE
-mkfs.ext4 -O ^orphan_file -L LIUQIN_ROOT /dev/disk/by-partlabel/linux
-mount /dev/disk/by-partlabel/linux /mnt
-findmnt -no SOURCE,FSTYPE /mnt
-findfs LABEL=LIUQIN_ROOT
-```
-
-Three things about that list. `sgdisk --change-name` only **renames** an
-existing entry; it does not create one, and creating the `linux` partition
-itself has no recipe in this repository yet. The stock `userdata` filesystem is
-**f2fs** (`partition-type:userdata` in the ABL getvar dump), which cannot be
-shrunk in place, so freeing the space means destroying Android's `/data` first
-- a decision to take deliberately, not a command to paste. Any GPT write also
-has to keep the `boot_a`/`boot_b` attribute bytes that ABL's slot state lives
-on, keep a copy of both GPTs off the device before it touches them, and end
-with a sync before any reset. And `-O ^orphan_file` is not decoration:
-e2fsprogs enables that incompat feature by default and this U-Boot's ext4 does
-not know it (`fs/ext4/ext4_common.c` warns "fs uses incompatible features" and
-carries on), which risks read errors on the one partition U-Boot has to read.
-
-Replace `PARTNO`, `DEVICE`, and the layout-specific partlabel after measuring
-the actual tablet. The live image deliberately never partitions or formats the
-device, and there is no liuqin install wrapper either: with the target mounted
-at `/mnt`, the installation is plain upstream NixOS.
-
-```sh
-nixos-install --root /mnt --no-channel-copy
-```
-
-`nixos-install` fetches (or builds) the closure into `/mnt/nix/store`, sets the
-system profile and installs the loader; it does not activate the target. With
-`hardware.liuqin.boot.loader = "uboot"`, the loader step writes
-`/boot/extlinux/extlinux.conf` plus this generation's kernel, initrd and device
-tree into the `linux` partition. The initrd guard's marker file is written by
-the target's first-boot activation. Point it at a configuration (`--flake
-/path/to/flake#configuration-name`; `-I`, `--option`, `-j` and `--substituters`
-pass through) or drop a `configuration.nix` at `/mnt/etc/nixos` first.
-
-Decide where the closure comes from before running it: a mainline liuqin kernel
-is not on `cache.nixos.org`, so without help `nixos-install` builds the whole
-system on the tablet. Both ways below keep that on the host instead:
-
-```sh
-# (a) let the tablet fetch from a store the host serves
-#     (`nix-serve` on the host, or an ssh-ng:// store it accepts)
-tablet# nixos-install --root /mnt --no-channel-copy --flake <flake> \
-          --substituters http://<host>:<port>
-
-# (b) copy the closure into the target, then install that path
-host$   nix build <flake>#nixosConfigurations.demo.config.system.build.toplevel
-tablet# nix copy --from http://<host>:<port> --to /mnt --no-check-sigs /nix/store/<system>
-tablet# nixos-install --root /mnt --no-channel-copy --system /nix/store/<system>
-```
-
-Check what the device menu will look for, then unmount and sync before
-restarting:
-
-```sh
-sed -n '1,12p' /mnt/boot/extlinux/extlinux.conf
-umount /mnt
-sync
-```
-
-The initrd then verifies the GPT partlabel, the filesystem label, the marker
-and the mounted root before opening it read-write. It never guesses partition
-geometry and never writes a partition merely by booting. The RAM installer
-image is the only installation interface; the former host-side fastboot
-installer and prebuilt rootfs-image path have been removed.
-
-The current dual-boot layout keeps Android in `boot_a`, creates a measured
-`linux` partition at the userdata tail, and boots NixOS from `boot_b`'s U-Boot
-through NixOS' extlinux generation list at
-`/boot/extlinux/extlinux.conf` on that partition: one label per system
-generation, each with its own kernel, initrd, device tree and command line, so
-the device menu can boot any generation NixOS keeps. Partition creation is
-an explicit, operator-reviewed action from the live environment; no fixed
-sector values are embedded in this repository.
-
-To make the next normal reboot from Android return to the U-Boot menu, install
-the [KernelSU return-to-U-Boot module](pkgs/ksu-return-to-uboot/README.md)
-on Android. It selects slot B through Android's Boot Control HAL after boot
-completion; it requires this project's U-Boot image already in `boot_b`.
+See [docs/INSTALL.md](docs/INSTALL.md) for partition layouts, installation,
+updates and recovery. See [docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md)
+for the boot chain and generation menu.
 
 ## Build outputs
 
@@ -236,22 +103,18 @@ The ABL image keeps the downstream fixed payload offsets
 the exercised Qualcomm bootloader contract. The current installer ramdisk is
 large enough that its literal range crosses the DTB offset; the build records
 this as a `liuqin header-layout-warning` in `boot.img.info` and prints it
-during the build. This image has since been RAM-booted on the unit many times
-through `fastboot boot` without trouble; writing it to a boot partition
-remains the operation to approach deliberately. The build also enforces the 192 MiB boot
-partition limit and the observed 805306368-byte fastboot download limit.
+during the build.
+This image has been RAM-booted on the unit many times with `fastboot boot`
+without trouble; writing it to a boot partition still requires care. The build
+enforces the 192 MiB boot partition limit and the observed 805306368-byte
+fastboot download limit.
 
-The repository's installed configurations build natively for aarch64: their
-userland closure is served by cache.nixos.org, and the device packages
-(kernel, firmware, daemons) are injected from the flake's x86_64→aarch64 cross
-set with `injectFrom = liuqin.lib.pkgsArm`. Only the per-machine derivations
-(`/etc`, units, initrd, the images) then have to execute aarch64 code — on a
-binfmt-capable x86_64 host, or on the device itself. `crossBuild = true`
-remains available for hosts without binfmt, but it cross-compiles the entire
-closure from source (cross derivations are in no binary cache). Authorized
-builders fetch `liuqin-firmware-assets-OS2` through GitHub SSH. The flake lock
-pins its Git revision and content hash, so no sibling checkout or
-`--override-input` is required.
+The installed configurations get userland from cache.nixos.org and inject
+device packages from the x86_64-to-aarch64 cross set via
+`injectFrom = liuqin.lib.pkgsArm`. Only per-machine derivations then need an
+aarch64 executor (binfmt on an x86_64 host or the device). Optional
+`crossBuild = true` avoids binfmt by cross-compiling the full closure; those
+derivations are not in the binary cache.
 
 ## Use as a flake input
 
@@ -283,10 +146,6 @@ pins its Git revision and content hash, so no sibling checkout or
 }
 ```
 
-The consumer lock file pins both the BSP and its private asset input. Builders
-need GitHub SSH access to the asset repository; no machine-local path enters
-the lock.
-
 `config/demo/` is a complete consumer flake and the repository's only
 machine configuration; the BSP builds the very same `configuration.nix` as its
 `demo` target. Copy it with
@@ -294,138 +153,60 @@ machine configuration; the BSP builds the very same `configuration.nix` as its
 `configuration.nix` for users, hostname and timezone; use the BSP's
 `installer-bootimg` for the first install.
 
-The static firmware is not embedded in this source repository and is not
-downloaded from a public release. Provide the separate asset repository as a
-local flake input (shown above); `hardware.liuqin.sensors.enable` uses its
-OS2.0.4 configuration, and the firmware packages consume its hash-verified
-payloads. The per-device persist registry, WLAN/BT identities, speaker
-calibration, MiPPS keys and fingerprint credentials remain on the device and
-are not copied into either repository.
-
 ## Camera
 
-The capture stack is opt-in through `hardware.liuqin.camera`:
+The camera stack is opt-in through `hardware.liuqin.camera.enable`.
+`autofocus.enable` adds the experimental simple-IPA AF build to PipeWire and
+WirePlumber; the `cam` command remains stock, while `cam-af` uses the patched
+library. The three sensors share one CSID, so only one camera can stream at a
+time. WirePlumber also counts as a camera consumer.
 
-- `enable` installs `v4l-utils` and libcamera, blacklists the sensor module
-  and loads it late, and gates the option below.
-- `autofocus.enable` (EXPERIMENTAL) applies the local libcamera AF series; it
-  reaches pipewire and wireplumber, the processes that run libcamera in a GNOME
-  session.
+Capture, recovery and current limitations are documented in
+[docs/INSTALL.md](docs/INSTALL.md#9-camera) and
+[docs/TODO/CAMERA-MAINLINE.md](docs/TODO/CAMERA-MAINLINE.md).
 
-The sub-option does nothing without `enable`; the module warns rather than
-fails the eval.
+## Boot parameters
 
-All three sensors share one CSID, so exactly one camera can be streamed at a
-time, and nothing routes at boot (a boot-time route wedged the camera path on
-2026-10-05).  libcamera's simple pipeline routes the graph itself for every
-stream; for a raw CLI capture, a link reset or manual focus:
-
-```sh
-cam --stream role=raw --capture=5 --file=/tmp/frame.raw  # routes the graph itself
-media-ctl -r -d /dev/media0                           # reset all links
-v4l2-ctl -d "$(media-ctl -p -d /dev/media0 | grep -A3 dw9768 | grep -o '/dev/v4l-subdev[0-9]*' | head -1)" \
-  --set-ctrl focus_absolute=536                       # focus while streaming
-```
-
-Probing an already-routed graph, or letting uDev autoload the sensor module in
-early boot, has wedged the SoC's camera path (2026-10-05); the module is loaded
-late by the `liuqin-camera-probe` oneshot (three attempts, 5 s apart), and
-nothing routes at boot.
-
-Only one consumer can hold the camera, and wireplumber's v4l2 monitor counts
-as one: in a GNOME session, mask wireplumber for the session
-(`systemctl --user mask wireplumber`) before a raw capture and unmask
-afterwards. The desktop user must be in the `video` group -
-it is what lets the software ISP open the dma-buf heaps (the module grants
-`video` only the heaps libcamera actually opens).
-
-The `cam` on `PATH` is the stock libcamera; the autofocus build is injected only
-into pipewire/wireplumber (`cam-af` runs it from the command line). A plain
-`cam` capture therefore verifies the stock path, not the AF path.
-
-## Boot and display contract
-
-The ABL image carries the command line in `/chosen/bootargs`. The normal
-profile retains the empirically required display hand-off:
+The installed system's board-specific `boot.kernelParams` are:
 
 ```text
-earlycon=simplefb
-console=drm_log console=tty0
-initcall_blacklist=simplefb_driver_init
+qcom_q6v5_pas.slpi_auto_boot=0
 rootwait
+initcall_blacklist=simplefb_driver_init
+earlycon=simplefb
+console=tty0
+firmware_class.path=/var/lib/firmware
+cpuidle.governor=teo
 ```
 
-The installed-system profile uses the downstream simplefb-only profile. The
-`arm_smmu_init`/`disp_cc_sm8450_driver_init` blacklist is gone entirely: it
-left IOMMU-backed UFS/PCIe/display consumers without their provider, the
-installer variant carrying it crashed and was removed, and the option that
-enabled it was deleted with it (see docs/PORTING-NOTES.md).
+The loader supplies `init=` and `root=`; NixOS also sets `loglevel=7` and
+`lsm=landlock,yama,bpf`. The installer and debug profile additionally retain
+`keep_bootcon`. The ABL overlay avoids registering a second ramoops region over
+the one reserved by ABL. The display hand-off behavior and its remaining
+U-Boot-path workaround are covered in [docs/INSTALL.md](docs/INSTALL.md) and
+[`docs/BOOT-ARCHITECTURE.md`](docs/BOOT-ARCHITECTURE.md).
 
-The early framebuffer implementation keeps the most recent screenful when it
-wraps instead of clearing the entire display. This is deliberate: the panel is
-the only pre-userspace diagnostic channel on this unit, and the last visible
-lines identify where a boot stopped. The ramoops node supplied by the kernel
-DTS is disabled in `pkgs/bootimg/dts/liuqin-abl-boot-overlay.dts` because ABL already carries
-the same `/reserved-memory/ramoops@a7000000` region; retaining both produces an
-overlap and does not yield a usable second log channel.
+## Boot image construction
 
-The experimental DRAM-resident console has been removed. It was not proven
-reliable on this device and is no longer part of the kernel, cmdline or tools.
+`pkgs/bootimg/default.nix` builds the ABL `boot.img` from the selected kernel,
+ramdisk and OS2.0.4 stock device-tree inputs. It applies the ABL and
+installer-specific overlays, then checks framebuffer geometry, identity
+properties and the DT symbol/fixup contract before packaging.
 
-## DTB and ABL overlay pipeline
-
-`pkgs/bootimg/default.nix`:
-
-1. applies the ABL metadata overlay;
-2. applies the installer-only USB2 peripheral overlay when building
-   `installer-bootimg`; the initrd then creates the downstream-compatible
-   configfs NCM gadget (falling back to ECM);
-3. collects `__symbols__` exports from every stock DTBO entry and base DTB,
-   plus all stock DTBO `__fixups__` targets;
-4. redirects every collected symbol name to an inert sink;
-5. chooses the sink phandle dynamically as `max(existing phandles) + 1`;
-6. verifies the final framebuffer geometry, identity properties and symbol
-   union before invoking `mkbootimg`.
-
-The official OS2.0.4 assets contain all 44 DTBO entries and 14 vendor_boot
-base DTBs. Their exported symbols plus the DTBO fixup targets form the asserted
-2524-name union; the build checks the manifested file sets, input counts and
-calculated symbol union.
-
-## Firmware
-
-The private `liuqin-firmware-assets-OS2` repository contains the narrow
-OS2.0.4 extraction, pinned upstream ath11k/regulatory firmware, the generated
-AudioReach topology, stock DT artifacts, and sensor/FPC payloads. Its source
-and output hashes are recorded in the repository manifests; package
-derivations verify the file manifests before use. The build has no dependency
-on the downstream v0.3.1 boot image, `requireFile`, or a public vendor release.
-The installed system forces Nixpkgs redistributable firmware off and installs
-the static asset package; the RAM installer copies only the WLAN and regulatory
-subset it needs before switch-root. Per-device persist state and fingerprint
-credentials remain outside both repositories.
+See [docs/BOOT-ARCHITECTURE.md](docs/BOOT-ARCHITECTURE.md) for the boot flow
+and `pkgs/bootimg/` for the image implementation.
 
 ## Repository map
 
 ```text
-flake.nix                 package and image outputs
+flake.nix                 package, configuration and image outputs
 config/installer.nix      RAM-only live installer
-config/demo/              the demo machine: consumer flake + configuration.nix
-                          (the BSP's own `demo` target, single source)
+config/demo/              consumer flake and example machine configuration
 modules/liuqin/           installed-system hardware and initrd modules
-pkgs/kernel/              Linux configuration and installer profile; the 7.2.5
-                          device patches live in pkgs/kernel/patches/, applied
-                          in filename order (index/provenance: that README.md)
-pkgs/bootimg/             ABL boot image and DTB construction; stock DT artifacts
-                          are read from the sibling assets repository
-pkgs/u-boot/              the bootloader: the pinned base tree + patches/ + files/
-liuqin-firmware-assets-OS2
-                          private OS2.0.4 payloads, extraction/generation scripts,
-                          and source/output manifests (separate Git repository)
-
-Legacy local `data/*.tar.zst`, `data/release-v0.3.1/boot.img` and
-`pkgs/bootimg/stock-*.tar.zst` files may remain ignored in an existing checkout;
-the build no longer reads them. Keep them as user data unless explicitly removed.
+pkgs/kernel/              Linux configuration and device patches
+pkgs/bootimg/             ABL boot image and DTB construction
+pkgs/u-boot/              U-Boot source port, patches and board files
+```
 
 ## Acknowledgements
 
