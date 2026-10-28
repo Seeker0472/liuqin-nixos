@@ -239,8 +239,6 @@ in
         filter = "*liuqin*.dtb";
       };
 
-      # systemd-based stage 1 is the only supported initrd here.
-      boot.initrd.systemd.enable = lib.mkDefault true;
       # The device kernel has UFS, SCSI, ext4, IOMMU and the USB/input path
       # built in. NixOS' generic initrd module list contains PC-only entries
       # such as ata_piix; asking module-rebuild to resolve that list makes a

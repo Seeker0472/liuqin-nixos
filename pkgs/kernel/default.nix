@@ -137,16 +137,21 @@ in
   # so BT=y is not even offered ("ALTS: M/n/?") and the repeated-question
   # guard aborts with "Error in reading or end of file".  Writing the recipe
   # into .config and re-resolving lets the kernel solve the whole set at
-  # once, which is exactly what the downstream build script does with
-  # "make oldconfig"; nixpkgs' configurePhase itself runs make oldconfig
-  # right before this hook, so .config is a plain file in the build tree
-  # here (kconfig writes through a temp file and renames), and appending is
-  # safe.  That the recipe works at all was established by hand on the host:
-  # "make ARCH=arm64 oldconfig" against this kernel yields DRM_MSM=y,
-  # SM_GPUCC_8450=y, SND/SND_SOC=y, QCOM_OCMEM/LLCC=y.
+  # once with "make oldconfig", just like the downstream build script.
+  # Depending on nixpkgs, .config is either a writable build-tree file
+  # or a read-only store symlink. The recipe was validated by running
+  # "make ARCH=arm64 oldconfig" against this kernel:
+  # DRM_MSM=y, SM_GPUCC_8450=y, SND/SND_SOC=y, QCOM_OCMEM/LLCC=y.
   postConfigure = (old.postConfigure or "") + ''
     echo "postConfigure: appending the downstream kernel config recipe"
     : "''${buildRoot:=build}"
+    # Newer nixpkgs can leave .config as a store symlink. Keep the generated
+    # answers but make the build-tree copy writable before appending fragments.
+    if [ -L "$buildRoot/.config" ] || [ ! -w "$buildRoot/.config" ]; then
+      cp "$buildRoot/.config" "$buildRoot/.config.tmp"
+      chmod u+w "$buildRoot/.config.tmp"
+      mv "$buildRoot/.config.tmp" "$buildRoot/.config"
+    fi
     ${lib.concatMapStrings (fragment: ''
       cat ${fragment} >> "$buildRoot/.config"
       make ARCH=arm64 O="$buildRoot" olddefconfig

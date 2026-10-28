@@ -19,6 +19,11 @@ them directly to `y` has previously caused repeated-question failures (for
 example BT before RFKILL). Any simplification of these stages needs a separate
 comparison of the resolved configuration.
 
+Before the fragments are appended, `pkgs/kernel/default.nix` materializes
+`.config` in the build tree if nixpkgs left it as a store symlink or a read-only
+file. This keeps both the installed and installer kernel builds writable
+without requiring a consumer overlay.
+
 The installer has 14 additional constraints. It promotes `HID_MULTITOUCH`
 and `HID_NANOSIC` from the initial `m` to `y`, and changes the initial
 `USB_XHCI_HCD` and `USB_XHCI_PLATFORM` answers from `y` to `n`. Its other

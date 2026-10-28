@@ -101,7 +101,6 @@ in
     boot.initrd.systemd.emergencyAccess = lib.mkDefault false;
 
     boot.initrd.systemd = {
-      enable = true;
       # The initrd systemd image does not infer these paths from the shell
       # text in ExecStart. The guard package and every command it puts on its
       # own PATH (its runtimeInputs) must be copied into the image explicitly.
