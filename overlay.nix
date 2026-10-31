@@ -227,20 +227,18 @@ final: prev:
   liuqinFpcOemSrc = ./pkgs/fingerprint/fpc-oem-src;
   liuqinFpcOemQcbor = final.callPackage ./pkgs/fingerprint/qcbor.nix { };
   liuqinFpcOemSupplicant = final.callPackage ./pkgs/fingerprint/qsee-supplicant.nix { };
-  # libfprint TOD module (fpc1264_oem) plus the FpPrint serializer; the nixpkgs
-  # fprintd module turns passthru.driverPath into FP_TOD_DRIVERS_DIR.
+  # libfprint TOD module (fpc1264_oem); the nixpkgs fprintd module turns
+  # passthru.driverPath into FP_TOD_DRIVERS_DIR.
   liuqinFpcOemTodDriver = final.callPackage ./pkgs/fingerprint/libfprint-tod-fpc1264-oem.nix {
     src = final.liuqinFpcOemSrc;
     libfprint-tod = final.liuqinFpcOemLibfprintTod;
   };
   # Userspace runtime bundle (QSEE clients, TEE/RPMB supplicant, PAM input and
-  # the Python entry points) under one prefix; it owns fpc-oem-print from the
-  # TOD package so every helper the entry points expect is colocated.
+  # Python entry points) under one prefix.
   liuqinFpcOem = final.callPackage ./pkgs/fingerprint/liuqin-fpc-oem.nix {
     src = final.liuqinFpcOemSrc;
     qcbor = final.liuqinFpcOemQcbor;
     supplicant = final.liuqinFpcOemSupplicant;
-    todDriver = final.liuqinFpcOemTodDriver;
   };
   # PAM module that derives the FPC1264 credential input when the account
   # authenticates with its password, so the TOD driver's enrolment runs from

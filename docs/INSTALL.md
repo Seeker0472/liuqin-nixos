@@ -320,21 +320,47 @@ partitioning.  Do not touch GPT or slot attributes for a reinstall.
 ## 7. Fingerprint (FPC1264)
 
 The sensor sits in the power button and the vendor trustlet does the matching;
-Linux only drives power/reset/IRQ and the QSEECOM TEE transport, and fprintd
-talks to a libfprint TOD driver that keeps one template per account.  The
-whole software stack is in this tree; static `fpcliu.mdt` and its segment files
-come from the OS2.0.4 asset repository. Gatekeeper/RPMB state remains per-device.
+Linux drives power/reset/IRQ and the QSEECOM TEE transport. fprintd alone owns
+the published prints. A per-account canonical `.gallery` stores one opaque
+database with up to five finger/template-ID pairs; existing single-finger
+prints remain readable until the first successful gallery enrolment. Static
+`fpcliu.mdt` and its segments come from the OS2.0.4 asset repository;
+Gatekeeper/RPMB state is per-device.
 
 ### What is verified, what is not
 
-- Previously verified (2026-10-06): enrolment from Settings, lock-screen unlock
-  through `gdm-fingerprint`, and the adaptive template update, using the prior
-  firmware source. That does not verify the OS2.0.4 firmware payloads.
-- The OS2.0.4 firmware files are source- and hash-verified in the separate
-  assets repository, but still require on-device validation.
-- Not implemented: more than one finger per account, credential sync after a
-  password change from the desktop (the CLI entry below exists), the OEM
-  acceptance-record flow, and fingerprint authentication for `su`/SSH.
+- Previously verified (2026-10-06): Settings enrolment, `gdm-fingerprint`
+  unlock and adaptive template updates with the prior firmware. This is not
+  evidence for the OS2.0.4 firmware or the redesigned enrolment transaction.
+- On OS2.0.4 (2026-10-30/31), a new Linux Gatekeeper credential passed
+  signed preflight. The first physical attempt failed at `sample` with no
+  accepted export or print; its uncertain marker was retained for audit.
+  The new TOD had imposed an exact `remaining=19..0` sequence that the
+  working native client never required and had obscured its own protocol
+  errors. After removing that assumption, `seeker` enrolled a
+  `right-index-finger` through fprintd; `fprintd-list` found it and
+  `fprintd-verify` returned `verify-match`. A later switch to the known-good
+  build also returned `verify-match` for that print.
+- The operator reported intermittent unresponsive presses during enrolment.
+  Kernel `fpc1020_poll()` consumes pending IRQs; the OEM client's post-arm
+  drain may drop an early real press. Removing it experimentally caused
+  sensor-setup IRQs to be captured instead, and verification returned
+  `verify-unknown-error`; that unsafe change was reverted. Captures rejected
+  by known positive TA statuses were also being misclassified because their
+  diagnostic is on stderr, not stdout. The classification fix still needs
+  hardware validation; the early-press UX limitation remains open.
+- In a root-private OS2 lab, the original one-template database and a new
+  two-template export had distinct stable IDs. Selective TA deletion produced
+  a new-only database; the new finger matched it and the old finger did not.
+  On 2026-10-31, a separate production `right-thumb` enrolment completed:
+  `fprintd-list seeker` showed both `right-thumb` and `right-index-finger`,
+  each returned `verify-match` on the combined gallery, and deliberately
+  pressing the index finger for `right-thumb` returned `verify-no-match`.
+  fprintd exited and restarted between checks; the canonical `.gallery` was
+  root-owned mode 0600, no pending export remained, and the old single-finger
+  file was preserved. Production deletion and cold-boot recovery remain open.
+- The multi-finger publisher refuses ambiguous exports rather than guessing
+  an ID. Fingerprint authentication for `su`/SSH is not enabled.
 
 ### Static firmware and account credential
 
@@ -345,6 +371,13 @@ onto the device. The asset repository contains proprietary payloads extracted
 from official OS2.0.4 images, not per-device credentials, Gatekeeper state or
 RPMB data.
 
+NixOS compresses its normal firmware projection to `*.zst`. The shared
+read-only `/run/firmware` mount therefore layers the immutable, uncompressed
+FPC package ahead of that projection; both `fpcliu.mdt` and `fpcliu.b00`
+must exist there. If either is missing, the OEM runtime stops before touching
+the trustlet or changing account metadata. Rebuilding only the Python client
+does not repair a running system's existing firmware mount.
+
 - **Account credential (once per account).** `sudo liuqin-fpc-credential
   --create <user>`: root, a local terminal (not SSH), and it authenticates the
   account password through its own PAM service. It creates the Gatekeeper
@@ -352,28 +385,57 @@ RPMB data.
   `/var/lib/liuqin-fingerprint/native/`. Run it once and never repeat it (the
   tool refuses to re-create an existing identity).
 
+An explicit reset of an abandoned Linux fingerprint identity abandons its
+old SID and makes its previously enrolled prints unusable. Remove only the
+verified account's root-private native state and stale fprintd prints, then
+run `sudo liuqin-fpc-credential --create <user>` from a local terminal.
+Deleting host files does **not** erase the corresponding Gatekeeper/RPMB
+record, so a rejected new credential must not be silently retried or bypassed.
+Never delete Android's credential state.
 
 ### Enrol and use
 
-1. Settings -> System -> Users -> pick the account -> **Fingerprint Login** ->
-   **Add**.  A polkit prompt asks for the password - that prompt is also what
-   authorises the trustlet, so use the account password.  Then press the sensor
-   firmly about 20 times, lifting between presses; the dialog shows progress and
-   "lift and reposition" hints.
-2. The row then reads Enabled, and the template lives in fprintd's store under
-   `/var/lib/fprint/<user>/fpc1264_oem/liuqin-fpc1264-oem/<finger>`.
-3. Lock the screen and unlock with the same finger (press ~1 s).  A tap is
-   rejected and retried automatically; a different finger reports a real
-   mismatch.  One finger per account: delete the existing finger in Settings
-   before enrolling another.
+1. Check private account metadata without invoking the TEE:
+   `sudo liuqin-fpc-credential --status <user>`. `account_mismatch` means the
+   stored username and the current account name differ even if the UID is
+   unchanged; do not hand-edit metadata or claim the old SID for a new print.
+   `missing_handle` needs explicit first-time provisioning.
+   `prepared_input_unexpired` only means its *metadata* has not expired; it
+   does not prove the boot-local key is still present.
+2. Settings -> System -> Users -> pick the account -> **Fingerprint Login** ->
+   **Add**. A password PAM/polkit prompt can prepare the one-use trustlet input;
+   if it is absent (for example, an autologin session), run
+   `sudo liuqin-fpc-credential --prepare-acceptance <user>` from a local
+   terminal first. Press the sensor repeatedly, lifting between presses.
+   Accepted samples, capture retries and lift prompts are distinct progress
+   events. A failed or cancelled operation is not a successful enrolment.
+3. fprintd publishes `/var/lib/fprint/<user>/fpc1264_oem/liuqin-fpc1264-oem/.gallery`.
+   The old per-finger file stays unchanged after migration but is no longer
+   authoritative. A root-private accepted database **and** ID inventory
+   survive a daemon crash before publication; an ambiguous TA/export result
+   is blocked from automatic retry. Check
+   `/var/lib/liuqin-fingerprint/pending/` and the failure code before manual
+   recovery; never delete an uncertainty marker blindly.
+4. Check `fprintd-list <user>` for both finger labels, verify each enrolled
+   finger separately (`fprintd-verify -f <finger> <user>`), then test screen
+   unlock. An unrelated finger must mismatch. Deleting a mapped finger uses
+   the TA's selective deletion and republishes the gallery atomically; a
+   failed deletion must not remove the surviving finger.
 
-Command-line equivalents (the operator acceptance path used during the port):
+Command-line path (the same fprintd publisher as Settings):
 
 ```sh
-sudo liuqin-fpc-enrol --enrol <user> <finger>       # or --enrol-prepared
-fprintd-verify <user>                               # in a session terminal
-sudo liuqin-fpc-credential --sync-password <user>   # after a password change
+sudo liuqin-fpc-enrol --enrol <user> <finger>          # prepares input, then fprintd
+sudo liuqin-fpc-enrol --enrol-prepared <user> <finger> # use existing one-use input
+fprintd-verify <user>                                 # in a session terminal
+sudo liuqin-fpc-credential --sync-password <user>     # after a password change
 ```
+
+If `--status <user>` reports `prepared_input_unexpired`, the metadata exists
+but the kernel key still needs validation at consumption: use
+`--enrol-prepared`, not `--enrol` (which attempts a second preparation).
+If it reports `export_uncertain`, **stop**; a root-private marker may reflect
+TEE changes that cannot be inferred from the absence of a saved print.
 
 ### Testing the kernel side without the daemon
 
@@ -400,15 +462,22 @@ them too.
 
 ### Debugging
 
-- `journalctl -b | grep -E 'OEM (verify|enrolment)|liuqin-fpc'` shows what the
-  TOD driver and the PAM module did, including the trustlet's per-sample
-  progress (`remaining=`) and its rejection reasons.
-- `busctl monitor --system --augment-creds=yes net.reactivated.Fprint` shows
-  who talks to fprintd and which `VerifyStatus` comes back: the fastest way to
-  tell a sensor problem (no match) from a session problem (no client).
-- fprintd reports a stored template it cannot rewrite as `verify-unknown-error`
-  without a journal line of its own; that is the 0600 constraint described in
-  `docs/PORTING-NOTES.md`, not a sensor fault.
+- `sudo liuqin-fpc-credential --status <user>` separates account mismatch,
+  missing handle, expired preparation and accepted-but-unpublished export
+  without reading a key or touching the trustlet.
+- Enrolment emits allowlisted `fpc_event=1 kind=ready|sample|retry|lift|finalizing|recovered|committed|phase|ta_reject`
+  events internally; the TOD driver maps them to fprintd progress and retry
+  notifications. `fpc_error=account_mismatch|prepared_input_missing|prepared_input_expired|busy|export_uncertain|runtime_failure|storage_failure`
+  distinguishes recovery actions without logging passwords, HATs or templates.
+  `phase=sample` identifies the last native command, **not** necessarily its
+  failure: a protocol error may have stopped the child. The driver's own
+  protocol error is now preserved; only a validated negative TA response is
+  reported as `ta_status=<number>`.
+- `journalctl -b` shows OEM enrol/verify failures; `busctl monitor --system
+  net.reactivated.Fprint` shows D-Bus `EnrollStatus`/`VerifyStatus`. A desktop
+  progress callback is not proof of disk persistence: fprintd reports success
+  only after its print file has been saved and synced. A failed pending-export
+  acknowledgement is retried when the stored print is loaded.
 
 ## 8. Traps (all measured)
 

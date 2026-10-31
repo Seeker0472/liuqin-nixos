@@ -32,17 +32,17 @@ def main():
     create = len(arguments) == 3 and arguments[0] == "--create"
     change = len(arguments) == 4 and arguments[0] == "--change-input"
     authorize = len(arguments) == 3 and arguments[0] in ("--auth-preflight", "--auth-preflight-renew")
-    enrol_existing = len(arguments) == 5 and arguments[0] == "--enrol-existing"
-    enrol = enrol_existing or len(arguments) == 4 and arguments[0] == "--enrol"
+    enrol_existing = len(arguments) in (5, 6) and arguments[0] == "--enrol-existing"
+    enrol = enrol_existing or len(arguments) in (4, 5) and arguments[0] == "--enrol"
     if os.geteuid() != 0 or not (create or change or authorize or enrol) or not state.is_absolute():
         print("usage (root): native_credentials.py [--state-dir ABSOLUTE_PRIVATE_DIRECTORY] "
               "--create NATIVE_UID DERIVED_INPUT_FD | --auth-preflight NATIVE_UID DERIVED_INPUT_FD | "
               "--change-input NATIVE_UID CURRENT_INPUT_FD DESIRED_INPUT_FD | "
-              "--enrol DATABASE NATIVE_UID DERIVED_INPUT_FD | "
-              "--enrol-existing INPUT_DATABASE OUTPUT_DATABASE NATIVE_UID DERIVED_INPUT_FD", file=sys.stderr)
+              "--enrol DATABASE [IDS_OUT] NATIVE_UID DERIVED_INPUT_FD | "
+              "--enrol-existing INPUT_DATABASE OUTPUT_DATABASE [IDS_OUT] NATIVE_UID DERIVED_INPUT_FD", file=sys.stderr)
         return 2
     try:
-        uid = int(arguments[3 if enrol_existing else 2 if enrol else 1], 10)
+        uid = int(arguments[-2] if enrol else arguments[1], 10)
         input_fd = int(arguments[-1], 10)
         if not 0x40000000 <= uid <= 0x7fffffff or input_fd < 3 or os.isatty(input_fd):
             raise ValueError("native UID or binary input FD invalid")
@@ -183,9 +183,10 @@ def main():
                   "new_credential_not_requested=1 sid_validation=TA_owned_and_client_checked")
             return 0
         if enrol_existing:
-            operation = ["--enrol-existing", *arguments[1:3], str(uid), str(handle_fd), str(input_fd)]
+            operation = ["--enrol-existing", *arguments[1:-2],
+                         str(uid), str(handle_fd), str(input_fd)]
         elif enrol:
-            operation = ["--enrol", arguments[1], str(uid), str(handle_fd), str(input_fd)]
+            operation = ["--enrol", *arguments[1:-2], str(uid), str(handle_fd), str(input_fd)]
         else:
             operation = [arguments[0], str(uid), str(handle_fd), str(input_fd)]
         return run_runtime([*command, *operation], (handle_fd, input_fd))

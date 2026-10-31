@@ -12,7 +12,7 @@
 # because the Python entry points resolve their own siblings through
 # Path(__file__).parent (authorize_oem.py -> fpc_build_info/qsee-gatekeeper,
 # oem_runtime.py -> qsee-supplicant + ufs-rpmb-provider/... + the clients,
-# enrol_publish.py -> fpc-oem-print, user_credentials.py -> pam-input).  That
+# user_credentials.py -> pam-input and enrol_transaction.py). That
 # prefix is exactly what the TOD driver and the NixOS module pass as
 # LIUQIN_FPC_OEM_RUNTIME, and the driver additionally requires it to be an
 # absolute, root-owned directory that is not group/other writable - a store
@@ -30,7 +30,6 @@
 , python3
 , pam
 , openssl
-, todDriver
 }:
 
 stdenv.mkDerivation (finalAttrs: {
@@ -96,7 +95,7 @@ stdenv.mkDerivation (finalAttrs: {
   runtimeScripts = [
     "acceptance_input"
     "authorize_oem"
-    "enrol_publish"
+    "enrol_transaction"
     "native_credential_preflight"
     "native_credentials"
     "oem_runtime"
@@ -119,20 +118,6 @@ stdenv.mkDerivation (finalAttrs: {
       $bundle/
     install -m755 build/clients/ufs-rpmb-provider/liuqin-rpmb-supplicant \
       $bundle/ufs-rpmb-provider/liuqin-rpmb-supplicant
-    # Built by pkgs/fingerprint/libfprint-tod-fpc1264-oem.nix: it shares the
-    # libfprint ABI of the TOD driver, so it is built and installed there and
-    # only placed next to the runtime here (enrol_publish.py expects a sibling).
-    install -m755 ${todDriver}/bin/fpc-oem-print $bundle/fpc-oem-print
-    # enrol_publish.py refuses to run unless the whole trusted bundle is
-    # present: it lstats $bundle, its own fpc-oem-print, user_credentials.py and
-    # $bundle/tod/libfprint-tod-fpc1264-oem.so, requiring a root-owned regular
-    # file (no symlink) with no group/other write bit.  The same copy is what
-    # fpc-oem-print is pointed at (FP_TOD_DRIVERS_DIR=$bundle/tod) while it
-    # serializes an accepted database, so this is a hard requirement of the
-    # component's layout, not a convenience.
-    install -Dm755 ${todDriver}/lib/libfprint-2/tod-1/libfprint-tod-fpc1264-oem.so \
-      $bundle/tod/libfprint-tod-fpc1264-oem.so
-
     for script in ${lib.concatStringsSep " " finalAttrs.runtimeScripts}; do
       sed -e '1s|^#!.*|#!${python3}/bin/python3|' \
         $client/$script.py > $bundle/$script.py
@@ -180,7 +165,7 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm644 $client/pam.d/liuqin-fpc-enrol $out/etc/pam.d/liuqin-fpc-enrol
 
     for required in fpc_build_info qsee-gatekeeper qsee-supplicant qsee-app-loader \
-                    pam-input fpc-oem-print tod/libfprint-tod-fpc1264-oem.so \
+                    pam-input \
                     pam.d/liuqin-fpc-enrol \
                     ufs-rpmb-provider/liuqin-rpmb-supplicant \
                     ${lib.concatStringsSep " " (map (s: s + ".py") finalAttrs.runtimeScripts)}; do

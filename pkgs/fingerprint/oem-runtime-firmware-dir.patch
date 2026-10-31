@@ -18,7 +18,7 @@ diff -r a/oem_runtime.py b/oem_runtime.py
      expected = json.loads((firmware / "SHA256.json").read_text())
      for name, digest in expected.items():
          if hashlib.sha256((firmware / name).read_bytes()).hexdigest() != digest:
-@@ -77,6 +77,16 @@
+@@ -77,6 +77,21 @@
      state.mkdir(mode=0o700, exist_ok=True)
      os.chmod(state, 0o700)
      parameter = Path("/sys/module/firmware_class/parameters/path")
@@ -29,13 +29,18 @@ diff -r a/oem_runtime.py b/oem_runtime.py
 +        print("shared firmware lookup is not ready; start liuqin-firmware-loader-path.service", file=sys.stderr)
 +        return 2
 +    for name, digest in expected.items():
-+        if hashlib.sha256((lookup / name).read_bytes()).hexdigest() != digest:
-+            print("OEM firmware is missing or shadowed in the shared lookup tree", file=sys.stderr)
++        try:
++            candidate = (lookup / name).read_bytes()
++        except FileNotFoundError:
++            print("OEM firmware is missing from the shared lookup tree", file=sys.stderr)
 +            return 2
-     if match:
++        if hashlib.sha256(candidate).hexdigest() != digest:
++            print("OEM firmware is shadowed in the shared lookup tree", file=sys.stderr)
++            return 2
+     if match or inventory_existing or split_added or gallery_delete:
          client_name = "fpc_build_info"
          client = [str(here / client_name), *arguments]
-@@ -104,7 +114,7 @@
+@@ -104,7 +119,7 @@
          cancelled = True
      signal.signal(signal.SIGTERM, cancel_operation)
      signal.signal(signal.SIGINT, cancel_operation)
@@ -44,7 +49,7 @@ diff -r a/oem_runtime.py b/oem_runtime.py
      with open(state / "operation.lock", "a+b") as operation, tempfile.TemporaryFile(mode="w+b", dir=state) as log:
          os.fchmod(operation.fileno(), 0o600)
          try:
-@@ -112,7 +122,8 @@
+@@ -112,7 +127,8 @@
          except BlockingIOError:
              print("oem_runtime=BUSY", file=sys.stderr)
              return 1
@@ -54,7 +59,7 @@ diff -r a/oem_runtime.py b/oem_runtime.py
          old_value = parameter.read_bytes()[:-1]
          listener = subprocess.Popen([*listener_command, "--state-dir", str(state / "ta-files")],
                                      stdout=log, stderr=log)
-@@ -134,7 +145,6 @@
+@@ -134,7 +150,6 @@
              else:
                  print("OEM listener readiness was not observed", file=sys.stderr)
                  return 1
@@ -62,7 +67,7 @@ diff -r a/oem_runtime.py b/oem_runtime.py
              duration = 900 if enrol else 180 if match else 70
              # Only the explicit opaque credential FDs cross this boundary.
              # authorize_oem keeps FPC open while Gatekeeper signs its challenge.
-@@ -164,7 +174,6 @@
+@@ -164,7 +179,6 @@
                  except subprocess.TimeoutExpired:
                      continue
          finally:

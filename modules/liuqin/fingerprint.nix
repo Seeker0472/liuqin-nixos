@@ -69,6 +69,32 @@ let
       exec python3 ${runtimeDir}/${script} "$@"
     '';
   };
+
+  # Both CLI and GNOME use fprintd's EnrollStart/EnrollStatus/store path.
+  # The CLI only prepares the one-use password input when asked to prompt.
+  enrolCli = pkgs.writeShellApplication {
+    name = "liuqin-fpc-enrol";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      if [ "$#" -ne 3 ] || { [ "$1" != "--enrol" ] && [ "$1" != "--enrol-prepared" ]; }; then
+        echo "usage (root): liuqin-fpc-enrol --enrol|--enrol-prepared USER FINGER" >&2
+        exit 2
+      fi
+      if [ "$EUID" -ne 0 ]; then
+        echo "liuqin-fpc-enrol requires root" >&2
+        exit 2
+      fi
+      mode=$1
+      username=$2
+      finger=$3
+      if [ "$mode" = "--enrol" ]; then
+        export LIUQIN_FPC_OEM_FIRMWARE=${pkgs.liuqinFpcFirmware}/lib/firmware
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${runtimeDir}/user_credentials.py --prepare-acceptance "$username"
+      fi
+      exec ${pkgs.liuqinFprintdOem}/bin/fprintd-enroll -f "$finger" "$username"
+    '';
+  };
 in
 {
   options.hardware.liuqin.fingerprint = {
@@ -232,8 +258,7 @@ in
     environment.systemPackages = [
       (mkCli "liuqin-fpc-oem-runtime" "oem_runtime.py"
         "Root-only OEM operation: probes, template inventory, match, or a credential/authorisation operation over the authenticated UFS RPMB listener.")
-      (mkCli "liuqin-fpc-enrol" "enrol_publish.py"
-        "Root-only authenticated enrolment: capture and export one OEM template and publish it into fprintd's file store (interactive terminal).")
+      enrolCli
       (mkCli "liuqin-fpc-credential" "user_credentials.py"
         "Root-only Gatekeeper credential creation and password re-synchronisation (interactive terminal).")
     ];

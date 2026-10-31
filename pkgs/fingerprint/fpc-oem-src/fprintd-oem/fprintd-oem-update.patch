@@ -1,5 +1,55 @@
 --- a/src/file_storage.c
 +++ b/src/file_storage.c
+@@ -134,4 +134,7 @@
+   gsize len;
+   int r;
+ 
++  if (g_strcmp0 (fp_print_get_driver (print), "fpc1264_oem") == 0)
++    return file_storage_oem_save (print);
++
+   base_store = file_storage_get_basestore_for_username (fp_print_get_username (print));
+@@ -210,6 +213,13 @@
+ 
+   g_autoptr(FpPrint) new = NULL;
+   int r;
+ 
++  if (g_strcmp0 (fp_device_get_driver (dev), "fpc1264_oem") == 0)
++    {
++      r = file_storage_oem_load (dev, finger, username, print);
++      if (r != -EAGAIN)
++        return r;
++    }
++
+   base_store = file_storage_get_basestore_for_username (username);
+ 
+@@ -230,6 +240,8 @@
+   if (!fp_print_compatible (new, dev))
+     return -EINVAL;
+ 
++  file_storage_oem_enroll_reconcile (new);
++
+   *print = g_steal_pointer (&new);
+   return 0;
+ }
+@@ -245,5 +257,9 @@
+ 
+   base_store = file_storage_get_basestore_for_username (username);
+ 
++  if (g_strcmp0 (fp_device_get_driver (dev), "fpc1264_oem") == 0 &&
++      file_storage_oem_discover (dev, username, NULL))
++    return file_storage_oem_delete (dev, finger, username);
++
+   path = get_path_to_print_dscv (dev, finger, base_store);
+ 
+@@ -325,4 +341,8 @@
+            username, storedir);
+ 
++  if (g_strcmp0 (fp_device_get_driver (dev), "fpc1264_oem") == 0 &&
++      file_storage_oem_discover (dev, username, &list))
++    return list;
++
+   list = scan_dev_storedir (storedir, list);
+ 
 @@ -366,3 +366,5 @@
    g_clear_pointer (&storage_path, g_free);
    return 0;
@@ -8,12 +58,21 @@
 +#include "oem-update.inc"
 --- a/src/file_storage.h
 +++ b/src/file_storage.h
-@@ -38,3 +38,5 @@
+@@ -38,3 +38,14 @@
  GSList *file_storage_discover_prints (FpDevice   *dev,
                                        const char *username);
  GSList *file_storage_discover_users (void);
 +
 +gboolean file_storage_print_data_update (FpPrint *, FpPrint *, GCancellable *, GError **);
++
++gboolean file_storage_oem_enroll_sync (FpPrint *);
++
++void file_storage_oem_enroll_reconcile (FpPrint *);
++
++int file_storage_oem_load (FpDevice *, FpFinger, const gchar *, FpPrint **);
++gboolean file_storage_oem_discover (FpDevice *, const gchar *, GSList **);
++int file_storage_oem_save (FpPrint *);
++int file_storage_oem_delete (FpDevice *, FpFinger, const gchar *);
 --- a/src/device.c
 +++ b/src/device.c
 @@ -32,6 +32,7 @@
@@ -56,3 +115,41 @@
  }
  
  static void
+@@ -2048,2 +2065,5 @@
+       r = store.print_data_save (print);
++      if (r == 0 && g_strcmp0 (fp_print_get_driver (print), "fpc1264_oem") == 0 &&
++          !file_storage_oem_enroll_sync (print))
++        r = -EIO;
+       if (r != 0)
+@@ -2103,9 +2123,12 @@
+       /* Retry or clean up. */
+       if (retry)
+         {
+           g_autoptr(GPtrArray) all_prints = NULL;
++          g_autoptr(SessionData) session = session_data_get (priv);
+ 
+-          all_prints = load_all_prints (rdev);
++          all_prints = g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") == 0
++            ? load_user_prints (rdev, session->username)
++            : load_all_prints (rdev);
+           fp_device_identify (priv->dev,
+                               all_prints,
+                               priv->current_cancellable,
+@@ -2226,7 +2249,8 @@
+   priv->current_action = ACTION_ENROLL;
+ 
+   if (fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_STORAGE) &&
+       !fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_STORAGE_LIST) &&
++      g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") != 0 &&
+       is_first_enrollment (rdev))
+     {
+       g_autoptr(GError) clear_err = NULL;
+@@ -2239,5 +2263,7 @@
+   if (fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_IDENTIFY))
+     {
+-      g_autoptr(GPtrArray) all_prints = load_all_prints (rdev);
++      g_autoptr(GPtrArray) all_prints =
++        g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") == 0
++        ? load_user_prints (rdev, session->username) : load_all_prints (rdev);
+ 
+       /* We (now) have the policy that there must be no duplicate prints.

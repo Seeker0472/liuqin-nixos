@@ -1,75 +1,49 @@
-# FPC1264 OEM TOD and final acceptance
+# FPC1264 OEM TOD driver
 
-The public [user guide](../../../../../../docs/FINGERPRINT.md) records support and
-acceptance scope. The installed candidate is identified by its CANDIDATE.json
-and SHA256.json, not by a host-local development path. The private installed
-bundle is /usr/local/lib/liuqin-fpc-oem; /run staging and earlier milestones do
-not identify a new candidate.
+The NixOS package builds `fpc1264-oem.c` against the system's libfprint-tod.
+The adapter operates the sensor and stages opaque OEM data, but never writes
+fprintd's print store. fprintd publishes each account's canonical `.gallery`
+print, with `(uaya(uu))` version 2 data: an opaque database and up to five
+unique finger/template-ID pairs. Existing `(uay)` version 1 prints remain
+readable and verifiable without rewriting them.
 
-The adapter uses the tablet's existing libfprint 1.95.1+tod1 ABI and explicit
-TOD discovery. Build with `tools/build-tod.sh` on that ABI. It does not replace
-the system libfprint. A version-1 RAW `(uay)` FpPrint holds exactly one opaque
-OEM database. The normal match path initializes hardware auth each session,
-loads the database, requires one template, identifies and checks the returned
-match-HAT envelope. It contains no host software biometric matcher.
+Enrolment uses `user_credentials.py --enrol-prepared`: the password-derived
+input must first have been prepared through a configured PAM service or
+`liuqin-fpc-credential --prepare-acceptance`. The worker writes an uncertainty
+marker before calling the FPC trustlet, then a private accepted export and
+finger-bound marker after successful END_ENROL. The driver reports only
+allowlisted versioned sample/retry/lift/finalization events to libfprint.
+Child exit, stdout EOF and the committed event must all agree before it
+returns an opaque print. A cancellation cannot publish an incomplete result.
 
-The existing fprintd enrol API supplies no derived-input FD. Its enrol callback
-therefore reports NOT_SUPPORTED. Authenticated enrolment uses the supplied
-PAM/native credential provider, two fresh challenge/HAT rounds in one FPC
-session, accepted END, one-template inventory and opaque database export.
-`fpc-oem-print` serializes caller metadata and the accepted database, checking
-deserialize/compatibility/equality in process. `enrol_publish.py` publishes
-exclusively to the normal private fprintd file store. Accepted export survives
-publication failure in the pending directory; uncertain export is preserved
-without automatically repeating enrolment. Current scope is one finger/user.
+Intermediate `remaining` values are vendor feedback, not a promised exact
+19-to-0 sequence. Only the native final-sample event followed by the accepted
+export may complete an enrolment; bounded progress and the driver's own
+protocol errors remain visible without forwarding raw child output.
 
-The adapter now requests UPDATED_DATABASE on genuine matches. Completed,
-cleaned success may replace the in-memory enrolled print and attach its original
-clone as qdata. The private fprintd patch under `src/fingerprint/fprintd-oem`
-commits adaptation in the framework file store before VerifyStatus success.
-It compares the stored baseline under the common enrol/store lock, fsyncs the
-new file, retains an old-file link and commits atomically. Storage errors reject
-authentication success; miss, cancellation and inconclusive output never save.
-Build that private daemon with `tools/build-fprintd-oem.sh`.
+If fprintd crashes after the trustlet accepts a template, the next enrolment
+can recover the accepted export and private ID inventory without calling the
+trustlet again. fprintd publishes and syncs the gallery, then acknowledges
+both committed outputs. An incomplete or uncertain export is not automatically
+retried or deleted.
 
-Current actual checks passed target ARM64 builds, genuine PAM account checks,
-first native credential creation, same-input existing credential update with
-internal SID comparison, two signatures accepted by FPC in one session, and
-cross-process root kernel-keyring input consumption with another fresh signed
-authorization. The real confined private daemon on the system D-Bus passed
-GetDevices/Polkit Claim/Release. On the recorded desktop-r3 boot, one real OEM
-print, same-finger matching, daemon-reload matching, other-finger rejection and
-user-observed GNOME unlock passed. Contact-position sensitivity and unlock
-stutter remain. See the public user guide for the recorded device scope; compilation does not
-establish reliability or latency.
+To append a finger, the adapter reads the canonical print (or the single
+legacy print when no canonical gallery exists) without modifying it, stages
+the private input database and requests a private 28-byte inventory from the
+credential worker. It rejects conflicting fingers, a sixth template, duplicate
+or missing template IDs and any change to the previous finger/ID mapping.
+Only fprintd publishes the returned replacement gallery. Canonical presence
+is authoritative; a corrupt or empty canonical file never triggers legacy
+fallback.
 
-`fprintd-fpc1264-oem.conf` is installed: the private daemon ExecStart, explicit
-TOD discovery, shared RuntimeDirectoryPreserve=yes, firmware-path exception and
-observed FPC/TEE/UFS nodes retain the vendor confinement. It depends on the late
-stable-module service after desktop/SSH/rotation startup. The system daemon
-stays masked until the final real same/reloaded/other-finger acceptance passes.
-Password PAM remains unchanged; existing GDM fingerprint integration is used.
+Verification of version 2 prints consumes the authenticated template ID and
+accepts only the claimed finger's ID. Identification makes one sensor scan
+against a claimed user's gallery, then selects the corresponding FpPrint by
+the returned ID. Both paths can attach an adapted database to the matching
+print for fprintd's durable compare-and-replace update; a failed or cancelled
+match never updates the stored gallery. Version 1 verification continues to
+use its existing single-finger match path. Galleries belonging to separate
+users are not combined for identification.
 
-The installed application “指纹最终验收” runs the narrowly scoped privileged
-`acceptance.py`. It reuses an accepted print/export if present, otherwise does
-one normal physical enrolment, same-finger verification, daemon-reload/same-
-finger verification, then other-finger rejection before activating desktop
-fprintd. The caller lifts its finger and confirms the stage before each Verify.
-An 18-hour boot-local, one-use root kernel-keyring input can be prepared only
-after real PAM and signed preflight; it is revoked on use and never written to
-disk. No waiting collection process is needed. Expiry/reboot requires normal
-PAM input again. `--recover` masks fingerprint authentication and retains data.
-
-After a Linux password change, the explicit `user_credentials.py --sync-password`
-entry authenticates the new/current Linux password and obtains the prior
-fingerprint password through hidden tty prompts. Separate sealed FDs update the
-existing Gatekeeper handle; failures preserve the prior file and uncertain
-output. No fallback identity creation or template reset is performed.
-
-The stable kernel remains a temporary `fastboot boot` image. Ordinary reboot
-returns the installed kernel; temporarily boot the previously accepted support
-image with its exact matching module. The late module service checks the
-candidate identity after the desktop/network/rotation services. No partition
-is flashed. Kernel identity and public component hashes are in the candidate; voltage stays 2960000–3008000 microvolts. The specific retry branch, next cold start, suspend/resume and sustained
-reliability still need their own evidence. Unknown historical GENI memory corruption is not
-declared fixed.
+The OS2 lab established distinct old/new template IDs, selective deletion,
+and isolated-database match/mismatch before enabling the multi-finger path.

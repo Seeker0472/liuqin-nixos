@@ -105,6 +105,12 @@ class FirmwareTests(unittest.TestCase):
         result, _, calls = self.invoke()
         self.assertEqual((result, calls), (2, 0))
 
+    def test_missing_uncompressed_firmware_fails_before_starting_listener(self):
+        (self.lookup / "fpcliu.mdt").unlink()
+        result, output, calls = self.invoke()
+        self.assertEqual((result, calls), (2, 0))
+        self.assertIn("OEM firmware is missing from the shared lookup tree", output)
+
 
 if __name__ == "__main__":
     unittest.main()

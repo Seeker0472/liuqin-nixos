@@ -13,8 +13,12 @@ in
   config = lib.mkIf cfg.enable (
     let
       firmwareTree = pkgs.liuqinFirmware;
+      # The NixOS firmware projection compresses packages into *.zst, but the
+      # QSEE loader and its hash check open fpcliu.* by their uncompressed names.
+      # Put the immutable OEM asset directory first in the shared read-only
+      # union; the rest of the system firmware keeps its normal projection.
       firmwareMountOptions =
-        "ro,lowerdir=${firmwareTree}/lib/firmware:/var/lib/firmware:/run/current-system/firmware";
+        "ro,lowerdir=${lib.optionalString cfg.fingerprint.enable "${pkgs.liuqinFpcFirmware}/lib/firmware:"}${firmwareTree}/lib/firmware:/var/lib/firmware:/run/current-system/firmware";
     in
     {
       # The driver reports ABS_MT_POSITION in the panel's native portrait frame

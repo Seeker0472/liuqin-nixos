@@ -656,6 +656,115 @@ out:
 	return result;
 }
 
+/* The stock HAL copies up to five IDs from 11/8 at words[3..7]. Keep IDs
+ * inside this process; only counts and validation results enter the journal. */
+static int read_finger_ids(int fd, uint32_t session, uint32_t ids[5], uint32_t *count)
+{
+	struct shared payload = {};
+	int result = -1;
+
+	if (allocate_shared(fd, 112, &payload))
+		return -1;
+	uint32_t *words = payload.address;
+	words[0] = 11;
+	words[1] = 8;
+	words[2] = 5;
+	if (invoke_payload(fd, session, &payload) ||
+	    words[0] != 11 || words[1] != 8 || words[2] > 5)
+		goto out;
+	for (uint32_t i = 0; i < words[2]; i++) {
+		if (!words[i + 3])
+			goto out;
+		for (uint32_t j = 0; j < i; j++)
+			if (words[i + 3] == ids[j])
+				goto out;
+		ids[i] = words[i + 3];
+	}
+	*count = words[2];
+	result = 0;
+out:
+	if (result)
+		fprintf(stderr, "template_ids_invalid=1\n");
+	explicit_bzero(payload.address, payload.size);
+	munmap(payload.address, payload.size);
+	return result;
+}
+
+/* Binary ID results cross only root-owned 0700 directories, never stdout or
+ * command-line arguments. Enrolment outputs are durable; scan IDs are
+ * transient and avoid fsync on the verification hot path. */
+static int write_private_binary(const char *path, const void *data,
+				size_t length, int durable)
+{
+	char parent[PATH_MAX];
+	const char *slash = strrchr(path, '/');
+	const uint8_t *bytes = data;
+	struct stat info;
+	int dirfd = -1, fd = -1, result = -1, created = 0;
+
+	if (path[0] != '/' || !slash || slash == path || !slash[1] ||
+	    (size_t)(slash - path) >= sizeof(parent))
+		return -1;
+	memcpy(parent, path, (size_t)(slash - path));
+	parent[slash - path] = '\0';
+	dirfd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	if (dirfd < 0 || fstat(dirfd, &info) || !S_ISDIR(info.st_mode) ||
+	    info.st_uid != 0 || (info.st_mode & 0777) != 0700)
+		goto out;
+	fd = openat(dirfd, slash + 1, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
+		goto out;
+	created = 1;
+	for (size_t offset = 0; offset < length;) {
+		ssize_t count = write(fd, bytes + offset, length - offset);
+		if (count < 0 && errno == EINTR)
+			continue;
+		if (count <= 0)
+			goto out;
+		offset += (size_t)count;
+	}
+	if (durable && fsync(fd))
+		goto out;
+	if (close(fd)) {
+		fd = -1;
+		goto out;
+	}
+	fd = -1;
+	if (durable && fsync(dirfd))
+		goto out;
+	result = 0;
+out:
+	if (fd >= 0)
+		close(fd);
+	if (result && created)
+		(void) unlinkat(dirfd, slash + 1, 0);
+	if (dirfd >= 0)
+		close(dirfd);
+	if (result)
+		fprintf(stderr, "private_identity_output_failed=1\n");
+	return result;
+}
+
+/* Stock HAL fpc_tee_delete_template uses 11/9 and the ID at word 2. Never
+ * delete until both input galleries prove a unique, unchanged old ID. */
+static int delete_template(int fd, uint32_t session, uint32_t id)
+{
+	struct shared payload = {};
+	int result = -1;
+
+	if (!id || allocate_shared(fd, 112, &payload))
+		return -1;
+	uint32_t *words = payload.address;
+	words[0] = 11;
+	words[1] = 9;
+	words[2] = id;
+	if (!invoke_payload(fd, session, &payload))
+		result = 0;
+	explicit_bzero(payload.address, payload.size);
+	munmap(payload.address, payload.size);
+	return result;
+}
+
 static int wait_sensor_irq(int power_fd, const char *phase, int timeout_ms)
 {
 	struct pollfd event = { .fd = power_fd, .events = POLLIN };
@@ -699,6 +808,8 @@ static int clear_pending_irq(int power_fd, const char *phase)
 /* HAL capture_image(mode=1) calls wait_finger_down with qualifier=0:
  * 10/3, IRQ, then capture. Qualification stays inside the capture command;
  * an extra 10/11 here would consume the IRQ before capture can inspect it.
+ * The post-setup drain filters IRQs raised by arming the sensor; never
+ * treat those as a real finger-down capture.
  */
 static int wait_finger_down(int fd, uint32_t session, int power_fd)
 {
@@ -904,6 +1015,126 @@ out:
 	return result;
 }
 
+/* Inspect an explicitly supplied private gallery; unlike the ambient
+ * --template-inventory probe this first imports the requested database. */
+static int inventory_existing(int fd, uint32_t session, const char *database)
+{
+	uint32_t count;
+
+	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
+	    load_database(fd, session, database) ||
+	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
+	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
+	    template_inventory(fd, session, &count))
+		return 1;
+	printf("inventory_existing=OK template_count=%u capture_not_requested=1\n", count);
+	return 0;
+}
+
+/* Split a second template from a two-template gallery in a private lab.
+ * Both source databases remain untouched. Deletion affects the loaded TA
+ * state, so require proof that the old ID survived the merge and that the
+ * new ID is distinct before invoking 11/9. Export remains exclusive.
+ */
+static int split_added_template(int fd, uint32_t session,
+				const char *original, const char *merged, const char *output)
+{
+	uint32_t old[5] = {}, both[5] = {}, after[5] = {};
+	uint32_t count = 0, new_id = 0;
+	int result = 1;
+
+	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
+	    load_database(fd, session, original) ||
+	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
+	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
+	    read_finger_ids(fd, session, old, &count) || count != 1) {
+		fprintf(stderr, "gallery_split_refused=original_must_have_one_template\n");
+		goto out;
+	}
+	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
+	    load_database(fd, session, merged) ||
+	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
+	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
+	    read_finger_ids(fd, session, both, &count) || count != 2 ||
+	    (both[0] != old[0] && both[1] != old[0])) {
+		fprintf(stderr, "gallery_split_refused=merged_ids_not_original_plus_one\n");
+		goto out;
+	}
+	new_id = both[0] == old[0] ? both[1] : both[0];
+	printf("gallery_split_ids=distinct old_id_preserved=1\n");
+	if (delete_template(fd, session, old[0]) ||
+	    read_finger_ids(fd, session, after, &count) ||
+	    count != 1 || after[0] != new_id) {
+		fprintf(stderr, "gallery_split_refused=selective_delete_not_proven output_not_written=1\n");
+		goto out;
+	}
+	if (store_database(fd, session, output))
+		goto out;
+	printf("gallery_split=OK new_template_only=1 original_file_unchanged=1\n");
+	result = 0;
+out:
+	explicit_bzero(old, sizeof(old));
+	explicit_bzero(both, sizeof(both));
+	explicit_bzero(after, sizeof(after));
+	return result;
+}
+
+/* A deletion commits only a new, exclusive database after the TA proves
+ * every other ID survived. The incoming ID stays in an anonymous FD. */
+static int delete_from_gallery(int fd, uint32_t session,
+			       const char *database, const char *output, int id_fd)
+{
+	uint32_t before[5] = {}, after[5] = {}, requested = 0;
+	uint32_t count = 0, remaining = 0;
+	uint8_t *bytes = (uint8_t *)&requested, extra;
+	int result = 1, found = 0;
+
+	for (size_t offset = 0; offset < sizeof(requested);) {
+		ssize_t received = read(id_fd, bytes + offset, sizeof(requested) - offset);
+		if (received < 0 && errno == EINTR)
+			continue;
+		if (received <= 0)
+			goto out;
+		offset += (size_t)received;
+	}
+	if (read(id_fd, &extra, 1) != 0 || !requested)
+		goto out;
+	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
+	    load_database(fd, session, database) ||
+	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
+	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
+	    read_finger_ids(fd, session, before, &count) || !count)
+		goto out;
+	for (uint32_t i = 0; i < count; i++)
+		found += before[i] == requested;
+	if (found != 1) {
+		fprintf(stderr, "gallery_delete_refused=template_not_present\n");
+		goto out;
+	}
+	if (delete_template(fd, session, requested) ||
+	    read_finger_ids(fd, session, after, &remaining) ||
+	    remaining != count - 1)
+		goto out;
+	for (uint32_t i = 0; i < remaining; i++) {
+		found = 0;
+		for (uint32_t j = 0; j < count; j++)
+			found += after[i] == before[j] && after[i] != requested;
+		if (found != 1)
+			goto out;
+	}
+	if (store_database(fd, session, output))
+		goto out;
+	printf("gallery_delete=OK remaining_templates=%u input_unchanged=1\n", remaining);
+	result = 0;
+out:
+	if (result)
+		fprintf(stderr, "gallery_delete=FAILED output_not_published=1\n");
+	explicit_bzero(before, sizeof(before));
+	explicit_bzero(after, sizeof(after));
+	explicit_bzero(&requested, sizeof(requested));
+	return result;
+}
+
 /* Original HAL set_auth_challenge is 3/1, with the 64-bit value at +8.
  * This is a verification operation ID, separate from the enrol 3/2 challenge.
  */
@@ -940,20 +1171,25 @@ static int set_auth_challenge(int fd, uint32_t session, uint64_t *challenge)
  * statistics at +12. Neither identifiers nor auxiliary data enter logs.
  * The TA's auxiliary template index at +44 is not the HAL callback ID.
  */
-static int identify_finger(int fd, uint32_t session, int *matched)
+static int identify_finger(int fd, uint32_t session, int *matched, uint32_t *identity)
 {
 	struct shared payload = {};
 	int status = -1;
 
 	*matched = 0;
+	if (identity)
+		*identity = 0;
 	if (allocate_shared(fd, PAYLOAD_SIZE, &payload))
 		return -1;
 	uint32_t *words = payload.address;
 	words[0] = 11;
 	words[1] = 4;
 	status = invoke_payload(fd, session, &payload);
-	if (!status)
+	if (!status) {
 		*matched = words[2] != 0;
+		if (identity)
+			*identity = words[2];
+	}
 	printf("identify_app_status=%d candidate_present=%u\n", status, *matched);
 	explicit_bzero(payload.address, payload.size);
 	munmap(payload.address, payload.size);
@@ -1000,9 +1236,9 @@ out:
  */
 static int match_existing(int fd, uint32_t session, int power_fd,
 			  const char *database, const char *updated_database,
-			  int single_template)
+			  int single_template, const char *identity_output)
 {
-	uint32_t count = 0, changed = 0;
+	uint32_t count = 0, changed = 0, matched_id = 0, ids[5] = {}, id_count = 0;
 	uint64_t challenge;
 	int status, matched, auth_status = 0;
 
@@ -1020,6 +1256,11 @@ static int match_existing(int fd, uint32_t session, int power_fd,
 		fprintf(stderr, "match_unavailable=single_template_database_required touch_not_collected=1\n");
 		return 1;
 	}
+	if (identity_output &&
+	    (read_finger_ids(fd, session, ids, &id_count) || id_count != count)) {
+		fprintf(stderr, "match_unavailable=invalid_template_id_inventory touch_not_collected=1\n");
+		return 1;
+	}
 	if (set_auth_challenge(fd, session, &challenge) ||
 	    wait_finger_down(fd, session, power_fd))
 		return 1;
@@ -1028,9 +1269,18 @@ static int match_existing(int fd, uint32_t session, int power_fd,
 		fprintf(stderr, "match_incomplete=capture_rejected app_status=%d\n", status);
 		return 1;
 	}
-	status = identify_finger(fd, session, &matched);
+	status = identify_finger(fd, session, &matched, &matched_id);
 	if (status < 0)
 		return 1;
+	if (identity_output && !status && matched) {
+		uint32_t i = 0;
+		while (i < id_count && ids[i] != matched_id)
+			i++;
+		if (i == id_count) {
+			fprintf(stderr, "match_incomplete=identity_not_in_loaded_database\n");
+			return 1;
+		}
+	}
 	if (!status) {
 		if (matched)
 			auth_status = get_auth_result(fd, session, challenge);
@@ -1041,6 +1291,22 @@ static int match_existing(int fd, uint32_t session, int power_fd,
 	} else {
 		fprintf(stderr, "match_incomplete=identify_status app_status=%d\n", status);
 		return 1;
+	}
+	if (changed && identity_output) {
+		uint32_t after[5] = {}, after_count = 0;
+		if (read_finger_ids(fd, session, after, &after_count) || after_count != id_count) {
+			fprintf(stderr, "match_incomplete=adaptive_gallery_identity_changed\n");
+			return 1;
+		}
+		for (uint32_t i = 0; i < id_count; i++) {
+			unsigned int found = 0;
+			for (uint32_t j = 0; j < after_count; j++)
+				found += ids[i] == after[j];
+			if (found != 1) {
+				fprintf(stderr, "match_incomplete=adaptive_gallery_identity_changed\n");
+				return 1;
+			}
+		}
 	}
 	if (changed) {
 		printf("database_update_required=1\n");
@@ -1059,6 +1325,9 @@ static int match_existing(int fd, uint32_t session, int power_fd,
 		fprintf(stderr, "match_result=candidate_without_auth_result desktop_authentication=disabled\n");
 		return 1;
 	}
+	if (identity_output && matched &&
+	    write_private_binary(identity_output, &matched_id, sizeof(matched_id), 0))
+		return 1;
 	printf("match_result=%s desktop_authentication=disabled\n", matched ? "matched" : "not_matched");
 	return matched ? 0 : 3;
 }
@@ -1078,15 +1347,21 @@ int main(int argc, char **argv)
 	int keymaster_probe = argc == 2 && !strcmp(argv[1], "--keymaster-info");
 	int auth_renew_preflight = argc == 4 && !strcmp(argv[1], "--auth-preflight-renew");
 	int auth_preflight = auth_renew_preflight || ((argc == 3 || argc == 4) && !strcmp(argv[1], "--auth-preflight"));
-	int bio_existing = argc == 6 && !strcmp(argv[1], "--bio-pipeline-existing");
+	int bio_existing = (argc == 6 || argc == 7) && !strcmp(argv[1], "--bio-pipeline-existing");
 	int bio_pipeline = bio_existing || (argc >= 2 && !strcmp(argv[1], "--bio-pipeline"));
 	int bio_prepare = argc == 2 && !strcmp(argv[1], "--bio-prepare");
 	int db_export_empty = argc == 3 && !strcmp(argv[1], "--db-export-empty");
 	int db_import_export = argc == 4 && !strcmp(argv[1], "--db-import-export");
 	int inventory = argc == 2 && !strcmp(argv[1], "--template-inventory");
+	int inventory_existing_db = argc == 3 && !strcmp(argv[1], "--inventory-existing");
+	int split_added = argc == 5 && !strcmp(argv[1], "--split-added-template");
+	int gallery_match = (argc == 4 || argc == 5) && !strcmp(argv[1], "--match-gallery");
+	int gallery_delete = argc == 5 && !strcmp(argv[1], "--delete-template");
 	int match_single = (argc == 3 || argc == 4) && !strcmp(argv[1], "--match-single");
-	int match = match_single || ((argc == 3 || argc == 4) && !strcmp(argv[1], "--match-existing"));
+	int match = gallery_match || match_single || ((argc == 3 || argc == 4) && !strcmp(argv[1], "--match-existing"));
 	const char *db_path = bio_existing ? argv[3] : argc >= 3 ? argv[2] : "template.db";
+	const char *identity_output_path = bio_existing ? (argc == 7 ? argv[6] : NULL) :
+					   bio_pipeline && argc == 6 ? argv[5] : NULL;
 	int hat_fd = -1;
 	int challenge_fd = -1;
 	int loader_fd = -1;
@@ -1094,25 +1369,30 @@ int main(int argc, char **argv)
 	int power_fd = -1;
 	int result = 1;
 	int sensor_initialized = 0;
+	uint32_t previous_ids[5] = {}, previous_count = 0;
+	uint32_t gallery_ids[7] = {};
 
-	if (argc > 6 || (argc > 1 && !init_sensor && !init_bio && !capture_once &&
+	if (argc > 7 || (argc > 1 && !init_sensor && !init_bio && !capture_once &&
 			 !capture_after_enter && !capture_wait && !sensortest && !sensor_otp &&
 			 !finger_lost_check && !hw_auth_probe && !keymaster_probe &&
 			 !auth_preflight && !bio_pipeline &&
-			 !bio_prepare && !db_export_empty && !db_import_export && !inventory && !match)) {
+			 !bio_prepare && !db_export_empty && !db_import_export && !inventory &&
+			 !inventory_existing_db && !split_added && !gallery_delete && !match)) {
 		fprintf(stderr,
 			"usage: %s [--init-sensor|--init-bio|--capture-once|--capture-after-enter|--capture-wait|"
 			"--sensortest|--sensor-otp|--finger-lost-check|--keymaster-info|--hw-auth-probe|"
-			"--auth-preflight HAT_FD [CHALLENGE_FD]|--auth-preflight-renew HAT_FD CHALLENGE_FD|--bio-prepare|--bio-pipeline DATABASE HAT_FD CHALLENGE_FD|"
-			"--bio-pipeline-existing INPUT_DATABASE OUTPUT_DATABASE HAT_FD CHALLENGE_FD|"
-			"--db-export-empty DATABASE|--db-import-export INPUT OUTPUT|--template-inventory|"
-			"--match-existing DATABASE [UPDATED_DATABASE]|--match-single DATABASE [UPDATED_DATABASE]]\n",
+			"--auth-preflight HAT_FD [CHALLENGE_FD]|--auth-preflight-renew HAT_FD CHALLENGE_FD|--bio-prepare|--bio-pipeline DATABASE HAT_FD CHALLENGE_FD [IDS_OUT]|"
+			"--bio-pipeline-existing INPUT_DATABASE OUTPUT_DATABASE HAT_FD CHALLENGE_FD [IDS_OUT]|"
+			"--db-export-empty DATABASE|--db-import-export INPUT OUTPUT|--template-inventory|--inventory-existing DATABASE|"
+			"--split-added-template ORIGINAL MERGED NEW_DATABASE|"
+			"--match-existing DATABASE [UPDATED_DATABASE]|--match-single DATABASE [UPDATED_DATABASE]|"
+			"--match-gallery DATABASE ID_OUT [UPDATED_DATABASE]|--delete-template DATABASE OUTPUT_DATABASE ID_FD]\n",
 			argv[0]);
 		return 2;
 	}
 	setvbuf(stdout, NULL, _IONBF, 0);
-	if (bio_pipeline && !bio_existing && argc != 5) {
-		fprintf(stderr, "bidirectional_signed_HAT_provider_required=1 usage: %s --bio-pipeline DATABASE HAT_FD CHALLENGE_FD\n",
+	if (bio_pipeline && !bio_existing && argc != 5 && argc != 6) {
+		fprintf(stderr, "bidirectional_signed_HAT_provider_required=1 usage: %s --bio-pipeline DATABASE HAT_FD CHALLENGE_FD [IDS_OUT]\n",
 			argv[0]);
 		return 2;
 	}
@@ -1123,6 +1403,52 @@ int main(int argc, char **argv)
 		 */
 		if (!lstat(db_path, &output_info) || errno != ENOENT) {
 			fprintf(stderr, "enrol_output_invalid=exclusive_new_path_required existing_database_preserved=1\n");
+			return 2;
+		}
+	}
+	if (identity_output_path) {
+		struct stat info;
+		if (identity_output_path[0] != '/' ||
+		    (bio_existing && !strcmp(identity_output_path, argv[2])) ||
+		    !strcmp(identity_output_path, db_path) ||
+		    !lstat(identity_output_path, &info) || errno != ENOENT) {
+			fprintf(stderr, "enrol_identity_output_invalid=exclusive_private_path_required\n");
+			return 2;
+		}
+	}
+	if (split_added) {
+		struct stat info;
+		char parent[PATH_MAX];
+		const char *slash = strrchr(argv[4], '/');
+		int parent_fd;
+
+		if (argv[2][0] != '/' || argv[3][0] != '/' || argv[4][0] != '/' ||
+		    !strcmp(argv[2], argv[3]) || !strcmp(argv[2], argv[4]) ||
+		    !strcmp(argv[3], argv[4]) || !slash || !slash[1] ||
+		    slash == argv[4] || (size_t)(slash - argv[4]) >= sizeof(parent)) {
+			fprintf(stderr, "gallery_split_refused=invalid_private_paths\n");
+			return 2;
+		}
+		for (int i = 2; i <= 3; i++)
+			if (lstat(argv[i], &info) || !S_ISREG(info.st_mode) ||
+			    info.st_uid != 0 || (info.st_mode & 0777) != 0600 ||
+			    info.st_size <= 0 || info.st_size > 16 * 1024 * 1024) {
+				fprintf(stderr, "gallery_split_refused=invalid_private_input\n");
+				return 2;
+			}
+		memcpy(parent, argv[4], (size_t)(slash - argv[4]));
+		parent[slash - argv[4]] = '\0';
+		parent_fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+		if (parent_fd < 0 || fstat(parent_fd, &info) || !S_ISDIR(info.st_mode) ||
+		    info.st_uid != 0 || (info.st_mode & 0777) != 0700) {
+			if (parent_fd >= 0)
+				close(parent_fd);
+			fprintf(stderr, "gallery_split_refused=invalid_private_output_directory\n");
+			return 2;
+		}
+		close(parent_fd);
+		if (!lstat(argv[4], &info) || errno != ENOENT) {
+			fprintf(stderr, "gallery_split_refused=output_must_be_new\n");
 			return 2;
 		}
 	}
@@ -1171,7 +1497,8 @@ int main(int argc, char **argv)
 	if (init_sensor || init_bio || capture_once || capture_after_enter || capture_wait ||
 	    sensortest || sensor_otp || finger_lost_check || hw_auth_probe || auth_preflight ||
 	    bio_pipeline || bio_prepare ||
-	    db_export_empty || db_import_export || match) {
+	    db_export_empty || db_import_export || inventory_existing_db ||
+	    split_added || gallery_delete || match) {
 		power_fd = open("/dev/fpc1020", O_RDWR | O_CLOEXEC);
 		if (power_fd < 0) {
 			perror("power/reset fpc1020");
@@ -1207,9 +1534,38 @@ int main(int argc, char **argv)
 		result = 0;
 		goto out;
 	}
+	if (inventory_existing_db) {
+		result = inventory_existing(client_fd, client_session, argv[2]);
+		goto out;
+	}
+	if (split_added) {
+		result = split_added_template(client_fd, client_session,
+					      argv[2], argv[3], argv[4]);
+		goto out;
+	}
+	if (gallery_delete) {
+		struct stat info;
+		char *end;
+		long value;
+
+		errno = 0;
+		value = strtol(argv[4], &end, 10);
+		if (errno || end == argv[4] || *end || value < 3 || value > INT_MAX ||
+		    fcntl((int)value, F_GETFL) < 0 || isatty((int)value) ||
+		    lstat(argv[2], &info) || !S_ISREG(info.st_mode) ||
+		    info.st_uid != 0 || (info.st_mode & 0777) != 0600 ||
+		    !lstat(argv[3], &info) || errno != ENOENT) {
+			fprintf(stderr, "gallery_delete_refused=invalid_private_input_or_output\n");
+			goto out;
+		}
+		result = delete_from_gallery(client_fd, client_session, argv[2], argv[3], (int)value);
+		goto out;
+	}
 	if (match) {
 		result = match_existing(client_fd, client_session, power_fd, argv[2],
-					argc == 4 ? argv[3] : NULL, match_single);
+					gallery_match ? (argc == 5 ? argv[4] : NULL) :
+					(argc == 4 ? argv[3] : NULL),
+					match_single, gallery_match ? argv[3] : NULL);
 		goto out;
 	}
 
@@ -1294,6 +1650,12 @@ int main(int argc, char **argv)
 			goto out;
 		if (bio_existing && query(client_fd, client_session, BIO_LOAD_INSTANCE_DATA))
 			goto out;
+		if (bio_existing && identity_output_path &&
+		    (read_finger_ids(client_fd, client_session, previous_ids, &previous_count) ||
+		     !previous_count || previous_count >= 5)) {
+			fprintf(stderr, "enrol_output_rejected=invalid_existing_gallery\n");
+			goto out;
+		}
 		if (bio_pipeline &&
 		    (get_enrol_challenge(client_fd, client_session, &challenge) ||
 		     authorize_enrol(client_fd, client_session, hat_fd, challenge_fd, challenge)))
@@ -1321,6 +1683,9 @@ int main(int argc, char **argv)
 				if (status < 0)
 					goto out;
 				if (!status) {
+					/* BIO_ENROL accepted the final sample (status 0); report
+					 * it before the separate END_ENROL authorization phase. */
+					printf("enrol_progress_status=0 remaining=0\n");
 					/* The TA finalizes the enrol algorithm before its final
 					 * authorization gate. Renew in this same session first;
 					 * never reset BIO state or replay already collected input.
@@ -1331,7 +1696,8 @@ int main(int argc, char **argv)
 						fprintf(stderr, "end_enrol_not_submitted=1 fresh_authorization_failed=1\n");
 						goto out;
 					}
-					if (query(client_fd, client_session, BIO_END_ENROL))
+					uint32_t end_id = 0;
+					if (query_output(client_fd, client_session, BIO_END_ENROL, &end_id))
 						goto out;
 					/* Fresh databases published as one FpPrint must contain
 					 * exactly one template; do not turn a 1:N gallery into a
@@ -1344,7 +1710,30 @@ int main(int argc, char **argv)
 							goto out;
 						}
 					}
+					if (identity_output_path) {
+						uint32_t found = 0, new_seen = 0;
+						if (!end_id ||
+						    read_finger_ids(client_fd, client_session,
+								    gallery_ids + 2, &gallery_ids[0]) ||
+						    gallery_ids[0] != previous_count + 1) {
+							fprintf(stderr, "enrol_output_rejected=invalid_gallery_count\n");
+							goto out;
+						}
+						for (uint32_t i = 0; i < gallery_ids[0]; i++) {
+							new_seen += gallery_ids[i + 2] == end_id;
+							for (uint32_t j = 0; j < previous_count; j++)
+								found += gallery_ids[i + 2] == previous_ids[j];
+						}
+						if (found != previous_count || new_seen != 1) {
+							fprintf(stderr, "enrol_output_rejected=identity_not_original_plus_one\n");
+							goto out;
+						}
+						gallery_ids[1] = end_id;
+					}
 					result = store_database(client_fd, client_session, db_path) ? 1 : 0;
+					if (!result && identity_output_path)
+						result = write_private_binary(identity_output_path, gallery_ids,
+									      sizeof(gallery_ids), 1) ? 1 : 0;
 					goto out;
 				}
 				printf("enrol_progress_status=%d remaining=%u\n", status, remaining);
@@ -1393,5 +1782,7 @@ out:
 		close(loader_fd);
 	if (power_fd >= 0)
 		close(power_fd);
+	explicit_bzero(previous_ids, sizeof(previous_ids));
+	explicit_bzero(gallery_ids, sizeof(gallery_ids));
 	return result;
 }

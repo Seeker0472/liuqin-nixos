@@ -25,14 +25,21 @@ def main():
         "--native-auth-preflight": ["native_credential_preflight.py", "--preflight"],
         "--template-inventory": ["fpc_build_info", "--template-inventory"],
     }
-    match = len(arguments) in (2, 3) and arguments[0] in ("--match-existing", "--match-single")
+    match = (len(arguments) in (2, 3) and arguments[0] in ("--match-existing", "--match-single") or
+             len(arguments) in (3, 4) and arguments[0] == "--match-gallery")
+    inventory_existing = len(arguments) == 2 and arguments[0] == "--inventory-existing"
+    split_added = len(arguments) == 4 and arguments[0] == "--split-added-template"
+    gallery_delete = len(arguments) == 4 and arguments[0] == "--delete-template"
     create = len(arguments) == 4 and arguments[0] == "--new-native-credential"
     change = len(arguments) == 6 and arguments[0] == "--change-native-credential"
-    enrol_existing = len(arguments) == 6 and arguments[0] == "--enrol-existing"
-    enrol = enrol_existing or len(arguments) == 5 and arguments[0] == "--enrol"
+    enrol_existing = len(arguments) in (6, 7) and arguments[0] == "--enrol-existing"
+    enrol = enrol_existing or len(arguments) in (5, 6) and arguments[0] == "--enrol"
     authorize = len(arguments) == 4 and arguments[0] in ("--auth-preflight", "--auth-preflight-renew")
-    if os.geteuid() != 0 or not (match or create or change or enrol or authorize or len(arguments) == 1 and arguments[0] in commands):
-        print("usage (root): oem_runtime.py [--ufs-rpmb-read-only | --ufs-rpmb-authenticated] --keymaster-negotiate | --shared-hmac-probe | --hw-auth-probe | --native-auth-preflight | --template-inventory | --match-existing DATABASE [UPDATED_DATABASE] | --match-single DATABASE [UPDATED_DATABASE] | --new-native-credential NATIVE_UID DERIVED_INPUT_FD HANDLE_OUTPUT_FD | --change-native-credential NATIVE_UID HANDLE_FD CURRENT_INPUT_FD DESIRED_INPUT_FD HANDLE_OUTPUT_FD | --auth-preflight NATIVE_UID HANDLE_FD DERIVED_INPUT_FD | --enrol DATABASE NATIVE_UID HANDLE_FD DERIVED_INPUT_FD | --enrol-existing INPUT_DATABASE OUTPUT_DATABASE NATIVE_UID HANDLE_FD DERIVED_INPUT_FD", file=sys.stderr)
+    if os.geteuid() != 0 or not (match or inventory_existing or split_added or gallery_delete or create or change or enrol or authorize or len(arguments) == 1 and arguments[0] in commands):
+        print("usage (root): oem_runtime.py [--ufs-rpmb-read-only | --ufs-rpmb-authenticated] --keymaster-negotiate | --shared-hmac-probe | --hw-auth-probe | --native-auth-preflight | --template-inventory | --inventory-existing DATABASE | --split-added-template ORIGINAL MERGED NEW_DATABASE | --delete-template DATABASE OUTPUT_DATABASE ID_FD | --match-existing DATABASE [UPDATED_DATABASE] | --match-single DATABASE [UPDATED_DATABASE] | --match-gallery DATABASE ID_OUT [UPDATED_DATABASE] | --new-native-credential NATIVE_UID DERIVED_INPUT_FD HANDLE_OUTPUT_FD | --change-native-credential NATIVE_UID HANDLE_FD CURRENT_INPUT_FD HANDLE_OUTPUT_FD | --auth-preflight NATIVE_UID HANDLE_FD DERIVED_INPUT_FD | --enrol DATABASE [IDS_OUT] NATIVE_UID HANDLE_FD DERIVED_INPUT_FD | --enrol-existing INPUT_DATABASE OUTPUT_DATABASE [IDS_OUT] NATIVE_UID HANDLE_FD DERIVED_INPUT_FD", file=sys.stderr)
+        return 2
+    if split_added and rpmb_mode != "--ufs-rpmb-authenticated":
+        print("gallery split requires the authenticated UFS listener", file=sys.stderr)
         return 2
     credential_fds = ()
     if create or change or enrol or authorize:
@@ -40,7 +47,7 @@ def main():
             print("native credential/authorization operations require the authenticated UFS listener", file=sys.stderr)
             return 2
         try:
-            uid = int(arguments[3 if enrol_existing else 2 if enrol else 1], 10)
+            uid = int(arguments[-3] if enrol else arguments[1], 10)
             credential_fds = tuple(int(value, 10) for value in arguments[-(4 if change else 2):])
             if not 0x40000000 <= uid <= 0x7fffffff or any(fd < 3 for fd in credential_fds) or len(set(credential_fds)) != len(credential_fds):
                 raise ValueError("native UID or distinct binary FDs invalid")
@@ -52,6 +59,20 @@ def main():
                     raise ValueError("credential FD access mode invalid")
         except (ValueError, OSError):
             print("supply a native UID and distinct open binary credential FDs with the required access modes", file=sys.stderr)
+            return 2
+    if gallery_delete:
+        if rpmb_mode != "--ufs-rpmb-authenticated":
+            print("gallery deletion requires the authenticated UFS listener", file=sys.stderr)
+            return 2
+        try:
+            descriptor = int(arguments[-1], 10)
+            if descriptor < 3 or os.isatty(descriptor) or (
+                    fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE) == os.O_WRONLY:
+                raise ValueError("invalid deletion identity FD")
+            os.fstat(descriptor)
+            credential_fds = (descriptor,)
+        except (ValueError, OSError):
+            print("gallery deletion requires a readable binary identity FD", file=sys.stderr)
             return 2
     if not Path("/dev/fpc1020").exists():
         print("load the matching stable-base FPC module after desktop/SSH startup", file=sys.stderr)
@@ -77,7 +98,7 @@ def main():
     state.mkdir(mode=0o700, exist_ok=True)
     os.chmod(state, 0o700)
     parameter = Path("/sys/module/firmware_class/parameters/path")
-    if match:
+    if match or inventory_existing or split_added or gallery_delete:
         client_name = "fpc_build_info"
         client = [str(here / client_name), *arguments]
     elif create:

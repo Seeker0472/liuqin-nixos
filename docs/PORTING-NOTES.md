@@ -30,7 +30,7 @@ the current firmware set.
 | Storage (UFS, root guard) | root guard verified; prior ext4 issue owner-reported fixed | latest retained logs had no matching errors |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones versus 81 on Android; no IPA |
-| Fingerprint (FPC1264) | previously verified | OS2.0.4 firmware needs hardware validation |
+| Fingerprint (FPC1264) | OS2.0.4 dual-finger gallery enrolled; both fingers match and a cross-finger attempt mismatches after daemon reload | production deletion and cold-boot recovery unverified; early-press responsiveness open |
 | Microphone capture (WCD9385) | previously verified | OS2.0.4 topology needs hardware validation |
 | Video (VPU) | partial | VP9 playback loses its first frame |
 | U-Boot SuperSpeed | not implemented | U-Boot fastboot is USB2 |
@@ -76,8 +76,29 @@ implemented.
 
 The kernel provides power, reset and IRQ control; matching and credentials
 remain in the secure-world trustlet. Prior firmware supported one-finger
-enrollment. See [INSTALL.md](INSTALL.md) for local credential provisioning;
-the OS2.0.4 firmware still needs hardware validation.
+enrollment. On OS2.0.4, a first attempt failed at `sample` without an
+accepted export; the new TOD had imposed an unjustified exact remaining-count
+sequence and obscured its own protocol error. With that corrected, one
+`right-index-finger` enrolled through fprintd and verified `verify-match`
+(2026-10-30/31). Intermittent missed presses remain: removing the post-arm
+IRQ drain caused setup IRQs to trigger rejected captures and verification
+errors, so that change was reverted. The stderr/stdout retry classification
+fix still needs live verification. See [INSTALL.md](INSTALL.md). Repeated
+reload and cold boot remain open.
+
+The stock `vendor_a:/lib64/hw/fingerprint.fpc.so` (SHA-256
+`ce2ffe2b1af8587a49a57e52038d330d68d7d5fc564d7f276757cc13e9c9c455`)
+exposes template enumeration (TEE 11/8), selective deletion (11/9), the
+END_ENROL ID and IDENTIFY's matched ID. A root-private OS2 lab verified two
+distinct IDs, removal of only the original ID from a copied two-template
+database, and isolated match of the new finger / mismatch of the original
+finger on the resulting new-only database. The production cutover uses
+a per-user canonical gallery with validated finger-to-ID mapping and a
+durable fprintd publisher. On 2026-10-31, `right-thumb` enrolment completed,
+both it and `right-index-finger` appeared in `fprintd-list` and each matched
+against the combined gallery. Deliberately pressing the index finger while
+verifying `right-thumb` returned `verify-no-match` after a daemon reload.
+No pending export remained. Production deletion and reboot recovery are open.
 
 ### USB3 device (peripheral data path)
 

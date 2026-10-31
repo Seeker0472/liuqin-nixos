@@ -8,6 +8,7 @@ The key expires in 18 hours, is revoked on consumption, and disappears on boot.
 """
 import ctypes
 import fcntl
+import errno
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,19 @@ def context(username):
     if info.st_uid != 0 or info.st_mode & 0o077 or not ROOT.is_dir() or ROOT.is_symlink():
         raise ValueError("private runtime directory required")
     return libc, keys, ring, ROOT / ("acceptance-" + username + ".json")
+
+
+class PreparedInputMissing(Exception):
+    """No prepared key and metadata are available for this account."""
+
+
+class PreparedInputExpired(Exception):
+    """A prepared key existed but its boot-local authorization expired."""
+
+
+class PreparedInputMismatch(Exception):
+    """The prepared authorization belongs to another native account."""
+
 
 def prepare(username, native_uid, descriptor):
     libc, keys, ring, metadata = context(username)
@@ -117,7 +131,10 @@ def prepare(username, native_uid, descriptor):
 def consume(username, native_uid):
     libc, keys, ring, metadata = context(username)
     from user_credentials import private_file
-    fd = private_file(metadata)
+    try:
+        fd = private_file(metadata)
+    except FileNotFoundError as error:
+        raise PreparedInputMissing("preparation metadata missing") from error
     try:
         if os.fstat(fd).st_size > 4096:
             raise ValueError("invalid preparation metadata")
@@ -125,9 +142,13 @@ def consume(username, native_uid):
             public = json.load(source)
     finally:
         os.close(fd)
+    if not isinstance(public, dict) or public.get("schema") != 1:
+        raise ValueError("invalid preparation metadata")
+    if public.get("username") != username or public.get("native_uid") != native_uid:
+        raise PreparedInputMismatch("prepared input belongs to another native account")
     boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    if (public.get("schema"), public.get("username"), public.get("native_uid"), public.get("boot_id")) != (1, username, native_uid, boot) or public.get("expires", 0) <= time.time():
-        raise ValueError("prepared input expired or belongs to another boot or account")
+    if public.get("boot_id") != boot or public.get("expires", 0) <= time.time():
+        raise PreparedInputExpired("prepared input expired or belongs to another boot")
     buffer = (ctypes.c_ubyte * 32)()
     if libc.mlock(buffer, 32):
         raise OSError("locked input memory unavailable")
@@ -135,7 +156,9 @@ def consume(username, native_uid):
     try:
         serial = int(public["key_serial"])
         if keys.keyctl_read(serial, buffer, 32) != 32:
-            raise ValueError("prepared input unavailable")
+            if ctypes.get_errno() == errno.EKEYEXPIRED:
+                raise PreparedInputExpired("prepared input key expired")
+            raise PreparedInputMissing("prepared input key unavailable")
         descriptor = os.memfd_create("liuqin-fpc-prepared-input", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
         os.fchmod(descriptor, 0o600)
         if libc.write(descriptor, buffer, 32) != 32:
@@ -145,7 +168,8 @@ def consume(username, native_uid):
                     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SEAL)
         if keys.keyctl_revoke(serial):
             raise OSError("one-use key revocation failed")
-        keys.keyctl_unlink(serial, ring)
+        if keys.keyctl_unlink(serial, ring):
+            raise OSError("one-use key unlink failed")
         metadata.unlink()
         return descriptor
     except BaseException:
