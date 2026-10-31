@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Non-hardware regression coverage for private enrolment custody."""
 import contextlib
+import ctypes
 import errno
 import hashlib
 import io
@@ -23,24 +24,35 @@ from user_credentials import (CredentialFailure, account_status, stream_enrol_li
 
 
 class EnrolProtocolTests(unittest.TestCase):
-    def test_subsequent_capture_attempt_does_not_restart_desktop_enrolment(self):
+    def test_readiness_is_emitted_only_after_each_arm(self):
         output = io.StringIO()
         native_lines = (
+            "WAIT enrol attempt=1: arming finger capture",
             "READY enrol attempt=1: press same finger and hold",
+            "READY finger_wait_armed=down place or hold finger for capture",
             "enrol_progress_status=1 remaining=19",
-            "READY lift finger and reposition for next sample",
-            "READY enrol attempt=2: press same finger and hold",
+            "WAIT lift finger before next sample",
+            "WAIT enrol attempt=2: arming finger capture",
+            "READY finger_wait_armed=down place or hold finger for capture",
             "capture_rejected=4 enrol_not_sent=1",
-            "READY lift finger and reposition for next sample",
-            "READY enrol attempt=3: press same finger and hold",
+            "WAIT lift finger before next sample",
+            "WAIT enrol attempt=3: arming finger capture",
+            "READY finger_wait_armed=down place or hold finger for capture",
             "enrol_progress_status=1 remaining=18",
         )
         with contextlib.redirect_stdout(output):
             for line in native_lines:
                 stream_enrol_line(line)
-        self.assertEqual(output.getvalue().count("kind=ready\n"), 1)
-        self.assertEqual(output.getvalue().count("kind=sample"), 2)
-        self.assertIn("kind=retry code=capture_rejected\n", output.getvalue())
+        self.assertEqual(output.getvalue().splitlines(), [
+            "fpc_event=1 kind=ready",
+            "fpc_event=1 kind=sample remaining=19",
+            "fpc_event=1 kind=lift",
+            "fpc_event=1 kind=ready",
+            "fpc_event=1 kind=retry code=capture_rejected",
+            "fpc_event=1 kind=lift",
+            "fpc_event=1 kind=ready",
+            "fpc_event=1 kind=sample remaining=18",
+        ])
 
     def test_native_failure_phase_exposes_no_untrusted_diagnostics(self):
         output = io.StringIO()
@@ -105,6 +117,81 @@ class PreparedInputTests(unittest.TestCase):
                  mock.patch.object(acceptance_input.ctypes, "get_errno", return_value=errno.ENOKEY):
                 with self.assertRaises(PreparedInputMissing):
                     acceptance_input.consume("alice", 0x500003e8)
+
+    def test_repeated_authenticated_preparation_keeps_matching_one_use_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / "acceptance-alice.json"
+            metadata.write_text(json.dumps({
+                "schema": 1, "username": "alice", "native_uid": 0x500003e8,
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "expires": int(time.time()) + 3600, "key_serial": 41}))
+            os.chmod(metadata, 0o600)
+            key = b"a" * 32
+            def read_key(serial, buffer, size):
+                self.assertEqual(serial, 41)
+                ctypes.memmove(buffer, key, size)
+                return size
+            keys = types.SimpleNamespace(keyctl_read=read_key)
+            libc = types.SimpleNamespace(mlock=lambda *_: 0, munlock=lambda *_: 0,
+                                         read=lambda fd, buffer, size: self._read(fd, buffer, size),
+                                         memcmp=lambda a, b, size: ctypes.string_at(a, size) != ctypes.string_at(b, size))
+            descriptor = os.memfd_create("test-authenticated-input")
+            try:
+                os.write(descriptor, key)
+                original = metadata.read_bytes()
+                with mock.patch.object(acceptance_input, "context",
+                                       return_value=(libc, keys, 17, metadata)):
+                    acceptance_input.prepare("alice", 0x500003e8, descriptor)
+                self.assertEqual(metadata.read_bytes(), original)
+            finally:
+                os.close(descriptor)
+
+    def test_freshly_verified_input_replaces_expired_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / "acceptance-alice.json"
+            metadata.write_text(json.dumps({
+                "schema": 1, "username": "alice", "native_uid": 0x500003e8,
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "expires": 1, "key_serial": 41}))
+            os.chmod(metadata, 0o600)
+            new_key = b"b" * 32
+            stored = {}
+            def add_key(_type, _description, buffer, size, _ring):
+                stored["input"] = ctypes.string_at(buffer, size)
+                return 42
+            def read_key(serial, buffer, size):
+                self.assertEqual(serial, 42)
+                ctypes.memmove(buffer, stored["input"], size)
+                return size
+            revoked = []
+            keys = types.SimpleNamespace(
+                keyctl_search=lambda *_: 41,
+                keyctl_revoke=lambda serial: revoked.append(serial) or 0,
+                keyctl_unlink=lambda *_: 0,
+                add_key=add_key, keyctl_setperm=lambda *_: 0,
+                keyctl_set_timeout=lambda *_: 0, keyctl_read=read_key)
+            libc = types.SimpleNamespace(mlock=lambda *_: 0, munlock=lambda *_: 0,
+                                         read=lambda fd, buffer, size: self._read(fd, buffer, size),
+                                         memcmp=lambda a, b, size: ctypes.string_at(a, size) != ctypes.string_at(b, size))
+            descriptor = os.memfd_create("test-renewed-input")
+            try:
+                os.write(descriptor, new_key)
+                with mock.patch.object(acceptance_input, "context",
+                                       return_value=(libc, keys, 17, metadata)):
+                    acceptance_input.prepare("alice", 0x500003e8, descriptor)
+                updated = json.loads(metadata.read_text())
+                self.assertEqual(updated["key_serial"], 42)
+                self.assertGreater(updated["expires"], time.time())
+                self.assertEqual(stored["input"], new_key)
+                self.assertEqual(revoked, [41])
+            finally:
+                os.close(descriptor)
+
+    @staticmethod
+    def _read(descriptor, buffer, size):
+        data = os.read(descriptor, size)
+        ctypes.memmove(buffer, data, len(data))
+        return len(data)
 
 
 @unittest.skipUnless(os.geteuid() == 0, "private state must be owned by root")

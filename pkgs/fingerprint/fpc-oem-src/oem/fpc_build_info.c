@@ -16,6 +16,7 @@
 #include <sys/mman.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define QSEE_IMPL_ID 5u
@@ -765,65 +766,103 @@ static int delete_template(int fd, uint32_t session, uint32_t id)
 	return result;
 }
 
-static int wait_sensor_irq(int power_fd, const char *phase, int timeout_ms)
+/* sysfs IRQ notifications wake the waiter; GPIO40's current level decides
+ * whether the requested transition has actually happened. kernfs poll is
+ * readable even without a notification, so POLLIN is not an IRQ signal.
+ */
+static int wait_sensor_irq(int power_fd, const char *phase, int target, int timeout_ms)
 {
-	struct pollfd event = { .fd = power_fd, .events = POLLIN };
-	int result;
+	static const char irq_path[] = "/sys/class/misc/fpc1020/device/irq";
+	struct pollfd event;
+	struct timespec now;
+	int64_t deadline;
+	int irq_fd, result = -1;
 
-	do {
-		result = poll(&event, 1, timeout_ms);
-	} while (result < 0 && errno == EINTR && !operation_cancelled);
-	if (operation_cancelled) {
-		fprintf(stderr, "oem_operation_cancelled=1\n");
+	if (power_fd < 0) {
+		fprintf(stderr, "finger_level_failed=%s power_not_held=1\n", phase);
 		return -1;
 	}
-	if (result == 1 && (event.revents & POLLIN)) {
-		printf("finger_irq=%s\n", phase);
-		return 0;
-	}
-	fprintf(stderr, "finger_irq_failed=%s poll_result=%d revents=0x%x errno=%d\n",
-		phase, result, event.revents, result < 0 ? errno : 0);
-	return -1;
-}
-
-static int clear_pending_irq(int power_fd, const char *phase)
-{
-	struct pollfd event = { .fd = power_fd, .events = POLLIN };
-	int result = poll(&event, 1, 0);
-
-	if (result < 0) {
-		perror("clear_pending_irq");
+	irq_fd = open(irq_path, O_RDONLY | O_CLOEXEC);
+	if (irq_fd < 0) {
+		perror("open fpc1020 irq level");
 		return -1;
 	}
-	if (result && !(event.revents & POLLIN)) {
-		fprintf(stderr, "pending_irq_error=%s revents=0x%x\n",
-			phase, event.revents);
-		return -1;
+	if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+		perror("clock_gettime");
+		goto out;
 	}
-	if (result)
-		printf("stale_irq_drained=%s\n", phase);
-	return 0;
+	deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + timeout_ms;
+	event = (struct pollfd){ .fd = irq_fd, .events = POLLPRI };
+	for (;;) {
+		char level[3];
+		ssize_t count;
+		int ready;
+		int64_t remaining;
+
+		if (operation_cancelled) {
+			fprintf(stderr, "oem_operation_cancelled=1\n");
+			break;
+		}
+		if (lseek(irq_fd, 0, SEEK_SET) < 0) {
+			perror("seek fpc1020 irq level");
+			break;
+		}
+		do {
+			count = read(irq_fd, level, sizeof(level));
+		} while (count < 0 && errno == EINTR && !operation_cancelled);
+		if (operation_cancelled) {
+			fprintf(stderr, "oem_operation_cancelled=1\n");
+			break;
+		}
+		if (count != 2 || (level[0] != '0' && level[0] != '1') || level[1] != '\n') {
+			fprintf(stderr, "finger_level_failed=%s invalid_sysfs_level=1\n", phase);
+			break;
+		}
+		if (level[0] == '0' + target) {
+			printf("finger_level=%s\n", phase);
+			result = 0;
+			break;
+		}
+		if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+			perror("clock_gettime");
+			break;
+		}
+		remaining = deadline - ((int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+		if (remaining <= 0) {
+			fprintf(stderr, "finger_level_failed=%s timed_out=1\n", phase);
+			break;
+		}
+		/* Reading before poll also covers a finger held during 10/3 or
+		 * 10/2. A notification between read and poll stays pending. */
+		ready = poll(&event, 1, (int)remaining);
+		if (ready < 0 && errno == EINTR)
+			continue;
+		if (ready != 1 || !(event.revents & POLLPRI)) {
+			fprintf(stderr, "finger_level_failed=%s poll_result=%d revents=0x%x errno=%d\n",
+				phase, ready, event.revents, ready < 0 ? errno : 0);
+			break;
+		}
+		/* POLLERR accompanies POLLPRI on sysfs; reread the GPIO level. */
+	}
+out:
+	close(irq_fd);
+	return result;
 }
 
 /* HAL capture_image(mode=1) calls wait_finger_down with qualifier=0:
- * 10/3, IRQ, then capture. Qualification stays inside the capture command;
- * an extra 10/11 here would consume the IRQ before capture can inspect it.
- * The post-setup drain filters IRQs raised by arming the sensor; never
- * treat those as a real finger-down capture.
+ * 10/3, then wait for the GPIO level, then capture. Qualification stays
+ * inside capture; an extra 10/11 here would change the TA command sequence.
  */
 static int wait_finger_down(int fd, uint32_t session, int power_fd)
 {
-	if (clear_pending_irq(power_fd, "before_down"))
-		return -1;
 	if (query(fd, session, SENSOR_WAIT_FINGER_DOWN))
 		return -1;
-	if (clear_pending_irq(power_fd, "after_down_setup"))
-		return -1;
-	printf("READY finger_irq_armed=down press finger now\n");
-	return wait_sensor_irq(power_fd, "down", 120000);
+	printf("READY finger_wait_armed=down place or hold finger for capture\n");
+	return wait_sensor_irq(power_fd, "down", 1, 120000);
 }
 
-/* HAL fpc_tee_wait_finger_lost: 10/2, IRQ, 10/11, 10/1. */
+/* HAL fpc_tee_wait_finger_lost: 10/1, then 10/2, GPIO-low wait,
+ * 10/11 and 10/1 until the TA also confirms release. */
 static int wait_finger_lost(int fd, uint32_t session, int power_fd)
 {
 	int status = query(fd, session, SENSOR_CHECK_FINGER_LOST);
@@ -831,16 +870,14 @@ static int wait_finger_lost(int fd, uint32_t session, int power_fd)
 	if (status < 0)
 		return -1;
 	if (status)
-		return 0;
-	if (clear_pending_irq(power_fd, "before_up"))
-		return -1;
+		return wait_sensor_irq(power_fd, "up", 0, 30000);
 	for (unsigned int attempt = 0; attempt < 600; attempt++) {
 		status = query(fd, session, SENSOR_WAIT_FINGER_LOST);
 		if (status < 0)
 			return -1;
 		if (status)
 			return status;
-		if (wait_sensor_irq(power_fd, "up", 30000))
+		if (wait_sensor_irq(power_fd, "up", 0, 30000))
 			return -1;
 		status = query(fd, session, SENSOR_CHECK_FINGER_STATE);
 		if (status < 0)
@@ -1670,7 +1707,7 @@ int main(int argc, char **argv)
 		for (unsigned int attempt = 1; attempt <= 40; attempt++) {
 			if (operation_cancelled)
 				goto out;
-			printf("READY enrol attempt=%u: press same finger and hold\n", attempt);
+			printf("WAIT enrol attempt=%u: arming finger capture\n", attempt);
 			if (wait_finger_down(client_fd, client_session, power_fd)) {
 				fprintf(stderr, "pipeline_incomplete=finger_down_wait\n");
 				goto out;
@@ -1740,7 +1777,7 @@ int main(int argc, char **argv)
 			} else {
 				printf("capture_rejected=%d enrol_not_sent=1\n", status);
 			}
-			printf("READY lift finger and reposition for next sample\n");
+			printf("WAIT lift finger before next sample\n");
 			status = wait_finger_lost(client_fd, client_session, power_fd);
 			if (status < 0) {
 				fprintf(stderr, "pipeline_incomplete=finger_lost_wait\n");

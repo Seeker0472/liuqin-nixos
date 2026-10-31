@@ -72,9 +72,9 @@ def stream_enrol_line(line):
         status = int(response.group(1))
         if -4096 <= status < 0 and (status & 0xFFFFFFFF) == int(response.group(2), 16):
             event("ta_reject", status=status)
-    elif line.startswith("READY enrol attempt=1:"):
+    elif line == "READY finger_wait_armed=down place or hold finger for capture":
         event("ready")
-    elif line == "READY lift finger and reposition for next sample":
+    elif line == "WAIT lift finger before next sample":
         event("lift")
     elif line == "enrol_authorization_phase=end_enrol":
         event("finalizing")

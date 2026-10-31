@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT
 """One-use, boot-local authenticated input in the root kernel keyring.
 
-Only the normal PAM frontend may prepare it. No password, derived input or
-HAT is written to disk, returned as text or held by a waiting userspace daemon.
+Only an authenticated Linux-password frontend may prepare it. No password,
+derived input or HAT is written to disk, returned as text or held by a waiting
+userspace daemon.
 The key expires in 18 hours, is revoked on consumption, and disappears on boot.
 """
 import ctypes
@@ -74,8 +75,6 @@ class PreparedInputMismatch(Exception):
 
 def prepare(username, native_uid, descriptor):
     libc, keys, ring, metadata = context(username)
-    if metadata.exists():
-        raise ValueError("a prepared acceptance is already present")
     buffer = (ctypes.c_ubyte * 32)()
     check = (ctypes.c_ubyte * 32)()
     if libc.mlock(buffer, 32) or libc.mlock(check, 32):
@@ -87,6 +86,39 @@ def prepare(username, native_uid, descriptor):
         if libc.read(descriptor, buffer, 32) != 32:
             raise ValueError("incomplete authenticated input")
         boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        replacing = metadata.exists()
+        if replacing:
+            # sudo's PAM hook can prepare the same input before the enrol CLI
+            # finishes its own authenticated Gatekeeper preflight. Keep that
+            # one-use key if it is still the freshly verified input.
+            from user_credentials import private_file
+            fd = private_file(metadata)
+            try:
+                if os.fstat(fd).st_size > 4096:
+                    raise ValueError("invalid preparation metadata")
+                with os.fdopen(fd, "r", closefd=False) as source:
+                    public = json.load(source)
+            finally:
+                os.close(fd)
+            if not isinstance(public, dict) or public.get("schema") != 1:
+                raise ValueError("invalid preparation metadata")
+            if public.get("username") != username or public.get("native_uid") != native_uid:
+                raise PreparedInputMismatch("prepared input belongs to another native account")
+            if (public.get("boot_id") == boot and
+                    isinstance(public.get("expires"), int) and public["expires"] > time.time()):
+                old = int(public["key_serial"])
+                length = keys.keyctl_read(old, check, 32)
+                if length == 32:
+                    if not libc.memcmp(buffer, check, 32):
+                        return
+                elif length != -1 or ctypes.get_errno() not in (
+                        errno.ENOKEY, errno.EKEYEXPIRED, errno.EKEYREVOKED):
+                    raise OSError("existing private key could not be checked")
+            # A newly authenticated, TA-verified input supersedes an expired,
+            # missing or different key; never reuse it for another account.
+            phase = "existing_preparation"
+        else:
+            phase = "key_search"
         description = ("liuqin-fpc-acceptance:" + boot + ":" + username).encode("ascii")
         stale = keys.keyctl_search(ring, b"user", description, 0)
         if stale >= 0:
@@ -94,6 +126,8 @@ def prepare(username, native_uid, descriptor):
             # The new input was freshly authenticated and verified above.
             if keys.keyctl_revoke(stale) or keys.keyctl_unlink(stale, ring):
                 raise OSError("previous unfinished preparation could not be revoked")
+        if replacing:
+            metadata.unlink()
         phase = "key_add"
         serial = keys.add_key(b"user", description, buffer, 32, ring)
         if serial < 0:

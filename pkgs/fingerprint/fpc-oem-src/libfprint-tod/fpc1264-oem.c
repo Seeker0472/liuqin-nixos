@@ -27,6 +27,8 @@ typedef struct {
   gboolean enroll_stream_done;
   gboolean enroll_wait_done;
   gboolean enroll_ready;
+  gboolean enroll_waiting_down;
+  gboolean enroll_lift_requested;
   gboolean enroll_final_sample;
   gboolean enroll_finalizing;
   gboolean enroll_recovered;
@@ -68,6 +70,8 @@ clear_operation (FpiDeviceFpc1264Oem *self)
   self->enroll_stream_done = FALSE;
   self->enroll_wait_done = FALSE;
   self->enroll_ready = FALSE;
+  self->enroll_waiting_down = FALSE;
+  self->enroll_lift_requested = FALSE;
   self->enroll_final_sample = FALSE;
   self->enroll_finalizing = FALSE;
   self->enroll_recovered = FALSE;
@@ -360,17 +364,21 @@ enrol_parse_line (FpDevice *device, const gchar *line)
     self->enroll_ta_status = (gint) status;
   }
   else if (g_str_equal (line, "fpc_event=1 kind=ready")) {
-    if (self->enroll_ready || self->enroll_recovered ||
+    if (self->enroll_waiting_down ||
+        (self->enroll_ready && !self->enroll_lift_requested) ||
+        self->enroll_recovered || self->enroll_final_sample ||
         self->enroll_finalizing || self->enroll_committed)
       goto invalid;
     self->enroll_ready = TRUE;
+    self->enroll_waiting_down = TRUE;
+    self->enroll_lift_requested = FALSE;
     fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
   }
   else if (g_str_has_prefix (line, remaining_prefix)) {
     const gchar *value = line + strlen (remaining_prefix);
     gchar *end = NULL;
     guint64 remaining;
-    if (!self->enroll_ready || self->enroll_recovered ||
+    if (!self->enroll_waiting_down || self->enroll_recovered ||
         self->enroll_finalizing || self->enroll_committed ||
         self->enroll_final_sample || !g_ascii_isdigit (*value))
       goto invalid;
@@ -381,6 +389,7 @@ enrol_parse_line (FpDevice *device, const gchar *line)
      * firmware uses a different intermediate count. */
     if (*end || remaining > 40)
       goto invalid;
+    self->enroll_waiting_down = FALSE;
     fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
     if (remaining == 0)
       self->enroll_final_sample = TRUE;
@@ -390,22 +399,25 @@ enrol_parse_line (FpDevice *device, const gchar *line)
     }
   }
   else if (g_str_equal (line, "fpc_event=1 kind=lift")) {
-    if (!self->enroll_ready || self->enroll_recovered ||
+    if (!self->enroll_ready || self->enroll_waiting_down ||
+        self->enroll_lift_requested || self->enroll_recovered ||
         self->enroll_finalizing || self->enroll_committed ||
         self->enroll_final_sample)
       goto invalid;
-    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+    self->enroll_lift_requested = TRUE;
+    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
     fpi_device_enroll_progress (device, (gint) MIN (self->enroll_stages,
                                                    LIUQIN_ENROL_MAX_STAGES - 1),
                                 NULL, fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
                                                                   "Lift the finger, then press it again"));
   }
   else if (g_str_equal (line, "fpc_event=1 kind=retry code=capture_rejected")) {
-    if (!self->enroll_ready || self->enroll_recovered ||
+    if (!self->enroll_waiting_down || self->enroll_recovered ||
         self->enroll_finalizing || self->enroll_committed ||
         self->enroll_final_sample)
       goto invalid;
-    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+    self->enroll_waiting_down = FALSE;
+    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
     fpi_device_enroll_progress (device, (gint) MIN (self->enroll_stages,
                                                    LIUQIN_ENROL_MAX_STAGES - 1),
                                 NULL, fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL));
@@ -731,7 +743,6 @@ enrol (FpDevice *device)
                                  self->updated_database ? self->inventory_path : NULL, NULL);
   if (!self->child)
     goto failed;
-  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
   g_input_stream_read_async (g_subprocess_get_stdout_pipe (self->child),
                              self->enroll_read_buffer, sizeof self->enroll_read_buffer,
                              G_PRIORITY_DEFAULT, NULL, enrol_read, g_object_ref (device));
@@ -882,7 +893,7 @@ report_runtime_failure (const gchar *output, const gchar *diagnostic,
                         gint status, gboolean cleaned)
 {
   const gchar *prefixes[] = {
-    "finger_irq_failed=", "match_incomplete=", "match_unavailable=",
+    "finger_level_failed=", "match_incomplete=", "match_unavailable=",
     "auth_result_invalid=", "db_import_remaining_mismatch ",
     "template_count_response_invalid=", "oem_runtime_timed_out=",
     "oem_runtime_cancelled=", "oem_runtime=BUSY",
@@ -895,10 +906,10 @@ report_runtime_failure (const gchar *output, const gchar *diagnostic,
                                           diagnostic ? diagnostic : "", NULL);
   g_auto(GStrv) lines = g_strsplit (messages, "\n", -1);
 
-  g_warning ("OEM verify runtime exit=%d cleanup_complete=%d irq_armed=%d irq_received=%d",
+  g_warning ("OEM verify runtime exit=%d cleanup_complete=%d wait_armed=%d gpio_down=%d",
              status, cleaned,
-             !!(output && strstr (output, "READY finger_irq_armed=down press finger now\n")),
-             !!(output && strstr (output, "finger_irq=down\n")));
+             !!(output && strstr (output, "READY finger_wait_armed=down place or hold finger for capture\n")),
+             !!(output && strstr (output, "finger_level=down\n")));
   for (gsize i = 0; lines[i]; i++)
     for (gsize j = 0; prefixes[j]; j++)
       if (g_str_has_prefix (lines[i], prefixes[j])) {

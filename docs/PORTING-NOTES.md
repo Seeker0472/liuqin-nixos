@@ -30,7 +30,7 @@ the current firmware set.
 | Storage (UFS, root guard) | root guard verified; prior ext4 issue owner-reported fixed | latest retained logs had no matching errors |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones versus 81 on Android; no IPA |
-| Fingerprint (FPC1264) | OS2.0.4 dual-finger gallery enrolled; both fingers match and a cross-finger attempt mismatches after daemon reload | production deletion and cold-boot recovery unverified; early-press responsiveness open |
+| Fingerprint (FPC1264) | OS2.0.4 dual-finger gallery enrolled; both fingers matched and a cross-finger attempt mismatched after daemon reload; stock-style IRQ level interface booted and passed no-finger smoke | physical early-press response on new kernel, post-reboot match and production deletion unverified |
 | Microphone capture (WCD9385) | previously verified | OS2.0.4 topology needs hardware validation |
 | Video (VPU) | partial | VP9 playback loses its first frame |
 | U-Boot SuperSpeed | not implemented | U-Boot fastboot is USB2 |
@@ -80,11 +80,15 @@ enrollment. On OS2.0.4, a first attempt failed at `sample` without an
 accepted export; the new TOD had imposed an unjustified exact remaining-count
 sequence and obscured its own protocol error. With that corrected, one
 `right-index-finger` enrolled through fprintd and verified `verify-match`
-(2026-10-30/31). Intermittent missed presses remain: removing the post-arm
-IRQ drain caused setup IRQs to trigger rejected captures and verification
-errors, so that change was reverted. The stderr/stdout retry classification
-fix still needs live verification. See [INSTALL.md](INSTALL.md). Repeated
-reload and cold boot remain open.
+(2026-10-30/31). A one-shot IRQ counter and post-arm drain could drop early
+presses; removing only the drain caused setup IRQs to trigger rejected
+captures and verification errors. The current kernel exposes GPIO40's
+current level plus non-consuming sysfs IRQ notifications, matching the stock
+HAL's read-before-poll behavior. On the new kernel a reset produced a sticky
+notification and readable level, a no-finger verification waited 15 seconds
+without a false result, and the sensor powered off after cancellation.
+Physical early-press responsiveness and capture-retry handling are not yet
+validated on this build. See [INSTALL.md](INSTALL.md).
 
 The stock `vendor_a:/lib64/hw/fingerprint.fpc.so` (SHA-256
 `ce2ffe2b1af8587a49a57e52038d330d68d7d5fc564d7f276757cc13e9c9c455`)
@@ -98,7 +102,9 @@ durable fprintd publisher. On 2026-10-31, `right-thumb` enrolment completed,
 both it and `right-index-finger` appeared in `fprintd-list` and each matched
 against the combined gallery. Deliberately pressing the index finger while
 verifying `right-thumb` returned `verify-no-match` after a daemon reload.
-No pending export remained. Production deletion and reboot recovery are open.
+No pending export remained. A later reboot with the IRQ-contract kernel
+retained both `fprintd-list` entries; physical matching after that reboot
+and production deletion remain unverified.
 
 ### USB3 device (peripheral data path)
 

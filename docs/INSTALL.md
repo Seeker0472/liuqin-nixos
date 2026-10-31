@@ -341,14 +341,19 @@ Gatekeeper/RPMB state is per-device.
   `right-index-finger` through fprintd; `fprintd-list` found it and
   `fprintd-verify` returned `verify-match`. A later switch to the known-good
   build also returned `verify-match` for that print.
-- The operator reported intermittent unresponsive presses during enrolment.
-  Kernel `fpc1020_poll()` consumes pending IRQs; the OEM client's post-arm
-  drain may drop an early real press. Removing it experimentally caused
-  sensor-setup IRQs to be captured instead, and verification returned
-  `verify-unknown-error`; that unsafe change was reverted. Captures rejected
-  by known positive TA statuses were also being misclassified because their
-  diagnostic is on stderr, not stdout. The classification fix still needs
-  hardware validation; the early-press UX limitation remains open.
+- The operator reported intermittent unresponsive presses. The stock HAL
+  reads GPIO40's current level before polling for IRQ notifications; our
+  original `/dev/fpc1020` poll consumed each edge and the post-arm drain
+  could discard a real press. Removing the drain alone admitted sensor-setup
+  IRQs and caused `verify-unknown-error`. The current driver instead exposes
+  `/sys/class/misc/fpc1020/device/irq` as a root-readable GPIO level with
+  non-consuming notifications. Enrolment and verification read the level
+  after arming and after each wake; the enrol UI reports finger-needed only
+  after the first arm. On the tablet, a reset notification remained pending
+  across two polls, its level was readable, and a no-finger verification
+  waited 15 seconds without a false match or immediate capture error.
+  Responsiveness during physical presses still needs operator validation;
+  positive TA capture-retry handling also needs live validation.
 - In a root-private OS2 lab, the original one-template database and a new
   two-template export had distinct stable IDs. Selective TA deletion produced
   a new-only database; the new finger matched it and the old finger did not.
@@ -358,7 +363,9 @@ Gatekeeper/RPMB state is per-device.
   pressing the index finger for `right-thumb` returned `verify-no-match`.
   fprintd exited and restarted between checks; the canonical `.gallery` was
   root-owned mode 0600, no pending export remained, and the old single-finger
-  file was preserved. Production deletion and cold-boot recovery remain open.
+  file was preserved. After the IRQ-contract kernel reboot, `fprintd-list`
+  still showed both prints; post-reboot *physical* matching and production
+  deletion remain unverified.
 - The multi-finger publisher refuses ambiguous exports rather than guessing
   an ID. Fingerprint authentication for `su`/SSH is not enabled.
 
@@ -431,9 +438,12 @@ fprintd-verify <user>                                 # in a session terminal
 sudo liuqin-fpc-credential --sync-password <user>     # after a password change
 ```
 
-If `--status <user>` reports `prepared_input_unexpired`, the metadata exists
-but the kernel key still needs validation at consumption: use
-`--enrol-prepared`, not `--enrol` (which attempts a second preparation).
+If `--status <user>` reports `prepared_input_unexpired`, only the metadata
+is known to be current; the key is checked at consumption. Use `--enrol` for
+the normal CLI path: after Linux-password and Gatekeeper preflight it retains
+a matching PAM-prepared one-use key or replaces a stale/different preparation.
+Use `--enrol-prepared` only to consume an already prepared key without another
+explicit preparation; a missing key fails before fingerprint capture.
 If it reports `export_uncertain`, **stop**; a root-private marker may reflect
 TEE changes that cannot be inferred from the absence of a saved print.
 

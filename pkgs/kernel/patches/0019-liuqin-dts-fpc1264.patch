@@ -57,7 +57,7 @@ ported userspace stack was validated with and revisit on hardware.
  	/*
  	 * The QCA6490 enable lines come up deasserted and are raised by the
  	 * power sequencer when a radio is actually claimed. Levels, direction
-@@ -1793,6 +1823,25 @@ camera_deep_avdd: camera-deep-avdd {
+@@ -1793,6 +1823,26 @@ camera_deep_avdd: camera-deep-avdd {
  	};
  };
  
@@ -73,6 +73,7 @@ ported userspace stack was validated with and revisit on hardware.
 +		compatible = "fpc,fpc1020";
 +		interrupt-parent = <&tlmm>;
 +		interrupts = <40 IRQ_TYPE_EDGE_RISING>;
++		irq-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
 +		reset-gpios = <&tlmm 41 GPIO_ACTIVE_LOW>;
 +		fp_vdd_vreg-supply = <&pm8350c_l9>;
 +		pinctrl-names = "default";

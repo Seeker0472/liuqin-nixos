@@ -11,16 +11,18 @@ cannot control chip select.
 
 Do the same here: a platform driver on /dev/fpc1020 that powers the
 sensor (PM8350C LDO9, 100 mA), reproduces the vendor reset pulse
-(release, 100 us, assert, 5 ms, release, 5 ms), reports the GPIO40 rising
-edge through poll() and enables the interrupt as a wakeup source.  It
-performs no SPI transfers and does not touch the QUP serial engine, so the
-normal world cannot race the trustlet's SPI master.
+(release, 100 us, assert, 5 ms, release, 5 ms), and notifies userspace
+of GPIO40 rising edges through a sysfs irq attribute on the parent
+platform device.  Reading the attribute reports the current GPIO
+level; notifications are wakeups, not consumable events.  The interrupt
+is a wakeup source.  The driver performs no SPI transfers and does not
+touch the QUP serial engine, so the normal world cannot race the
+trustlet's SPI master.
 
 This replaces the earlier port of the community SPI-passthrough driver
-(their own userspace never used its SPI path -- it only opens /dev/fpc1020
-to power the sensor and polls for the interrupt -- while enabling spi10
-contended with the secure world for QUP1 SE3, the mechanism behind the
-"GENI/pinctrl corruption" that community bring-up left unexplained).
+(whose userspace only opens /dev/fpc1020 to power the sensor; enabling
+spi10 contended with the secure world for QUP1 SE3, the mechanism behind
+the "GENI/pinctrl corruption" that community bring-up left unexplained).
 
 Provenance: electrical sequence and pinctrl configuration reproduced from
 the stock 5.10 tree (drivers/input/fingerprint/fpc_ta/fpc1020_tee.c) and
@@ -32,7 +34,7 @@ powered down after an operation through it.
 
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/input/fpc,fpc1020.yaml
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,62 @@
 +# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 +__omp_magic("YAML", "1.2")
 +---
@@ -58,6 +60,10 @@ powered down after an operation through it.
 +  interrupts:
 +    maxItems: 1
 +
++  irq-gpios:
++    maxItems: 1
++    description: Active-high finger interrupt line, read for its current level.
++
 +  reset-gpios:
 +    maxItems: 1
 +    description: Active-low sensor reset line.
@@ -71,6 +77,7 @@ powered down after an operation through it.
 +required:
 +  - compatible
 +  - interrupts
++  - irq-gpios
 +  - reset-gpios
 +  - fp_vdd_vreg-supply
 +
@@ -85,6 +92,7 @@ powered down after an operation through it.
 +        compatible = "fpc,fpc1020";
 +        interrupt-parent = <&tlmm>;
 +        interrupts = <40 IRQ_TYPE_EDGE_RISING>;
++        irq-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
 +        reset-gpios = <&tlmm 41 GPIO_ACTIVE_LOW>;
 +        fp_vdd_vreg-supply = <&pm8350c_l9>;
 +    };
@@ -116,7 +124,7 @@ powered down after an operation through it.
 +	  The sensor's SPI bus belongs to the secure world and is driven by
 +	  the OEM trusted application over QSEE's SPI service; this driver
 +	  deliberately performs no SPI transfers and only provides the
-+	  /dev/fpc1020 power/interrupt interface the OEM userspace expects.
++	  /dev/fpc1020 power interface and a sysfs irq level/notification.
 +
  source "drivers/misc/keba/Kconfig"
  source "drivers/misc/amd-sbi/Kconfig"
@@ -133,7 +141,7 @@ powered down after an operation through it.
  obj-$(CONFIG_MISC_RP1)		+= rp1/
 --- /dev/null
 +++ b/drivers/misc/fpc1020.c
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,342 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * FPC1264 fingerprint sensor power/reset/IRQ control for the Xiaomi Pad 6
@@ -146,14 +154,15 @@ powered down after an operation through it.
 + * interrupt, which is what this driver does; it deliberately performs no
 + * SPI transfers.
 + *
-+ * Userspace contract: /dev/fpc1020.  The first open powers the sensor, poll()
-+ * reports the finger interrupt, the last close powers it down.  The
++ * Userspace contract: /dev/fpc1020 and its parent platform-device irq
++ * sysfs attribute (/sys/class/misc/fpc1020/device/irq).  The first open
++ * powers the sensor, the last close powers it down; read the current GPIO40
++ * level and use sysfs notifications only to wake up and re-read it.  The
 + * electrical sequence (PM8350C LDO9 at 100 mA, GPIO41 reset pulse, GPIO40
 + * rising-edge interrupt) follows the vendor driver in the stock 5.10 tree,
 + * drivers/input/fingerprint/fpc_ta/fpc1020_tee.c.
 + */
 +
-+#include <linux/atomic.h>
 +#include <linux/delay.h>
 +#include <linux/device.h>
 +#include <linux/gpio/consumer.h>
@@ -166,10 +175,8 @@ powered down after an operation through it.
 +#include <linux/platform_device.h>
 +#include <linux/pm.h>
 +#include <linux/pm_wakeup.h>
-+#include <linux/poll.h>
 +#include <linux/regulator/consumer.h>
 +#include <linux/slab.h>
-+#include <linux/wait.h>
 +
 +#define FPC1020_NAME			"fpc1020"
 +#define FPC1020_TTW_HOLD_MS		2000
@@ -183,20 +190,18 @@ powered down after an operation through it.
 +	struct miscdevice miscdev;
 +	struct regulator *vreg;
 +	struct gpio_desc *reset_gpio;
++	struct gpio_desc *irq_gpio;
 +	int irq;
 +	struct mutex lock;		/* serialises power transitions and ioctls */
 +	unsigned int users;
 +	bool prepared;
-+	atomic_t irq_count;		/* consumed by poll() */
-+	wait_queue_head_t irq_wait;
 +};
 +
 +static irqreturn_t fpc1020_irq_handler(int irq, void *data)
 +{
 +	struct fpc1020 *fpc = data;
 +
-+	atomic_inc(&fpc->irq_count);
-+	wake_up_interruptible(&fpc->irq_wait);
++	sysfs_notify(&fpc->dev->kobj, NULL, "irq");
 +	pm_wakeup_event(fpc->dev, FPC1020_TTW_HOLD_MS);
 +
 +	return IRQ_HANDLED;
@@ -268,11 +273,8 @@ powered down after an operation through it.
 +	mutex_lock(&fpc->lock);
 +	if (fpc->users++ == 0)
 +		ret = fpc1020_power_on(fpc);
-+	if (ret) {
++	if (ret)
 +		fpc->users--;
-+	} else {
-+		atomic_set(&fpc->irq_count, 0);
-+	}
 +	mutex_unlock(&fpc->lock);
 +
 +	return ret;
@@ -287,22 +289,6 @@ powered down after an operation through it.
 +	if (--fpc->users == 0)
 +		fpc1020_power_off(fpc);
 +	mutex_unlock(&fpc->lock);
-+
-+	return 0;
-+}
-+
-+static __poll_t fpc1020_poll(struct file *file, poll_table *wait)
-+{
-+	struct fpc1020 *fpc = container_of(file->private_data, struct fpc1020,
-+					   miscdev);
-+
-+	poll_wait(file, &fpc->irq_wait, wait);
-+
-+	if (!READ_ONCE(fpc->prepared))
-+		return EPOLLERR;
-+
-+	if (atomic_xchg(&fpc->irq_count, 0))
-+		return EPOLLIN | EPOLLRDNORM;
 +
 +	return 0;
 +}
@@ -333,7 +319,6 @@ powered down after an operation through it.
 +	.owner		= THIS_MODULE,
 +	.open		= fpc1020_open,
 +	.release	= fpc1020_release,
-+	.poll		= fpc1020_poll,
 +	.unlocked_ioctl	= fpc1020_ioctl,
 +};
 +
@@ -351,8 +336,30 @@ powered down after an operation through it.
 +}
 +static DEVICE_ATTR_RO(power_state);
 +
++static ssize_t irq_show(struct device *dev, struct device_attribute *attr,
++			char *buf)
++{
++	struct fpc1020 *fpc = dev_get_drvdata(dev);
++	int level;
++
++	mutex_lock(&fpc->lock);
++	if (!fpc->prepared) {
++		mutex_unlock(&fpc->lock);
++		return -ENODEV;
++	}
++	level = gpiod_get_value_cansleep(fpc->irq_gpio);
++	mutex_unlock(&fpc->lock);
++
++	if (level < 0)
++		return level;
++
++	return sysfs_emit(buf, "%d\n", level);
++}
++static DEVICE_ATTR(irq, 0400, irq_show, NULL);
++
 +static struct attribute *fpc1020_attrs[] = {
 +	&dev_attr_power_state.attr,
++	&dev_attr_irq.attr,
 +	NULL
 +};
 +ATTRIBUTE_GROUPS(fpc1020);
@@ -396,8 +403,6 @@ powered down after an operation through it.
 +
 +	fpc->dev = dev;
 +	mutex_init(&fpc->lock);
-+	init_waitqueue_head(&fpc->irq_wait);
-+	atomic_set(&fpc->irq_count, 0);
 +	platform_set_drvdata(pdev, fpc);
 +
 +	fpc->vreg = devm_regulator_get(dev, "fp_vdd_vreg");
@@ -410,32 +415,37 @@ powered down after an operation through it.
 +		return dev_err_probe(dev, PTR_ERR(fpc->reset_gpio),
 +				     "no reset GPIO\n");
 +
++	fpc->irq_gpio = devm_gpiod_get(dev, "irq", GPIOD_IN);
++	if (IS_ERR(fpc->irq_gpio))
++		return dev_err_probe(dev, PTR_ERR(fpc->irq_gpio),
++				     "no IRQ GPIO\n");
++
 +	fpc->irq = platform_get_irq(pdev, 0);
 +	if (fpc->irq < 0)
 +		return fpc->irq;
-+
-+	fpc->miscdev.minor = MISC_DYNAMIC_MINOR;
-+	fpc->miscdev.name = FPC1020_NAME;
-+	fpc->miscdev.fops = &fpc1020_fops;
-+	fpc->miscdev.parent = dev;
-+
-+	ret = misc_register(&fpc->miscdev);
-+	if (ret)
-+		return dev_err_probe(dev, ret, "could not register /dev/%s\n",
-+				     FPC1020_NAME);
 +
 +	ret = devm_request_threaded_irq(dev, fpc->irq, NULL,
 +					fpc1020_irq_handler,
 +					IRQF_TRIGGER_RISING | IRQF_ONESHOT |
 +					IRQF_NO_AUTOEN,
 +					dev_name(dev), fpc);
-+	if (ret) {
-+		misc_deregister(&fpc->miscdev);
++	if (ret)
 +		return dev_err_probe(dev, ret, "could not request IRQ %d\n",
 +				     fpc->irq);
-+	}
 +
 +	device_init_wakeup(dev, true);
++	fpc->miscdev.minor = MISC_DYNAMIC_MINOR;
++	fpc->miscdev.name = FPC1020_NAME;
++	fpc->miscdev.fops = &fpc1020_fops;
++	fpc->miscdev.parent = dev;
++
++	ret = misc_register(&fpc->miscdev);
++	if (ret) {
++		device_init_wakeup(dev, false);
++		return dev_err_probe(dev, ret, "could not register /dev/%s\n",
++				     FPC1020_NAME);
++	}
++
 +	dev_info(dev, "FPC1020 control interface ready (secure-world SPI)\n");
 +
 +	return 0;
@@ -445,8 +455,11 @@ powered down after an operation through it.
 +{
 +	struct fpc1020 *fpc = platform_get_drvdata(pdev);
 +
-+	fpc1020_power_off(fpc);
 +	misc_deregister(&fpc->miscdev);
++	mutex_lock(&fpc->lock);
++	fpc1020_power_off(fpc);
++	mutex_unlock(&fpc->lock);
++	device_init_wakeup(&pdev->dev, false);
 +}
 +
 +static const struct of_device_id fpc1020_of_match[] = {
