@@ -111,9 +111,9 @@
         inherit allowLiuqinUnfree;
         inherit pkgsNativeArm;
 
-        # The flake's own x86_64->aarch64 cross package set. Pass it as
-        # `injectFrom` (as the configurations below do) to reuse the device
-        # artifacts it builds instead of cross-compiling the whole closure.
+        # The x86_64->aarch64 cross package set remains available for builds
+        # without an aarch64 executor. Its outputs differ from the native
+        # device packages published in Cachix.
         inherit pkgsArm;
 
         # Build a liuqin NixOS configuration from consumer modules. Injects
@@ -123,24 +123,18 @@
         #
         #   nixosConfigurations.mypad = liuqin.lib.mkLiuqinSystem {
         #     modules = [ ./my-machine.nix ];
-        #     injectFrom = liuqin.lib.pkgsArm;
         #   };
-        # The repository's own configurations use `injectFrom`: a native
-        # aarch64 closure served by cache.nixos.org plus the device packages
-        # built once in this flake's x86_64->aarch64 cross set, so only the
-        # per-machine derivations (/etc, units, initrd) execute aarch64 code
-        # (binfmt on the build host, or the device itself). `crossBuild = true`
-        # remains for hosts without binfmt; it cross-compiles the entire
-        # closure from source, since cross derivations are in no binary cache.
+        # By default, the module injects the pinned native device packages
+        # published in Cachix. Per-machine derivations (/etc, units, initrd)
+        # still need an aarch64 executor (binfmt or the device). Consumers
+        # without one can use `crossBuild = true`; its cross derivations have
+        # different store paths and are outside the native cache.
         mkLiuqinSystem =
           { modules
           , system ? "aarch64-linux"
           , crossBuild ? false
-          # Re-point the device packages at an already built cross set instead
-          # of building them for the target platform. This is what makes the
-          # native aarch64 path affordable: the unmodified parts of the closure
-          # are then served by cache.nixos.org, and the device artifacts are
-          # built once, cross, and copied. See overlay-inject.nix.
+          # Optional legacy injection for a separately built package set.
+          # Leaving this null uses the module's native device cache overlay.
           , injectFrom ? null
           }:
           lib.nixosSystem {
@@ -311,18 +305,11 @@
       # and the single machine file in the repository; the consumer flake next
       # to it is the same module wired through a separate flake.nix.
       #
-      # Built natively for aarch64 rather than cross: the cross package set has
-      # no binary-cache entries at all (a cross-built derivation is a different
-      # derivation), so a cross build compiles the whole desktop from source.
-      # Native aarch64 is served by cache.nixos.org, and the device packages -
-      # kernel, firmware, daemons - are injected from the cross set, which is
-      # built once on the x86_64 host and copied to the device. Nothing runs
-      # under emulation: the remaining per-machine derivations (/etc,
-      # system-path, units, initrd) are aarch64 builds that run natively on the
-      # device itself.
+      # Native aarch64 userland comes from cache.nixos.org; the module injects
+      # the device packages from this flake's pinned Cachix package set.
+      # Per-machine derivations (/etc, system-path, units, initrd) still run
+      # under binfmt on an x86_64 host or natively on the device.
       nixosConfigurations.demo = self.lib.mkLiuqinSystem {
-        crossBuild = false;
-        injectFrom = pkgsArm;
         modules = [ ./config/demo/configuration.nix ];
       };
 

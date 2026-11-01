@@ -10,9 +10,9 @@
 # entries at all and building a whole desktop from it means compiling every
 # dependency locally.
 #
-# Used by the repo's installed configurations (`injectFrom = pkgsArm`, see
-# flake.nix) and by consumers (`injectFrom = liuqin.lib.pkgsArm`): the x86_64
-# host cross-builds just these packages once, and the native aarch64 system -
+# Used by consumers that explicitly select the legacy cross injection path
+# (`injectFrom = liuqin.lib.pkgsArm`): the x86_64 host cross-builds just these
+# packages once, and the native aarch64 system -
 # whose remaining parts, GNOME included, come from cache.nixos.org - reuses
 # those artifacts. Building the per-machine derivations (/etc, units, initrd)
 # still needs an aarch64 executor: binfmt on the host, or the device itself.

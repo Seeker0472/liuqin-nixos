@@ -7,10 +7,10 @@
 # package there fails the check until it is classified here - the two lists
 # cannot silently drift apart.
 #
-#   inject  built once by the flake's x86_64 -> aarch64 cross set (pkgsArm),
-#           re-exported by overlay-inject.nix, and reused by a native aarch64
-#           system.  For device packages that are expensive or awkward to
-#           build on the target.
+#   inject  device packages that can be reused as a fixed set across native
+#           aarch64 systems. The default module gets their pinned native
+#           outputs from Cachix; the legacy overlay-inject.nix path can still
+#           reuse a separately built cross set.
 #
 #   native  built by whatever package set the overlay is applied to.  For
 #           single-shot shell commands, data-only leaves, and packages whose

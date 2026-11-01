@@ -30,11 +30,11 @@
 #   }
 #
 # Evaluation fetches the private asset repository over GitHub SSH and pins it
-# in the consumer's flake.lock. The example uses the BSP's native-aarch64 +
-# injection path: the closure is served by cache.nixos.org and only the
-# per-machine derivations need an aarch64 executor - binfmt on an x86_64 host,
-# or the device itself. `crossBuild = true` remains for hosts without binfmt,
-# at the cost of compiling the whole closure from source.
+# in the consumer's flake.lock. The example uses the BSP's pinned native
+# aarch64 device packages from Cachix and userland from cache.nixos.org.
+# Only per-machine derivations need an aarch64 executor: binfmt on an x86_64
+# host, or the device itself. `crossBuild = true` remains for hosts without
+# binfmt, at the cost of compiling a different closure from source.
 {
   description = "liuqin demo machine configuration (consumer of liuqin-nixos)";
 
@@ -55,7 +55,6 @@
       # our own modules.
       configuration = liuqin.lib.mkLiuqinSystem {
         modules = [ ./configuration.nix ];
-        injectFrom = liuqin.lib.pkgsArm;
       };
 
       # Deployable artifacts for that configuration, produced by the BSP so

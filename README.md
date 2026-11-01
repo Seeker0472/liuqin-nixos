@@ -60,6 +60,9 @@ fresh ARM runner. The second runner builds the same output with
 `--max-jobs 0` and checks each linked output in Cachix or cache.nixos.org; a
 missing output fails the workflow. Cachix's upstream deduplication means some
 unchanged nixpkgs outputs may be served by cache.nixos.org instead of Cachix.
+Every push to `main` starts this workflow; it can also be run manually.
+The `native-aarch64` pin retains the latest two revisions of the device
+closure, protecting them from Cachix garbage collection.
 
 For the workflow, configure these repository secrets:
 
@@ -151,12 +154,11 @@ without trouble; writing it to a boot partition still requires care. The build
 enforces the 192 MiB boot partition limit and the observed 805306368-byte
 fastboot download limit.
 
-The installed configurations get userland from cache.nixos.org and inject
-device packages from the x86_64-to-aarch64 cross set via
-`injectFrom = liuqin.lib.pkgsArm`. Only per-machine derivations then need an
-aarch64 executor (binfmt on an x86_64 host or the device). Optional
-`crossBuild = true` avoids binfmt by cross-compiling the full closure; those
-derivations are not in the binary cache.
+Installed configurations get userland from cache.nixos.org and device packages
+from this flake's pinned native aarch64 package set in Cachix. Only per-machine
+derivations then need an aarch64 executor (binfmt on an x86_64 host or the
+device). Optional `crossBuild = true` avoids binfmt by cross-compiling the full
+closure; those derivations are not in the native binary cache.
 
 ## Use as a flake input
 
@@ -174,7 +176,6 @@ derivations are not in the binary cache.
       system = "x86_64-linux";
       machine = liuqin.lib.mkLiuqinSystem {
         modules = [ ./configuration.nix ];
-        injectFrom = liuqin.lib.pkgsArm;
       };
       images = liuqin.lib.mkLiuqinBootImages machine;
     in {
