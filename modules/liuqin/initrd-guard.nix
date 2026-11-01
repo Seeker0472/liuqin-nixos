@@ -48,6 +48,17 @@ let
   markerSize = marker.size;
   markerArgument = marker.escaped;
 
+  # The initrd copies exactly `boot.initrd.systemd.storePaths`, not their
+  # closures, while the guard wrapper embeds the store paths of its
+  # interpreter (bash) and runtimeInputs (coreutils, util-linux, gnugrep).
+  # Using pkgs.liuqinStorageGuard would take the overlay's copy, which can be
+  # built from a different nixpkgs pin (the flake's injected native device
+  # set); its embedded paths then differ from the pkgs.coreutils/util-linux/
+  # gnugrep listed below and are absent from the image, so the unit fails
+  # with 203/EXEC before any check runs. Build it from this system's own
+  # package set so every path it references is copied into the initrd.
+  storageGuard = pkgs.callPackage ../../pkgs/storage-guard.nix { };
+
 in
 {
   options.hardware.liuqin.rootMarkerContent = lib.mkOption {
@@ -104,8 +115,10 @@ in
       # The initrd systemd image does not infer these paths from the shell
       # text in ExecStart. The guard package and every command it puts on its
       # own PATH (its runtimeInputs) must be copied into the image explicitly.
+      # `storageGuard` is built from this package set (see the let binding),
+      # so the paths below are exactly the ones its wrapper refers to.
       storePaths = [
-        pkgs.liuqinStorageGuard
+        storageGuard
         pkgs.coreutils
         pkgs.gnugrep
         pkgs.util-linux
@@ -142,7 +155,7 @@ in
           # every value goes through utils.escapeSystemdExecArg, which quotes
           # and escapes both.
           ExecStart = lib.concatStringsSep " " [
-            "${pkgs.liuqinStorageGuard}/bin/liuqin-storage-guard"
+            "${storageGuard}/bin/liuqin-storage-guard"
             "--root" (utils.escapeSystemdExecArg cfg.storage.rootDevice)
             "--label" (utils.escapeSystemdExecArg cfg.storage.rootLabel)
             "--marker-size" (utils.escapeSystemdExecArg (toString markerSize))
