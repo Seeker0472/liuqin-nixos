@@ -275,27 +275,43 @@ class PendingTransaction:
             raise ExportUncertain("an earlier enrolment may already have reached the TA")
         write_exclusive(self.uncertain, (json.dumps(marker, sort_keys=True) + "\n").encode("ascii"))
 
+    def cleanup_empty(self):
+        """Best-effort removal of a completed transaction's lock-only directory.
+
+        The per-finger lock serializes transaction starts. Unlinking it while
+        this process still holds the descriptor is only safe after all pending
+        state is gone and no further state operation follows; the caller must
+        close immediately afterwards. Any unexpected entry leaves the
+        directory untouched rather than deleting state we do not understand.
+        """
+        try:
+            if any(os.path.lexists(path) for path in
+                   (self.uncertain, self.ready, self.acknowledged, self.database,
+                    *((self.ids,) if self.gallery else ()))):
+                return False
+            with os.scandir(self.directory) as entries:
+                if {entry.name for entry in entries} != {"transaction.lock"}:
+                    return False
+            os.unlink(self.directory / "transaction.lock")
+            sync_directory(self.directory)
+            self.directory.rmdir()
+            sync_directory(self.directory.parent)
+            try:
+                self.directory.parent.rmdir()
+                sync_directory(self.directory.parent.parent)
+            except OSError:
+                pass
+            return True
+        except OSError:
+            return False
+
     def abort(self):
         """Drop a transaction that never reached the TA-mutating phase.
 
-        Once the uncertainty or acceptance marker exists, the export is
-        potentially authoritative and must be preserved for explicit recovery.
+        Once any uncertainty/acceptance marker or export exists, the directory
+        is not lock-only and must be preserved for explicit recovery.
         """
-        if any(os.path.lexists(path) for path in
-               (self.uncertain, self.ready, self.acknowledged)):
-            return
-        if any(os.path.lexists(path) for path in
-               (self.database, *((self.ids,) if self.gallery else ()))):
-            return
-        try:
-            os.unlink(self.directory / "transaction.lock")
-        except FileNotFoundError:
-            return
-        for path in (self.directory, self.directory.parent):
-            try:
-                path.rmdir()
-            except OSError:
-                pass
+        self.cleanup_empty()
 
     def commit(self):
         if not os.path.lexists(self.uncertain) or os.path.lexists(self.ready):
@@ -403,6 +419,7 @@ def main():
         return 1
     finally:
         if transaction is not None:
+            transaction.cleanup_empty()
             transaction.close()
 
 

@@ -368,6 +368,25 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(self.transaction.database.exists())
         self.assertFalse(self.transaction.ready.exists())
 
+    def test_completed_ack_removes_empty_lock_directory(self):
+        self.transaction.begin()
+        self.transaction.arm()
+        self.transaction.database.write_bytes(b"opaque export")
+        os.chmod(self.transaction.database, 0o600)
+        self.transaction.commit()
+        self.transaction.ack(hashlib.sha256(b"opaque export").hexdigest())
+        self.assertFalse(self.transaction.ready.exists())
+        self.assertTrue(self.transaction.cleanup_empty())
+        self.assertFalse(self.transaction.directory.exists())
+        self.assertFalse(self.transaction.directory.parent.exists())
+        self.assertTrue(self.root.exists())
+
+    def test_cleanup_empty_preserves_unexpected_entries(self):
+        (self.transaction.directory / "unexpected").write_bytes(b"keep")
+        self.assertFalse(self.transaction.cleanup_empty())
+        self.assertTrue((self.transaction.directory / "transaction.lock").exists())
+        self.assertTrue((self.transaction.directory / "unexpected").exists())
+
     def test_interrupted_ack_recovers_without_replaying_or_losing_export(self):
         self.transaction.begin()
         self.transaction.arm()
@@ -470,6 +489,8 @@ class GalleryTransactionTests(unittest.TestCase):
             self.assertFalse(replay.database.exists())
             self.assertFalse(replay.ids.exists())
             self.assertFalse(replay.ready.exists())
+            self.assertTrue(replay.cleanup_empty())
+            self.assertFalse(replay.directory.exists())
         finally:
             replay.close()
 
