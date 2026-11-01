@@ -2,10 +2,14 @@
 # SPDX-License-Identifier: MIT
 """Private, fail-closed custody of an accepted OEM enrolment until fprintd saves it.
 
-The uncertainty marker is durable before the TA can be touched. A completed
-export is reusable only after the native client has returned successfully,
-its file is synced, and the exact user/finger acceptance marker is synced.
-Only fprintd's post-save acknowledgement may remove an accepted export.
+The uncertainty marker is durable before END_ENROL can leave a template in
+the TA. A failure before the first accepted final sample therefore leaves no
+marker and can be retried normally; once the enrolment has reached its final
+authorization gate, an interrupted export is never guessed or auto-retried.
+A completed export is reusable only after the native client has returned
+successfully, its file is synced, and the exact user/finger acceptance marker
+is synced. Only fprintd's post-save acknowledgement may remove an accepted
+export.
 """
 import fcntl
 import hashlib
@@ -243,14 +247,54 @@ class PendingTransaction:
             raise ExportUncertain("invalid acceptance marker") from error
 
     def begin(self):
+        """Validate that a fresh enrolment may start.
+
+        No custody marker is written yet: the native client has not touched
+        the TA. A failed or cancelled capture phase must remain retryable.
+        """
         self.check_other_exports()
         if self.accepted():
             raise ExportUncertain("accepted export already exists")
+
+    def arm(self):
+        """Record that END_ENROL may now create a template.
+
+        Called from the worker stream before its final authorization gate.
+        Idempotent so a duplicated finalizing hint cannot fail an enrolment.
+        """
         marker = {"schema": 2 if self.gallery else 1,
                   "user": self.user, "finger": self.finger}
         if self.gallery:
             marker["base_sha256"] = self.base_digest
+        if os.path.lexists(self.ready):
+            raise ExportUncertain("accepted export already exists")
+        if os.path.lexists(self.uncertain):
+            if read_marker(self.uncertain) != marker:
+                raise ExportUncertain("existing uncertainty marker does not match this enrolment")
+            return
         write_exclusive(self.uncertain, (json.dumps(marker, sort_keys=True) + "\n").encode("ascii"))
+
+    def abort(self):
+        """Drop a transaction that never reached the TA-mutating phase.
+
+        Once the uncertainty or acceptance marker exists, the export is
+        potentially authoritative and must be preserved for explicit recovery.
+        """
+        if any(os.path.lexists(path) for path in
+               (self.uncertain, self.ready, self.acknowledged)):
+            return
+        if any(os.path.lexists(path) for path in
+               (self.database, *((self.ids,) if self.gallery else ()))):
+            return
+        try:
+            os.unlink(self.directory / "transaction.lock")
+        except FileNotFoundError:
+            return
+        for path in (self.directory, self.directory.parent):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
     def commit(self):
         if not os.path.lexists(self.uncertain) or os.path.lexists(self.ready):

@@ -578,9 +578,10 @@ file_storage_oem_delete (FpDevice *dev, FpFinger finger, const gchar *username)
   runtime = g_strdup (g_getenv ("LIUQIN_FPC_OEM_RUNTIME"));
   if (!runtime || !g_path_is_absolute (runtime))
     goto out;
+  /* The installed runner has the target Python store path in its shebang. */
   script = g_build_filename (runtime, "oem_runtime.py", NULL);
   if (lstat (script, &info) || !S_ISREG (info.st_mode) ||
-      info.st_uid != 0 || (info.st_mode & 0022))
+      info.st_uid != 0 || (info.st_mode & 0022) || access (script, X_OK))
     goto out;
   g_snprintf (input_name, sizeof input_name, ".delete-input-%08x-%08x", g_random_int (), g_random_int ());
   g_snprintf (output_name, sizeof output_name, ".delete-output-%08x-%08x", g_random_int (), g_random_int ());
@@ -606,9 +607,8 @@ file_storage_oem_delete (FpDevice *dev, FpFinger finger, const gchar *username)
   close (id_pipe[1]);
   id_pipe[1] = -1;
   fd_text = g_strdup_printf ("%d", id_pipe[0]);
-  gchar *argv[] = { (gchar *) "/usr/bin/python3", (gchar *) "-u", script,
-                    (gchar *) "--ufs-rpmb-authenticated", (gchar *) "--delete-template",
-                    input, output, fd_text, NULL };
+  gchar *argv[] = { script, (gchar *) "--ufs-rpmb-authenticated",
+                    (gchar *) "--delete-template", input, output, fd_text, NULL };
   attempted = TRUE;
   gboolean spawned = g_spawn_sync (NULL, argv, NULL,
                                    G_SPAWN_LEAVE_DESCRIPTORS_OPEN |
@@ -617,7 +617,10 @@ file_storage_oem_delete (FpDevice *dev, FpFinger finger, const gchar *username)
   close (id_pipe[0]);
   id_pipe[0] = -1;
   if (!spawned || !WIFEXITED (status) || WEXITSTATUS (status) != 0)
-    goto out;
+    {
+      g_warning ("OEM delete worker did not confirm deletion; gallery publication was not attempted");
+      goto out;
+    }
   outfile = openat (dirfd, output_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (outfile < 0 || fstat (outfile, &info) || !S_ISREG (info.st_mode) ||
       info.st_uid != 0 || (info.st_mode & 0777) != 0600 ||

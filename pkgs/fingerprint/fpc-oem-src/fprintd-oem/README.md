@@ -16,12 +16,21 @@ file or its recovery link. Cancelled, unmatched and inconclusive results never
 publish adaptation. Discovery ignores the multi-character recovery filenames.
 
 Enrolment has one publisher: the TOD driver returns an opaque FpPrint, and
-fprintd saves it. The native client first journals a root-private, accepted
-export; after saving the print, fprintd syncs the print file and acknowledges
-the matching export SHA-256 to `enrol_transaction.py`. A daemon crash after
-save but before acknowledgement is reconciled when the saved print is loaded.
-An interrupted acknowledgement replays its durable cleanup marker. An
-uncertain TA/export outcome never automatically restarts hardware enrolment.
+fprintd saves it. The native client journals a root-private accepted export
+only after the enrollment reaches its final authorization gate; a failure
+during capture or retries does not create an uncertainty marker. After saving
+the print, fprintd syncs the print file and acknowledges the matching export
+SHA-256 to `enrol_transaction.py`. A daemon crash after save but before
+acknowledgement is reconciled when the saved print is loaded. An interrupted
+acknowledgement replays its durable cleanup marker. An uncertain TA/export
+outcome never automatically restarts hardware enrolment.
+
+For this driver fprintd does not run its duplicate-identification precheck
+before enrollment. That precheck would require an extra, unprompted sensor
+touch and would abort the enrollment if it timed out. `EnrollStart` still
+deletes an existing print for the requested finger label first, matching the
+vendor re-enrolment behavior. A duplicate physical finger enrolled under a
+different label is not detected here.
 
 For new enrollments fprintd publishes one root-private `.gallery` per user and
 device. Its version-2 `(uaya(uu))` data contains the opaque TA database and up
@@ -39,8 +48,7 @@ an inherited private pipe to the authenticated OEM worker, which confirms
 selective TA deletion before fprintd durably replaces the gallery. The last
 deletion writes an authoritative empty mapping rather than reviving old files.
 An uncertain export or disk commit leaves private recovery material and never
-reports success. Enrollment's duplicate precheck is scoped to the claimed
-user's gallery, so different users cannot be cross-compared by this precheck.
+reports success.
 
 Native target compilation and real system-bus discovery/Claim/Release passed.
 The recorded desktop-r3 boot has a real OEM print and passed same-finger,

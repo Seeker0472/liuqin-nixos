@@ -1,17 +1,12 @@
 --- a/src/file_storage.c
 +++ b/src/file_storage.c
-@@ -134,4 +134,7 @@
-   gsize len;
-   int r;
+@@ -136,2 +136,5 @@
  
 +  if (g_strcmp0 (fp_print_get_driver (print), "fpc1264_oem") == 0)
 +    return file_storage_oem_save (print);
 +
    base_store = file_storage_get_basestore_for_username (fp_print_get_username (print));
-@@ -210,6 +213,13 @@
- 
-   g_autoptr(FpPrint) new = NULL;
-   int r;
+@@ -213,2 +216,9 @@
  
 +  if (g_strcmp0 (fp_device_get_driver (dev), "fpc1264_oem") == 0)
 +    {
@@ -21,46 +16,32 @@
 +    }
 +
    base_store = file_storage_get_basestore_for_username (username);
- 
-@@ -230,6 +240,8 @@
-   if (!fp_print_compatible (new, dev))
-     return -EINVAL;
+@@ -233,2 +243,4 @@
  
 +  file_storage_oem_enroll_reconcile (new);
 +
    *print = g_steal_pointer (&new);
-   return 0;
- }
-@@ -245,5 +257,9 @@
- 
-   base_store = file_storage_get_basestore_for_username (username);
+@@ -247,2 +259,6 @@
  
 +  if (g_strcmp0 (fp_device_get_driver (dev), "fpc1264_oem") == 0 &&
 +      file_storage_oem_discover (dev, username, NULL))
 +    return file_storage_oem_delete (dev, finger, username);
 +
    path = get_path_to_print_dscv (dev, finger, base_store);
- 
-@@ -325,4 +341,8 @@
-            username, storedir);
+@@ -326,2 +342,6 @@
  
 +  if (g_strcmp0 (fp_device_get_driver (dev), "fpc1264_oem") == 0 &&
 +      file_storage_oem_discover (dev, username, &list))
 +    return list;
 +
    list = scan_dev_storedir (storedir, list);
- 
-@@ -366,3 +366,5 @@
-   g_clear_pointer (&storage_path, g_free);
-   return 0;
+@@ -368 +388,3 @@
  }
 +
 +#include "oem-update.inc"
 --- a/src/file_storage.h
 +++ b/src/file_storage.h
-@@ -38,3 +38,14 @@
- GSList *file_storage_discover_prints (FpDevice   *dev,
-                                       const char *username);
+@@ -40 +40,12 @@
  GSList *file_storage_discover_users (void);
 +
 +gboolean file_storage_print_data_update (FpPrint *, FpPrint *, GCancellable *, GError **);
@@ -75,27 +56,12 @@
 +int file_storage_oem_delete (FpDevice *, FpFinger, const gchar *);
 --- a/src/device.c
 +++ b/src/device.c
-@@ -32,6 +32,7 @@
- #include "fprintd-dbus.h"
- #include "fprintd.h"
- #include "storage.h"
+@@ -34,0 +35 @@
 +#include "file_storage.h"
- 
- #define VERIFY_STOP_DEVICE_WAIT 1 /* Seconds to wait for the device to complete */
- 
-@@ -1545,6 +1546,8 @@
-   FprintDevice *rdev = user_data;
-   FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
-   gboolean matched;
+@@ -1547,0 +1549,2 @@
 +  g_autoptr(GError) storage_error = NULL;
 +  FpPrint *original = NULL;
-   gboolean cancelled;
- 
-   g_assert_true (error == NULL || error->domain == FP_DEVICE_RETRY);
-@@ -1552,7 +1555,21 @@
-   cancelled = g_cancellable_is_cancelled (priv->current_cancellable);
-   matched = match != NULL && cancelled == FALSE;
- 
+@@ -1555 +1558,15 @@
 -  report_verify_status (rdev, matched, error);
 +  if (match && g_strcmp0 (fp_device_get_driver (device), "fpc1264_oem") == 0)
 +    original = g_object_get_data (G_OBJECT (match), "liuqin-fpc-oem-original");
@@ -112,44 +78,20 @@
 +      g_object_set_data (G_OBJECT (match), "liuqin-fpc-oem-original", NULL);
 +    }
 +  report_verify_status (rdev, matched, storage_error ? storage_error : error);
- }
- 
- static void
-@@ -2048,2 +2065,5 @@
-       r = store.print_data_save (print);
+@@ -2048,0 +2066,3 @@
 +      if (r == 0 && g_strcmp0 (fp_print_get_driver (print), "fpc1264_oem") == 0 &&
 +          !file_storage_oem_enroll_sync (print))
 +        r = -EIO;
-       if (r != 0)
-@@ -2103,9 +2123,12 @@
-       /* Retry or clean up. */
-       if (retry)
-         {
-           g_autoptr(GPtrArray) all_prints = NULL;
-+          g_autoptr(SessionData) session = session_data_get (priv);
- 
--          all_prints = load_all_prints (rdev);
-+          all_prints = g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") == 0
-+            ? load_user_prints (rdev, session->username)
-+            : load_all_prints (rdev);
-           fp_device_identify (priv->dev,
-                               all_prints,
-                               priv->current_cancellable,
-@@ -2226,7 +2249,8 @@
-   priv->current_action = ACTION_ENROLL;
- 
-   if (fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_STORAGE) &&
-       !fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_STORAGE_LIST) &&
+@@ -2229,0 +2250 @@
 +      g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") != 0 &&
-       is_first_enrollment (rdev))
-     {
-       g_autoptr(GError) clear_err = NULL;
-@@ -2239,5 +2263,7 @@
-   if (fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_IDENTIFY))
-     {
--      g_autoptr(GPtrArray) all_prints = load_all_prints (rdev);
-+      g_autoptr(GPtrArray) all_prints =
-+        g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") == 0
-+        ? load_user_prints (rdev, session->username) : load_all_prints (rdev);
- 
-       /* We (now) have the policy that there must be no duplicate prints.
+@@ -2239 +2260,9 @@
+-  if (fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_IDENTIFY))
++  /* The OEM TA has no separate identity/pre-enrol step. Requiring fprintd's
++   * duplicate scan would add a touch the desktop does not prompt for and
++   * would abort enrollment when that scan timed out; the vendor HAL goes
++   * straight from authorization to BEGIN_ENROL. Re-enrolling an existing
++   * finger label still deletes the old print above. A duplicate physical
++   * finger under a different label is not detected on this device. */
++  if (g_strcmp0 (fp_device_get_driver (priv->dev), "fpc1264_oem") == 0)
++    enroll_start (rdev);
++  else if (fp_device_has_feature (priv->dev, FP_DEVICE_FEATURE_IDENTIFY))

@@ -67,8 +67,13 @@ def failure(code):
 def stream_enrol_line(line):
     line = line.rstrip("\r\n")
     if line in NATIVE_PHASES:
-        event("phase", code=NATIVE_PHASES[line])
-    elif response := TEE_RESPONSE.fullmatch(line):
+        phase = NATIVE_PHASES[line]
+        event("phase", code=phase)
+        # END_ENROL is the first command that can leave a template in the TA.
+        # The custody marker must exist before that invoke, regardless of what
+        # happens to the following authorization or export.
+        return "arm" if phase == "end_enrol" else None
+    if response := TEE_RESPONSE.fullmatch(line):
         status = int(response.group(1))
         if -4096 <= status < 0 and (status & 0xFFFFFFFF) == int(response.group(2), 16):
             event("ta_reject", status=status)
@@ -78,14 +83,15 @@ def stream_enrol_line(line):
         event("lift")
     elif line == "enrol_authorization_phase=end_enrol":
         event("finalizing")
+        return "arm"
     else:
         progress = PROGRESS.fullmatch(line)
         if progress:
             status, remaining = map(int, progress.groups())
-            # Zero is the completed TA enrol phase; a positive status is an
-            # accepted intermediate sample with a remaining-touch count.
-            if (status == 0 and remaining == 0) or (status > 0 and remaining > 0):
-                event("sample", remaining=remaining)
+            # The vendor HAL treats fpc_tee_enrol status 0 as the final
+            # sample; every other status merely asks for another touch.
+            # `remaining` is diagnostic and has no promised sequence.
+            event("sample", status=status, remaining=remaining)
         elif CAPTURE_REJECTED.fullmatch(line):
             event("retry", code="capture_rejected")
         elif line in ("native_credential_provider=BUSY", "oem_runtime=BUSY"):
@@ -299,7 +305,7 @@ def main():
                 if cancelled:
                     child.send_signal(signal.SIGTERM)
 
-    def run_enrol(command, inherited):
+    def run_enrol(command, inherited, arm):
         nonlocal child
         if cancelled:
             return 1, None
@@ -310,13 +316,28 @@ def main():
                                  stderr=subprocess.STDOUT, text=True, bufsize=1,
                                  errors="replace")
         busy = None
-        with child.stdout:
-            for line in child.stdout:
-                busy = stream_enrol_line(line) or busy
-                if cancelled and child.poll() is None:
-                    child.send_signal(signal.SIGTERM)
-        result = child.wait()
-        child = None
+        failure = None
+        try:
+            with child.stdout:
+                for line in child.stdout:
+                    action = stream_enrol_line(line)
+                    if action == "arm":
+                        try:
+                            arm()
+                        except BaseException as error:
+                            failure = error
+                            if child.poll() is None:
+                                child.send_signal(signal.SIGTERM)
+                            break
+                    elif action == "busy":
+                        busy = action
+                    if cancelled and child.poll() is None:
+                        child.send_signal(signal.SIGTERM)
+        finally:
+            result = child.wait()
+            child = None
+        if failure is not None:
+            raise failure
         return (1 if cancelled else result), busy
 
     signal.signal(signal.SIGINT, cancel_operation)
@@ -480,7 +501,8 @@ def main():
             operation = [arguments[0], str(uid), str(input_fd)]
         if desktop_enrol:
             result, busy = run_enrol([sys.executable, "-u", str(here / "native_credentials.py"),
-                                      "--state-dir", str(state), *operation], input_fds)
+                                      "--state-dir", str(state), *operation], input_fds,
+                                     transaction.arm)
             if result:
                 raise CredentialFailure(busy or "runtime_failure")
             transaction.commit()
@@ -532,6 +554,10 @@ def main():
         return 2
     finally:
         if transaction is not None:
+            try:
+                transaction.abort()
+            except OSError:
+                pass
             transaction.close()
         for descriptor in reversed(descriptors):
             os.close(descriptor)

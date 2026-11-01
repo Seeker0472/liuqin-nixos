@@ -45,14 +45,36 @@ class EnrolProtocolTests(unittest.TestCase):
                 stream_enrol_line(line)
         self.assertEqual(output.getvalue().splitlines(), [
             "fpc_event=1 kind=ready",
-            "fpc_event=1 kind=sample remaining=19",
+            "fpc_event=1 kind=sample status=1 remaining=19",
             "fpc_event=1 kind=lift",
             "fpc_event=1 kind=ready",
             "fpc_event=1 kind=retry code=capture_rejected",
             "fpc_event=1 kind=lift",
             "fpc_event=1 kind=ready",
-            "fpc_event=1 kind=sample remaining=18",
+            "fpc_event=1 kind=sample status=1 remaining=18",
         ])
+
+    def test_ta_status_not_remaining_decides_the_final_sample(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            stream_enrol_line("enrol_progress_status=0 remaining=0")
+            stream_enrol_line("enrol_progress_status=0 remaining=19")
+            stream_enrol_line("enrol_progress_status=1 remaining=0")
+        self.assertEqual(output.getvalue().splitlines(), [
+            "fpc_event=1 kind=sample status=0 remaining=0",
+            "fpc_event=1 kind=sample status=0 remaining=19",
+            "fpc_event=1 kind=sample status=1 remaining=0",
+        ])
+
+    def test_end_enrol_hints_arm_the_custody_marker(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(stream_enrol_line("command=11 subcommand=3"), "arm")
+            self.assertEqual(stream_enrol_line("enrol_authorization_phase=end_enrol"), "arm")
+            self.assertIsNone(stream_enrol_line("command=11 subcommand=2"))
+        self.assertEqual(output.getvalue(), "fpc_event=1 kind=phase code=end_enrol\n"
+                                             "fpc_event=1 kind=finalizing\n"
+                                             "fpc_event=1 kind=phase code=sample\n")
 
     def test_native_failure_phase_exposes_no_untrusted_diagnostics(self):
         output = io.StringIO()
@@ -208,6 +230,7 @@ class TransactionTests(unittest.TestCase):
 
     def test_accepted_export_replays_without_new_uncertainty_marker(self):
         self.transaction.begin()
+        self.transaction.arm()
         self.transaction.database.write_bytes(b"opaque export")
         os.chmod(self.transaction.database, 0o600)
         self.transaction.commit()
@@ -221,12 +244,37 @@ class TransactionTests(unittest.TestCase):
 
     def test_uncertainty_blocks_replay_without_erase(self):
         self.transaction.begin()
+        self.assertFalse(self.transaction.uncertain.exists())
+        self.transaction.arm()
         with self.assertRaises(ExportUncertain):
             self.transaction.begin()
         self.assertTrue(self.transaction.uncertain.exists())
 
+    def test_early_failure_aborts_without_blocking_a_retry(self):
+        self.transaction.begin()
+        self.transaction.abort()
+        self.assertFalse(self.transaction.uncertain.exists())
+        self.assertFalse(self.transaction.directory.exists())
+        retry = PendingTransaction("alice", "right-index-finger", root=self.root)
+        try:
+            retry.begin()
+            retry.arm()
+            self.assertTrue(retry.uncertain.exists())
+        finally:
+            retry.close()
+
+    def test_armed_failure_preserves_the_custody_marker(self):
+        self.transaction.begin()
+        self.transaction.arm()
+        self.transaction.abort()
+        self.assertTrue(self.transaction.uncertain.exists())
+        self.assertTrue(self.transaction.directory.exists())
+        with self.assertRaises(ExportUncertain):
+            self.transaction.begin()
+
     def test_bad_ack_preserves_pending(self):
         self.transaction.begin()
+        self.transaction.arm()
         self.transaction.database.write_bytes(b"opaque export")
         os.chmod(self.transaction.database, 0o600)
         self.transaction.commit()
@@ -240,6 +288,7 @@ class TransactionTests(unittest.TestCase):
 
     def test_interrupted_ack_recovers_without_replaying_or_losing_export(self):
         self.transaction.begin()
+        self.transaction.arm()
         self.transaction.database.write_bytes(b"opaque export")
         os.chmod(self.transaction.database, 0o600)
         self.transaction.commit()
@@ -264,10 +313,13 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(self.transaction.acknowledged.exists())
         self.assertFalse(self.transaction.ready.exists())
         self.transaction.begin()
+        self.assertFalse(self.transaction.uncertain.exists())
+        self.transaction.arm()
         self.assertTrue(self.transaction.uncertain.exists())
 
     def test_other_finger_cannot_restart_enrolment(self):
         self.transaction.begin()
+        self.transaction.arm()
         other = PendingTransaction("alice", "left-thumb", root=self.root)
         try:
             with self.assertRaises(ExportUncertain):
@@ -305,6 +357,7 @@ class GalleryTransactionTests(unittest.TestCase):
 
     def accepted_export(self):
         self.transaction.begin()
+        self.transaction.arm()
         self.transaction.database.write_bytes(self.data)
         self.transaction.ids.write_bytes(self.identities)
         os.chmod(self.transaction.database, 0o600)

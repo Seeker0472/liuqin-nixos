@@ -26,12 +26,6 @@ typedef struct {
   gboolean enroll_active;
   gboolean enroll_stream_done;
   gboolean enroll_wait_done;
-  gboolean enroll_ready;
-  gboolean enroll_waiting_down;
-  gboolean enroll_lift_requested;
-  gboolean enroll_final_sample;
-  gboolean enroll_finalizing;
-  gboolean enroll_recovered;
   gboolean enroll_committed;
   gint enroll_exit_status;
   GError *enroll_error;
@@ -56,6 +50,10 @@ typedef struct {
 typedef struct { FpDeviceClass parent; } FpiDeviceFpc1264OemClass;
 G_DEFINE_TYPE (FpiDeviceFpc1264Oem, fpi_device_fpc1264_oem, FP_TYPE_DEVICE)
 
+/* The vendor HAL uses 20 accepted captures. The trustlet, not this estimate,
+ * decides completion; grow the estimate if a newer firmware needs more. */
+#define LIUQIN_ENROL_PROVISIONAL_STAGES 20
+
 static void
 clear_operation (FpiDeviceFpc1264Oem *self)
 {
@@ -66,15 +64,11 @@ clear_operation (FpiDeviceFpc1264Oem *self)
   self->enroll_line_length = 0;
   self->enroll_output_bytes = 0;
   self->enroll_stages = 0;
+  if (fp_device_get_nr_enroll_stages (FP_DEVICE (self)) != LIUQIN_ENROL_PROVISIONAL_STAGES)
+    fpi_device_set_nr_enroll_stages (FP_DEVICE (self), LIUQIN_ENROL_PROVISIONAL_STAGES);
   self->enroll_active = FALSE;
   self->enroll_stream_done = FALSE;
   self->enroll_wait_done = FALSE;
-  self->enroll_ready = FALSE;
-  self->enroll_waiting_down = FALSE;
-  self->enroll_lift_requested = FALSE;
-  self->enroll_final_sample = FALSE;
-  self->enroll_finalizing = FALSE;
-  self->enroll_recovered = FALSE;
   self->enroll_committed = FALSE;
   self->enroll_exit_status = -1;
   g_clear_object (&self->child);
@@ -133,11 +127,10 @@ close_device (FpDevice *device)
   fpi_device_close_complete (device, NULL);
 }
 
-/* The OEM trustlet requires 20 accepted captures. Never report the final
- * stage until END, inventory, export and the private output are complete. */
-#define LIUQIN_ENROL_MAX_STAGES 20
 #define LIUQIN_ENROL_LINE_LIMIT 1024
-#define LIUQIN_ENROL_OUTPUT_LIMIT (64u * 1024u)
+/* The child is the root-owned OEM worker, not untrusted input. A long
+ * enrollment with many capture retries must not hit a small byte cap. */
+#define LIUQIN_ENROL_OUTPUT_LIMIT (1024u * 1024u)
 
 static const gchar *const finger_names[] = {
   NULL, "left-thumb", "left-index-finger", "left-middle-finger",
@@ -318,24 +311,28 @@ enrol_error_code_valid (const gchar *code)
 }
 
 /* Only these fixed, versioned lines are trusted; unstructured OEM output is
- * ignored and is never written to the journal or interpolated into errors. */
+ * ignored and is never written to the journal or interpolated into errors.
+ *
+ * The worker's committed event after a zero exit status is the only proof of
+ * an accepted export. Progress, ready, lift, retry and phase lines are UI or
+ * diagnostic hints from the vendor HAL flow; a reordered or missing hint must
+ * never discard an enrollment the trustlet completed. */
 static void
 enrol_parse_line (FpDevice *device, const gchar *line)
 {
   FpiDeviceFpc1264Oem *self = (FpiDeviceFpc1264Oem *) device;
-  const gchar *remaining_prefix = "fpc_event=1 kind=sample remaining=";
+  const gchar *sample_prefix = "fpc_event=1 kind=sample status=";
 
   if (g_str_has_prefix (line, "fpc_error=")) {
     const gchar *code = line + strlen ("fpc_error=");
-    if (!enrol_error_code_valid (code) || self->enroll_error_code) {
-      enrol_fail (self, "Invalid OEM enrolment error protocol");
-      return;
-    }
-    self->enroll_error_code = g_strdup (code);
+    if (!self->enroll_error_code)
+      self->enroll_error_code = g_strdup (enrol_error_code_valid (code) ? code :
+                                          "runtime_failure");
     return;
   }
-  if (self->enroll_error_code)
+  if (self->enroll_error_code || self->enroll_committed)
     return;
+
   if (g_str_has_prefix (line, "fpc_event=1 kind=phase code=")) {
     static const gchar *const phases[] = {
       "listener", "bio_init", "set_gid", "load_database", "set_group",
@@ -343,110 +340,81 @@ enrol_parse_line (FpDevice *device, const gchar *line)
       "sensor_wait", "authorization", "export", "timeout", NULL
     };
     const gchar *code = line + strlen ("fpc_event=1 kind=phase code=");
-    if (self->enroll_committed)
-      goto invalid;
     for (guint i = 0; phases[i]; i++)
       if (g_str_equal (code, phases[i])) {
         self->enroll_failure_phase = phases[i];
-        return;
+        break;
       }
-    goto invalid;
+    return;
   }
-  else if (g_str_has_prefix (line, "fpc_event=1 kind=ta_reject status=")) {
+  if (g_str_has_prefix (line, "fpc_event=1 kind=ta_reject status=")) {
     const gchar *value = line + strlen ("fpc_event=1 kind=ta_reject status=");
     gchar *end = NULL;
     gint64 status;
-    if (self->enroll_committed || *value != '-' || !g_ascii_isdigit (value[1]))
-      goto invalid;
+    if (*value != '-' || !g_ascii_isdigit (value[1]))
+      return;
     status = g_ascii_strtoll (value, &end, 10);
-    if (*end || status >= 0 || status < -4096)
-      goto invalid;
-    self->enroll_ta_status = (gint) status;
+    if (!*end && status < 0 && status >= -4096)
+      self->enroll_ta_status = (gint) status;
+    return;
   }
-  else if (g_str_equal (line, "fpc_event=1 kind=ready")) {
-    if (self->enroll_waiting_down ||
-        (self->enroll_ready && !self->enroll_lift_requested) ||
-        self->enroll_recovered || self->enroll_final_sample ||
-        self->enroll_finalizing || self->enroll_committed)
-      goto invalid;
-    self->enroll_ready = TRUE;
-    self->enroll_waiting_down = TRUE;
-    self->enroll_lift_requested = FALSE;
+  if (g_str_equal (line, "fpc_event=1 kind=ready")) {
     fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+    return;
   }
-  else if (g_str_has_prefix (line, remaining_prefix)) {
-    const gchar *value = line + strlen (remaining_prefix);
+  if (g_str_has_prefix (line, sample_prefix)) {
+    const gchar *value = line + strlen (sample_prefix);
     gchar *end = NULL;
+    gint64 status;
     guint64 remaining;
-    if (!self->enroll_waiting_down || self->enroll_recovered ||
-        self->enroll_finalizing || self->enroll_committed ||
-        self->enroll_final_sample || !g_ascii_isdigit (*value))
-      goto invalid;
-    remaining = g_ascii_strtoull (value, &end, 10);
-    /* The vendor defines remaining, not a host-side exact 19..0 sequence.
-     * The old working pipeline accepted any positive intermediate result and
-     * finalized only on status 0. Do not abort a valid TA enrolment because
-     * firmware uses a different intermediate count. */
-    if (*end || remaining > 40)
-      goto invalid;
-    self->enroll_waiting_down = FALSE;
-    fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
-    if (remaining == 0)
-      self->enroll_final_sample = TRUE;
-    else if (self->enroll_stages < LIUQIN_ENROL_MAX_STAGES - 1) {
-      self->enroll_stages++;
-      fpi_device_enroll_progress (device, (gint) self->enroll_stages, NULL, NULL);
-    }
-  }
-  else if (g_str_equal (line, "fpc_event=1 kind=lift")) {
-    if (!self->enroll_ready || self->enroll_waiting_down ||
-        self->enroll_lift_requested || self->enroll_recovered ||
-        self->enroll_finalizing || self->enroll_committed ||
-        self->enroll_final_sample)
-      goto invalid;
-    self->enroll_lift_requested = TRUE;
-    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
-    fpi_device_enroll_progress (device, (gint) MIN (self->enroll_stages,
-                                                   LIUQIN_ENROL_MAX_STAGES - 1),
-                                NULL, fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
-                                                                  "Lift the finger, then press it again"));
-  }
-  else if (g_str_equal (line, "fpc_event=1 kind=retry code=capture_rejected")) {
-    if (!self->enroll_waiting_down || self->enroll_recovered ||
-        self->enroll_finalizing || self->enroll_committed ||
-        self->enroll_final_sample)
-      goto invalid;
-    self->enroll_waiting_down = FALSE;
-    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
-    fpi_device_enroll_progress (device, (gint) MIN (self->enroll_stages,
-                                                   LIUQIN_ENROL_MAX_STAGES - 1),
-                                NULL, fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL));
-  }
-  else if (g_str_equal (line, "fpc_event=1 kind=finalizing")) {
-    if (!self->enroll_ready || self->enroll_recovered ||
-        self->enroll_finalizing || self->enroll_committed ||
-        !self->enroll_final_sample)
-      goto invalid;
-    self->enroll_finalizing = TRUE;
-  }
-  else if (g_str_equal (line, "fpc_event=1 kind=recovered")) {
-    if (self->enroll_recovered || self->enroll_ready || self->enroll_stages ||
-        self->enroll_final_sample || self->enroll_finalizing || self->enroll_committed)
-      goto invalid;
-    self->enroll_recovered = TRUE;
-  }
-  else if (g_str_equal (line, "fpc_event=1 kind=committed")) {
-    if ((!self->enroll_finalizing && !self->enroll_recovered) ||
-        self->enroll_committed)
-      goto invalid;
-    self->enroll_committed = TRUE;
-  }
-  else if (g_str_has_prefix (line, "fpc_event="))
-    goto invalid;
-  return;
 
-invalid:
-  enrol_fail (self, "Invalid OEM enrolment event protocol");
+    if (!g_ascii_isdigit (*value))
+      return;
+    status = g_ascii_strtoll (value, &end, 10);
+    if (status < 0 || status > G_MAXINT || !g_str_has_prefix (end, " remaining="))
+      return;
+    value = end + strlen (" remaining=");
+    if (!g_ascii_isdigit (*value))
+      return;
+    remaining = g_ascii_strtoull (value, &end, 10);
+    if (*end || remaining > G_MAXUINT32)
+      return;
+
+    fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
+    /* The vendor HAL finalizes exactly when fpc_tee_enrol returns status 0.
+     * `remaining` is informational and has no promised host-side sequence. */
+    if (status == 0)
+      return;
+    if (self->enroll_stages >= G_MAXINT - 1)
+      return;
+    self->enroll_stages++;
+    if ((gint) self->enroll_stages >= fp_device_get_nr_enroll_stages (device))
+      fpi_device_set_nr_enroll_stages (device, (gint) self->enroll_stages + 1);
+    fpi_device_enroll_progress (device, (gint) self->enroll_stages, NULL, NULL);
+    return;
+  }
+  if (g_str_equal (line, "fpc_event=1 kind=lift")) {
+    gint nr = fp_device_get_nr_enroll_stages (device);
+    gint stage = (gint) MIN (self->enroll_stages, (guint) MAX (nr - 1, 0));
+    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
+    fpi_device_enroll_progress (device, stage, NULL,
+                                fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
+                                                          "Lift the finger, then press it again"));
+    return;
+  }
+  if (g_str_equal (line, "fpc_event=1 kind=retry code=capture_rejected")) {
+    gint nr = fp_device_get_nr_enroll_stages (device);
+    gint stage = (gint) MIN (self->enroll_stages, (guint) MAX (nr - 1, 0));
+    fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
+    fpi_device_enroll_progress (device, stage, NULL,
+                                fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL));
+    return;
+  }
+  if (g_str_equal (line, "fpc_event=1 kind=committed"))
+    self->enroll_committed = TRUE;
+  /* finalizing and recovered only describe progress; completion still needs
+   * the worker's zero exit status and committed event. Unknown events are
+   * ignored so a newer worker cannot abort an otherwise valid enrollment. */
 }
 
 static gboolean
@@ -571,10 +539,6 @@ enrol_maybe_complete (FpDevice *device)
   cancelled = self->cancelled || fpi_device_action_is_cancelled (device);
   if (!cancelled && !self->enroll_error && !self->enroll_error_code &&
       self->enroll_exit_status == 0 && self->enroll_committed &&
-      ((self->enroll_recovered && !self->enroll_ready && !self->enroll_stages &&
-        !self->enroll_final_sample && !self->enroll_finalizing) ||
-       (!self->enroll_recovered && self->enroll_ready &&
-        self->enroll_final_sample && self->enroll_finalizing)) &&
       self->enrolled_print &&
       read_private_database (self->database, &database, &length, &error)) {
     if (read_enrol_inventory (self, fp_print_get_finger (self->enrolled_print),
@@ -583,7 +547,7 @@ enrol_maybe_complete (FpDevice *device)
     if (print) {
       fpi_print_set_type (print, FPI_PRINT_RAW);
       g_object_set (print, "fpi-data", replacement, NULL);
-      fpi_device_enroll_progress (device, LIUQIN_ENROL_MAX_STAGES, NULL, NULL);
+      fpi_device_enroll_progress (device, fp_device_get_nr_enroll_stages (device), NULL, NULL);
     }
   }
   else if (!cancelled && self->enroll_error)
@@ -1187,7 +1151,7 @@ fpi_device_fpc1264_oem_class_init (FpiDeviceFpc1264OemClass *klass)
   device->full_name = "FPC1264 OEM on liuqin";
   device->type = FP_DEVICE_TYPE_VIRTUAL;
   device->scan_type = FP_SCAN_TYPE_PRESS;
-  device->nr_enroll_stages = LIUQIN_ENROL_MAX_STAGES;
+  device->nr_enroll_stages = LIUQIN_ENROL_PROVISIONAL_STAGES;
   device->id_table = devices;
   device->temp_hot_seconds = -1;
   device->probe = probe;

@@ -9,17 +9,24 @@ readable and verifiable without rewriting them.
 
 Enrolment uses `user_credentials.py --enrol-prepared`: the password-derived
 input must first have been prepared through a configured PAM service or
-`liuqin-fpc-credential --prepare-acceptance`. The worker writes an uncertainty
-marker before calling the FPC trustlet, then a private accepted export and
-finger-bound marker after successful END_ENROL. The driver reports only
-allowlisted versioned sample/retry/lift/finalization events to libfprint.
-Child exit, stdout EOF and the committed event must all agree before it
-returns an opaque print. A cancellation cannot publish an incomplete result.
+`liuqin-fpc-credential --prepare-acceptance`. The worker writes the uncertainty
+marker only when the enrollment reaches its final authorization gate, then a
+private accepted export and finger-bound marker after successful END_ENROL.
+A failure or cancellation during capture, retries or lift handling therefore
+leaves no marker and can be retried; only an interrupted final export is
+preserved for explicit recovery. The driver reports ready/sample/retry/lift/
+finalization events as hints to libfprint, but they are not a state machine:
+child exit, stdout EOF and the committed event are the authority. A
+cancellation cannot publish an incomplete result.
 
-Intermediate `remaining` values are vendor feedback, not a promised exact
-19-to-0 sequence. Only the native final-sample event followed by the accepted
-export may complete an enrolment; bounded progress and the driver's own
-protocol errors remain visible without forwarding raw child output.
+The trustlet's `fpc_tee_enrol` status 0 is the final sample; `remaining` is
+vendor feedback with no promised 19-to-0 sequence. Completion requires a zero
+child exit, the committed event, and a valid private database/inventory, so a
+reordered or missing progress hint cannot discard a completed enrollment.
+fprintd also skips its pre-enrol duplicate identification scan for this
+driver: that scan would add an unprompted touch and abort enrollment when it
+timed out. Re-enrolling an existing finger label still deletes the old print
+first; a duplicate physical finger under a different label is not detected.
 
 If fprintd crashes after the trustlet accepts a template, the next enrolment
 can recover the accepted export and private ID inventory without calling the

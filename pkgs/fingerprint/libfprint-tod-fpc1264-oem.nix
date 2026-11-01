@@ -52,10 +52,6 @@ stdenv.mkDerivation (finalAttrs: {
     # the rest of the component's contract (LIUQIN_FPC_OEM_RUNTIME must be an absolute,
     # root-owned, non-writable directory) is unchanged.
     cp $tod/fpc1264-oem.c build/fpc1264-oem.c
-    grep -qF 'nr_enroll_stages = LIUQIN_ENROL_MAX_STAGES' build/fpc1264-oem.c || {
-      echo "libfprint-tod-fpc1264-oem: enrolment stage declaration is missing" >&2
-      exit 1
-    }
     substituteInPlace build/fpc1264-oem.c \
       --replace-fail '"/usr/bin/python3"' '"${python3}/bin/python3"'
     grep -qF '"${python3}/bin/python3"' build/fpc1264-oem.c || {

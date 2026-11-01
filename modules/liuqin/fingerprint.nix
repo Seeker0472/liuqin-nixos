@@ -124,6 +124,18 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Keep the enrollment press counter in Settings specific to this tablet.
+    # GNOME itself remains unmodified on other systems using this package set.
+    nixpkgs.overlays = [
+      (final: prev: {
+        gnome-control-center = prev.gnome-control-center.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [
+            ../../pkgs/fingerprint/gnome-settings-enroll-press-count.patch
+          ];
+        });
+      })
+    ];
+
     services.fprintd = {
       enable = true;
       # fprintd 1.94.5 + the OEM commit-before-VerifyStatus change, linked

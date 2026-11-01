@@ -833,16 +833,32 @@ static int wait_sensor_irq(int power_fd, const char *phase, int target, int time
 			break;
 		}
 		/* Reading before poll also covers a finger held during 10/3 or
-		 * 10/2. A notification between read and poll stays pending. */
-		ready = poll(&event, 1, (int)remaining);
-		if (ready < 0 && errno == EINTR)
-			continue;
-		if (ready != 1 || !(event.revents & POLLPRI)) {
+		 * 10/2. The vendor HAL polls with a one-second timeout and
+		 * rereads the level; the sensor's IRQ line is a short pulse, so
+		 * waiting the whole 120 seconds for a notification can miss a
+		 * press. Use a short timeout and reread the level regardless of
+		 * whether poll reported a notification. */
+		ready = poll(&event, 1, remaining < 100 ? (int)remaining : 100);
+		if (ready < 0) {
+			if (errno == EINTR)
+				continue;
 			fprintf(stderr, "finger_level_failed=%s poll_result=%d revents=0x%x errno=%d\n",
-				phase, ready, event.revents, ready < 0 ? errno : 0);
+				phase, ready, event.revents, errno);
 			break;
 		}
-		/* POLLERR accompanies POLLPRI on sysfs; reread the GPIO level. */
+		if (ready > 0 && (event.revents & POLLPRI)) {
+			/* GPIO40 is a short event pulse, not a held level. The
+			 * vendor HAL treats the IRQ notification as the finger
+			 * event and lets the TA/capture qualify it; requiring
+			 * the level to still be 1 when userspace wakes drops
+			 * most presses. The level read above already handled a
+			 * finger that was held before arming. */
+			printf("finger_level=%s\n", phase);
+			result = 0;
+			break;
+		}
+		/* A timeout or a POLLERR-only wakeup leads back to the level
+		 * read above; POLLERR without POLLPRI is not a finger event. */
 	}
 out:
 	close(irq_fd);
@@ -862,23 +878,27 @@ static int wait_finger_down(int fd, uint32_t session, int power_fd)
 }
 
 /* HAL fpc_tee_wait_finger_lost: 10/1, then 10/2, GPIO-low wait,
- * 10/11 and 10/1 until the TA also confirms release. */
+ * 10/11 and 10/1 until the TA also confirms release. The vendor waits for
+ * the release; a missed low edge (a quick lift-and-repress) must not abort
+ * the enrolment, so a level timeout rechecks the TA instead of failing. */
 static int wait_finger_lost(int fd, uint32_t session, int power_fd)
 {
 	int status = query(fd, session, SENSOR_CHECK_FINGER_LOST);
 
 	if (status < 0)
 		return -1;
-	if (status)
-		return wait_sensor_irq(power_fd, "up", 0, 30000);
+	if (status && !wait_sensor_irq(power_fd, "up", 0, 120000))
+		return 0;
 	for (unsigned int attempt = 0; attempt < 600; attempt++) {
+		if (operation_cancelled)
+			return -1;
 		status = query(fd, session, SENSOR_WAIT_FINGER_LOST);
 		if (status < 0)
 			return -1;
 		if (status)
 			return status;
-		if (wait_sensor_irq(power_fd, "up", 0, 30000))
-			return -1;
+		if (wait_sensor_irq(power_fd, "up", 0, 120000))
+			continue;
 		status = query(fd, session, SENSOR_CHECK_FINGER_STATE);
 		if (status < 0)
 			return -1;
@@ -1704,7 +1724,7 @@ int main(int argc, char **argv)
 			result = 0;
 			goto out;
 		}
-		for (unsigned int attempt = 1; attempt <= 40; attempt++) {
+		for (unsigned int attempt = 1; ; attempt++) {
 			if (operation_cancelled)
 				goto out;
 			printf("WAIT enrol attempt=%u: arming finger capture\n", attempt);
@@ -1786,8 +1806,6 @@ int main(int argc, char **argv)
 			if (status)
 				printf("finger_lost_wait_retry_status=%d\n", status);
 		}
-		fprintf(stderr, "pipeline_incomplete=attempt_limit remaining=%u\n", remaining);
-		goto out;
 	}
 
 	if (capture_once || capture_after_enter || capture_wait) {

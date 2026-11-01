@@ -83,10 +83,16 @@ sequence and obscured its own protocol error. With that corrected, one
 (2026-10-30/31). A one-shot IRQ counter and post-arm drain could drop early
 presses; removing only the drain caused setup IRQs to trigger rejected
 captures and verification errors. The current kernel exposes GPIO40's
-current level plus non-consuming sysfs IRQ notifications, matching the stock
-HAL's read-before-poll behavior. On the new kernel a reset produced a sticky
+current level plus sysfs IRQ notifications. The worker uses read-before-poll,
+treats a notification as the finger event, and re-reads the level every
+100 ms because the line is a short pulse; the TA and capture qualify the
+event. On the new kernel a reset produced a sticky
 notification and readable level, a no-finger verification waited 15 seconds
 without a false result, and the sensor powered off after cancellation.
+Enrollment now follows the vendor HAL: `fpc_tee_enrol` status 0 is the only
+final-sample signal, `remaining` is diagnostic, fprintd skips its pre-enroll
+duplicate-identification scan, and the custody marker is written only at the
+final authorization gate so a capture-phase failure stays retryable.
 Physical early-press responsiveness and capture-retry handling are not yet
 validated on this build. See [INSTALL.md](INSTALL.md).
 
