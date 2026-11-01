@@ -9,8 +9,11 @@ import io
 import os
 import json
 from pathlib import Path
+import select
 import struct
+import stat
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -19,8 +22,8 @@ from unittest import mock
 from enrol_transaction import ExportUncertain, PendingTransaction
 import acceptance_input
 from acceptance_input import PreparedInputExpired, PreparedInputMissing
-from user_credentials import (CredentialFailure, account_status, stream_enrol_line,
-                              validate_parameters)
+from user_credentials import (CredentialFailure, account_status, await_custody,
+                              stream_enrol_line, validate_parameters)
 
 
 class EnrolProtocolTests(unittest.TestCase):
@@ -66,11 +69,11 @@ class EnrolProtocolTests(unittest.TestCase):
             "fpc_event=1 kind=sample status=1 remaining=0",
         ])
 
-    def test_end_enrol_hints_arm_the_custody_marker(self):
+    def test_end_enrol_hints_do_not_arm_the_custody_marker(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(stream_enrol_line("command=11 subcommand=3"), "arm")
-            self.assertEqual(stream_enrol_line("enrol_authorization_phase=end_enrol"), "arm")
+            self.assertIsNone(stream_enrol_line("command=11 subcommand=3"))
+            self.assertIsNone(stream_enrol_line("enrol_authorization_phase=end_enrol"))
             self.assertIsNone(stream_enrol_line("command=11 subcommand=2"))
         self.assertEqual(output.getvalue(), "fpc_event=1 kind=phase code=end_enrol\n"
                                              "fpc_event=1 kind=finalizing\n"
@@ -227,6 +230,85 @@ class TransactionTests(unittest.TestCase):
         self.output_dir = Path(self.temporary.name) / "output"
         self.output_dir.mkdir(mode=0o700)
         self.output = self.output_dir / "single-finger.db"
+
+    def _gate(self, cancelled=lambda: False):
+        request_read, request_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        errors = []
+
+        def serve():
+            try:
+                await_custody(request_read, ack_write, self.transaction.arm, cancelled)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                os.close(request_read)
+                os.close(ack_write)
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        self.addCleanup(lambda: thread.join(timeout=2))
+        self.addCleanup(lambda: os.close(ack_read))
+        self.addCleanup(lambda: os.close(request_write))
+        return request_write, ack_read, thread, errors
+
+    def test_custody_ack_is_blocked_until_marker_directory_sync_finishes(self):
+        self.transaction.begin()
+        request_write, ack_read, thread, errors = self._gate()
+        syncing = threading.Event()
+        release = threading.Event()
+        original_sync = os.fsync
+        synced = []
+
+        def sync(fd):
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+            synced.append("directory" if is_directory else "marker")
+            if is_directory:
+                syncing.set()
+                if not release.wait(timeout=3):
+                    raise TimeoutError("directory sync gate never released")
+            return original_sync(fd)
+
+        try:
+            with mock.patch("enrol_transaction.os.fsync", side_effect=sync):
+                os.write(request_write, b"M")
+                self.assertTrue(syncing.wait(timeout=3))
+                self.assertTrue(self.transaction.uncertain.exists())
+                self.assertEqual(synced, ["marker", "directory"])
+                self.assertFalse(select.select([ack_read], [], [], 0.05)[0],
+                                 "native client must not advance before directory fsync")
+                release.set()
+                self.assertEqual(os.read(ack_read, 1), b"A")
+                thread.join(timeout=3)
+        finally:
+            release.set()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+
+    def test_cancelled_gate_has_no_marker_and_no_ack(self):
+        self.transaction.begin()
+        request_write, ack_read, thread, errors = self._gate(lambda: True)
+        os.write(request_write, b"M")
+        self.assertEqual(os.read(ack_read, 1), b"")
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(self.transaction.uncertain.exists())
+
+    def test_failed_marker_sync_closes_gate_without_ack_or_retry(self):
+        self.transaction.begin()
+        request_write, ack_read, thread, errors = self._gate()
+        with mock.patch("enrol_transaction.sync_directory",
+                        side_effect=OSError("directory fsync failed")):
+            os.write(request_write, b"M")
+            self.assertEqual(os.read(ack_read, 1), b"",
+                             "native client must fail closed on marker persistence failure")
+            thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertIsInstance(errors[0], OSError)
+        self.assertTrue(self.transaction.uncertain.exists())
+        with self.assertRaises(ExportUncertain):
+            self.transaction.begin()
 
     def test_accepted_export_replays_without_new_uncertainty_marker(self):
         self.transaction.begin()

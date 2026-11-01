@@ -37,7 +37,7 @@ diff -r a/oem_runtime.py b/oem_runtime.py
 +        if hashlib.sha256(candidate).hexdigest() != digest:
 +            print("OEM firmware is shadowed in the shared lookup tree", file=sys.stderr)
 +            return 2
-     if match or inventory_existing or split_added or gallery_delete:
+     if match or gallery_delete:
          client_name = "fpc_build_info"
          client = [str(here / client_name), *arguments]
 @@ -104,7 +119,7 @@

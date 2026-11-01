@@ -691,10 +691,9 @@ enrol (FpDevice *device)
   self->database = g_build_filename (self->directory, "single-finger.db", NULL);
   self->inventory_path = g_build_filename (self->directory, "inventory.bin", NULL);
   if (self->gallery_count && prior_length) {
-    g_autofree gchar *input_path = g_build_filename (self->directory, "input.db", NULL);
-    if (!stage_private_database (input_path, prior, prior_length, &error))
+    self->updated_database = g_build_filename (self->directory, "input.db", NULL);
+    if (!stage_private_database (self->updated_database, prior, prior_length, &error))
       goto failed;
-    self->updated_database = g_steal_pointer (&input_path);
   }
   self->enrolled_print = g_object_ref (print);
   self->cancelled = FALSE;

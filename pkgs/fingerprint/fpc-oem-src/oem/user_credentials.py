@@ -18,6 +18,7 @@ import stat
 import time
 import re
 import subprocess
+import threading
 import sys
 
 from native_credentials import private_directory
@@ -69,10 +70,7 @@ def stream_enrol_line(line):
     if line in NATIVE_PHASES:
         phase = NATIVE_PHASES[line]
         event("phase", code=phase)
-        # END_ENROL is the first command that can leave a template in the TA.
-        # The custody marker must exist before that invoke, regardless of what
-        # happens to the following authorization or export.
-        return "arm" if phase == "end_enrol" else None
+        return None
     if response := TEE_RESPONSE.fullmatch(line):
         status = int(response.group(1))
         if -4096 <= status < 0 and (status & 0xFFFFFFFF) == int(response.group(2), 16):
@@ -83,7 +81,6 @@ def stream_enrol_line(line):
         event("lift")
     elif line == "enrol_authorization_phase=end_enrol":
         event("finalizing")
-        return "arm"
     else:
         progress = PROGRESS.fullmatch(line)
         if progress:
@@ -98,6 +95,19 @@ def stream_enrol_line(line):
             return "busy"
     return None
 
+
+def await_custody(request_fd, ack_fd, arm, cancelled):
+    """Acknowledge exactly one native request only after the marker is durable."""
+    request = os.read(request_fd, 1)
+    if not request:
+        return
+    if request != b"M":
+        raise ValueError("invalid custody request")
+    if cancelled():
+        return
+    arm()
+    if not cancelled():
+        os.write(ack_fd, b"A")
 
 def private_file(path):
     descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -262,17 +272,15 @@ def main():
     prepare_acceptance = len(arguments) == 2 and arguments[0] == "--prepare-acceptance"
     prepared_enrol = len(arguments) in (5, 6) and arguments[0] == "--enrol-prepared"
     enrol = len(arguments) in (5, 6) and arguments[0] == "--enrol"
-    enrol_existing = len(arguments) == 4 and arguments[0] == "--enrol-existing"
     desktop_enrol = enrol or prepared_enrol
     if os.geteuid() != 0 or not state.is_absolute() or not (
             status or create or preflight or sync_password or desktop_enrol or
-            enrol_existing or prepare_acceptance):
+            prepare_acceptance):
         print("usage (root, interactive terminal): user_credentials.py [--state-dir ABSOLUTE_PRIVATE_DIRECTORY] "
               "--status LINUX_USERNAME | --create LINUX_USERNAME | --auth-preflight[-renew] LINUX_USERNAME | "
               "--sync-password LINUX_USERNAME | --prepare-acceptance LINUX_USERNAME | "
               "--enrol-prepared LINUX_USERNAME FINGER OUTPUT_DATABASE [INPUT_DATABASE] OUTPUT_IDENTITIES | "
-              "--enrol LINUX_USERNAME FINGER OUTPUT_DATABASE [INPUT_DATABASE] OUTPUT_IDENTITIES | "
-              "--enrol-existing LINUX_USERNAME INPUT_DATABASE OUTPUT_DATABASE", file=sys.stderr)
+              "--enrol LINUX_USERNAME FINGER OUTPUT_DATABASE [INPUT_DATABASE] OUTPUT_IDENTITIES", file=sys.stderr)
         return 2
     if status:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -309,36 +317,60 @@ def main():
         nonlocal child
         if cancelled:
             return 1, None
-        # The native C client already uses unbuffered stdout. All Python
-        # intermediates are unbuffered too; only allowlisted status lines reach
-        # the desktop. In particular, no diagnostic child output is forwarded.
-        child = subprocess.Popen(command, pass_fds=inherited, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                 errors="replace")
+        request_read, request_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        failure = []
         busy = None
-        failure = None
+        worker = None
         try:
+            # The status pipe is consumed independently of the custody pipe.
+            # A slow Gatekeeper HAT cannot block the marker writer on stdout.
+            child = subprocess.Popen([*command, str(request_write), str(ack_read)],
+                                     pass_fds=(*inherited, request_write, ack_read),
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1, errors="replace")
+            os.close(request_write)
+            request_write = -1
+            os.close(ack_read)
+            ack_read = -1
+
+            def serve_custody():
+                try:
+                    await_custody(request_read, ack_write, arm, lambda: cancelled)
+                except BaseException as error:
+                    failure.append(error)
+                    if child.poll() is None:
+                        child.send_signal(signal.SIGTERM)
+                finally:
+                    os.close(request_read)
+                    os.close(ack_write)
+
+            worker = threading.Thread(target=serve_custody)
+            worker.start()
             with child.stdout:
                 for line in child.stdout:
-                    action = stream_enrol_line(line)
-                    if action == "arm":
-                        try:
-                            arm()
-                        except BaseException as error:
-                            failure = error
-                            if child.poll() is None:
-                                child.send_signal(signal.SIGTERM)
-                            break
-                    elif action == "busy":
-                        busy = action
+                    if stream_enrol_line(line) == "busy":
+                        busy = "busy"
                     if cancelled and child.poll() is None:
                         child.send_signal(signal.SIGTERM)
-        finally:
             result = child.wait()
-            child = None
-        if failure is not None:
-            raise failure
-        return (1 if cancelled else result), busy
+            worker.join()
+            if failure:
+                raise failure[0]
+            return (1 if cancelled else result), busy
+        finally:
+            if worker is None:
+                os.close(request_read)
+                os.close(ack_write)
+            if request_write >= 0:
+                os.close(request_write)
+            if ack_read >= 0:
+                os.close(ack_read)
+            if child is not None:
+                child.wait()
+                child = None
+            if worker is not None:
+                worker.join()
 
     signal.signal(signal.SIGINT, cancel_operation)
     signal.signal(signal.SIGTERM, cancel_operation)
@@ -485,8 +517,6 @@ def main():
             operation = ["--create", str(uid), str(input_fd)]
         elif sync_password:
             operation = ["--change-input", str(uid), str(current_fd), str(input_fd)]
-        elif enrol_existing:
-            operation = ["--enrol-existing", *arguments[2:4], str(uid), str(input_fd)]
         elif desktop_enrol:
             transaction.begin()
             if previous is None:

@@ -229,9 +229,9 @@ powered down after an operation through it.
 +	/* Hold the sensor in reset while its rail comes up. */
 +	gpiod_set_value_cansleep(fpc->reset_gpio, 1);
 +
-+	/* The vendor Android DT fixes this rail at 3.3 V.  The RPMH
-+	 * regulator keeps its bootloader voltage unless it is set here. */
-+	ret = regulator_set_voltage(fpc->vreg, 3300000, 3300000);
++	/* The vendor Android DT fixes this rail at 3.3 V.  PLDO steps by
++	 * 8 mV, so allow 3.304 V; RPMH otherwise keeps the boot voltage. */
++	ret = regulator_set_voltage(fpc->vreg, 3300000, 3304000);
 +	if (ret)
 +		dev_warn(fpc->dev, "could not set fp_vdd_vreg to 3.3 V: %d\n", ret);
 +

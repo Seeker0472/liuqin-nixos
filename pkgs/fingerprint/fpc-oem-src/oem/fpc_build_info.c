@@ -1072,70 +1072,6 @@ out:
 	return result;
 }
 
-/* Inspect an explicitly supplied private gallery; unlike the ambient
- * --template-inventory probe this first imports the requested database. */
-static int inventory_existing(int fd, uint32_t session, const char *database)
-{
-	uint32_t count;
-
-	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
-	    load_database(fd, session, database) ||
-	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
-	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
-	    template_inventory(fd, session, &count))
-		return 1;
-	printf("inventory_existing=OK template_count=%u capture_not_requested=1\n", count);
-	return 0;
-}
-
-/* Split a second template from a two-template gallery in a private lab.
- * Both source databases remain untouched. Deletion affects the loaded TA
- * state, so require proof that the old ID survived the merge and that the
- * new ID is distinct before invoking 11/9. Export remains exclusive.
- */
-static int split_added_template(int fd, uint32_t session,
-				const char *original, const char *merged, const char *output)
-{
-	uint32_t old[5] = {}, both[5] = {}, after[5] = {};
-	uint32_t count = 0, new_id = 0;
-	int result = 1;
-
-	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
-	    load_database(fd, session, original) ||
-	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
-	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
-	    read_finger_ids(fd, session, old, &count) || count != 1) {
-		fprintf(stderr, "gallery_split_refused=original_must_have_one_template\n");
-		goto out;
-	}
-	if (query(fd, session, BIO_INIT) || query(fd, session, BIO_SET_GID) ||
-	    load_database(fd, session, merged) ||
-	    query(fd, session, BIO_SET_ACTIVE_GROUP) ||
-	    query(fd, session, BIO_LOAD_INSTANCE_DATA) ||
-	    read_finger_ids(fd, session, both, &count) || count != 2 ||
-	    (both[0] != old[0] && both[1] != old[0])) {
-		fprintf(stderr, "gallery_split_refused=merged_ids_not_original_plus_one\n");
-		goto out;
-	}
-	new_id = both[0] == old[0] ? both[1] : both[0];
-	printf("gallery_split_ids=distinct old_id_preserved=1\n");
-	if (delete_template(fd, session, old[0]) ||
-	    read_finger_ids(fd, session, after, &count) ||
-	    count != 1 || after[0] != new_id) {
-		fprintf(stderr, "gallery_split_refused=selective_delete_not_proven output_not_written=1\n");
-		goto out;
-	}
-	if (store_database(fd, session, output))
-		goto out;
-	printf("gallery_split=OK new_template_only=1 original_file_unchanged=1\n");
-	result = 0;
-out:
-	explicit_bzero(old, sizeof(old));
-	explicit_bzero(both, sizeof(both));
-	explicit_bzero(after, sizeof(after));
-	return result;
-}
-
 /* A deletion commits only a new, exclusive database after the TA proves
  * every other ID survived. The incoming ID stays in an anonymous FD. */
 static int delete_from_gallery(int fd, uint32_t session,
@@ -1389,6 +1325,31 @@ static int match_existing(int fd, uint32_t session, int power_fd,
 	return matched ? 0 : 3;
 }
 
+/* An acknowledged request proves the parent synced the private marker and
+ * its directory. Stdout progress hints never authorize a TA-mutating invoke. */
+static int await_custody(int request_fd, int ack_fd)
+{
+	char ack;
+	struct pollfd input = { .fd = ack_fd, .events = POLLIN };
+	int ready;
+
+	if (operation_cancelled || write(request_fd, "M", 1) != 1)
+		return -1;
+	for (;;) {
+		if (operation_cancelled)
+			return -1;
+		ready = poll(&input, 1, 30000);
+		if (ready < 0 && errno == EINTR)
+			continue;
+		if (ready <= 0 || !(input.revents & (POLLIN | POLLHUP)))
+			return -1;
+		break;
+	}
+	if (operation_cancelled || read(ack_fd, &ack, 1) != 1 || ack != 'A')
+		return -1;
+	return operation_cancelled ? -1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	uint32_t loader_session, client_session;
@@ -1404,23 +1365,23 @@ int main(int argc, char **argv)
 	int keymaster_probe = argc == 2 && !strcmp(argv[1], "--keymaster-info");
 	int auth_renew_preflight = argc == 4 && !strcmp(argv[1], "--auth-preflight-renew");
 	int auth_preflight = auth_renew_preflight || ((argc == 3 || argc == 4) && !strcmp(argv[1], "--auth-preflight"));
-	int bio_existing = (argc == 6 || argc == 7) && !strcmp(argv[1], "--bio-pipeline-existing");
+	int bio_existing = (argc == 8 || argc == 9) && !strcmp(argv[1], "--bio-pipeline-existing");
 	int bio_pipeline = bio_existing || (argc >= 2 && !strcmp(argv[1], "--bio-pipeline"));
 	int bio_prepare = argc == 2 && !strcmp(argv[1], "--bio-prepare");
 	int db_export_empty = argc == 3 && !strcmp(argv[1], "--db-export-empty");
 	int db_import_export = argc == 4 && !strcmp(argv[1], "--db-import-export");
 	int inventory = argc == 2 && !strcmp(argv[1], "--template-inventory");
-	int inventory_existing_db = argc == 3 && !strcmp(argv[1], "--inventory-existing");
-	int split_added = argc == 5 && !strcmp(argv[1], "--split-added-template");
 	int gallery_match = (argc == 4 || argc == 5) && !strcmp(argv[1], "--match-gallery");
 	int gallery_delete = argc == 5 && !strcmp(argv[1], "--delete-template");
 	int match_single = (argc == 3 || argc == 4) && !strcmp(argv[1], "--match-single");
 	int match = gallery_match || match_single || ((argc == 3 || argc == 4) && !strcmp(argv[1], "--match-existing"));
 	const char *db_path = bio_existing ? argv[3] : argc >= 3 ? argv[2] : "template.db";
-	const char *identity_output_path = bio_existing ? (argc == 7 ? argv[6] : NULL) :
-					   bio_pipeline && argc == 6 ? argv[5] : NULL;
+	const char *identity_output_path = bio_existing ? (argc == 9 ? argv[6] : NULL) :
+					   bio_pipeline && argc == 8 ? argv[5] : NULL;
 	int hat_fd = -1;
 	int challenge_fd = -1;
+	int custody_request_fd = -1;
+	int custody_ack_fd = -1;
 	int loader_fd = -1;
 	int client_fd = -1;
 	int power_fd = -1;
@@ -1429,28 +1390,26 @@ int main(int argc, char **argv)
 	uint32_t previous_ids[5] = {}, previous_count = 0;
 	uint32_t gallery_ids[7] = {};
 
-	if (argc > 7 || (argc > 1 && !init_sensor && !init_bio && !capture_once &&
+	if (argc > 9 || (argc > 1 && !init_sensor && !init_bio && !capture_once &&
 			 !capture_after_enter && !capture_wait && !sensortest && !sensor_otp &&
 			 !finger_lost_check && !hw_auth_probe && !keymaster_probe &&
 			 !auth_preflight && !bio_pipeline &&
 			 !bio_prepare && !db_export_empty && !db_import_export && !inventory &&
-			 !inventory_existing_db && !split_added && !gallery_delete && !match)) {
+			 !gallery_delete && !match)) {
 		fprintf(stderr,
 			"usage: %s [--init-sensor|--init-bio|--capture-once|--capture-after-enter|--capture-wait|"
 			"--sensortest|--sensor-otp|--finger-lost-check|--keymaster-info|--hw-auth-probe|"
-			"--auth-preflight HAT_FD [CHALLENGE_FD]|--auth-preflight-renew HAT_FD CHALLENGE_FD|--bio-prepare|--bio-pipeline DATABASE HAT_FD CHALLENGE_FD [IDS_OUT]|"
-			"--bio-pipeline-existing INPUT_DATABASE OUTPUT_DATABASE HAT_FD CHALLENGE_FD [IDS_OUT]|"
-			"--db-export-empty DATABASE|--db-import-export INPUT OUTPUT|--template-inventory|--inventory-existing DATABASE|"
-			"--split-added-template ORIGINAL MERGED NEW_DATABASE|"
+			"--auth-preflight HAT_FD [CHALLENGE_FD]|--auth-preflight-renew HAT_FD CHALLENGE_FD|--bio-prepare|--bio-pipeline DATABASE HAT_FD CHALLENGE_FD [IDS_OUT] CUSTODY_REQUEST_FD CUSTODY_ACK_FD|"
+			"--bio-pipeline-existing INPUT_DATABASE OUTPUT_DATABASE HAT_FD CHALLENGE_FD [IDS_OUT] CUSTODY_REQUEST_FD CUSTODY_ACK_FD|"
+			"--db-export-empty DATABASE|--db-import-export INPUT OUTPUT|--template-inventory|"
 			"--match-existing DATABASE [UPDATED_DATABASE]|--match-single DATABASE [UPDATED_DATABASE]|"
 			"--match-gallery DATABASE ID_OUT [UPDATED_DATABASE]|--delete-template DATABASE OUTPUT_DATABASE ID_FD]\n",
 			argv[0]);
 		return 2;
 	}
 	setvbuf(stdout, NULL, _IONBF, 0);
-	if (bio_pipeline && !bio_existing && argc != 5 && argc != 6) {
-		fprintf(stderr, "bidirectional_signed_HAT_provider_required=1 usage: %s --bio-pipeline DATABASE HAT_FD CHALLENGE_FD [IDS_OUT]\n",
-			argv[0]);
+	if (bio_pipeline && !bio_existing && argc != 7 && argc != 8) {
+		fprintf(stderr, "bidirectional_signed_HAT_provider_and_custody_gate_required=1\n");
 		return 2;
 	}
 	if (bio_pipeline) {
@@ -1470,42 +1429,6 @@ int main(int argc, char **argv)
 		    !strcmp(identity_output_path, db_path) ||
 		    !lstat(identity_output_path, &info) || errno != ENOENT) {
 			fprintf(stderr, "enrol_identity_output_invalid=exclusive_private_path_required\n");
-			return 2;
-		}
-	}
-	if (split_added) {
-		struct stat info;
-		char parent[PATH_MAX];
-		const char *slash = strrchr(argv[4], '/');
-		int parent_fd;
-
-		if (argv[2][0] != '/' || argv[3][0] != '/' || argv[4][0] != '/' ||
-		    !strcmp(argv[2], argv[3]) || !strcmp(argv[2], argv[4]) ||
-		    !strcmp(argv[3], argv[4]) || !slash || !slash[1] ||
-		    slash == argv[4] || (size_t)(slash - argv[4]) >= sizeof(parent)) {
-			fprintf(stderr, "gallery_split_refused=invalid_private_paths\n");
-			return 2;
-		}
-		for (int i = 2; i <= 3; i++)
-			if (lstat(argv[i], &info) || !S_ISREG(info.st_mode) ||
-			    info.st_uid != 0 || (info.st_mode & 0777) != 0600 ||
-			    info.st_size <= 0 || info.st_size > 16 * 1024 * 1024) {
-				fprintf(stderr, "gallery_split_refused=invalid_private_input\n");
-				return 2;
-			}
-		memcpy(parent, argv[4], (size_t)(slash - argv[4]));
-		parent[slash - argv[4]] = '\0';
-		parent_fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-		if (parent_fd < 0 || fstat(parent_fd, &info) || !S_ISDIR(info.st_mode) ||
-		    info.st_uid != 0 || (info.st_mode & 0777) != 0700) {
-			if (parent_fd >= 0)
-				close(parent_fd);
-			fprintf(stderr, "gallery_split_refused=invalid_private_output_directory\n");
-			return 2;
-		}
-		close(parent_fd);
-		if (!lstat(argv[4], &info) || errno != ENOENT) {
-			fprintf(stderr, "gallery_split_refused=output_must_be_new\n");
 			return 2;
 		}
 	}
@@ -1549,13 +1472,37 @@ int main(int argc, char **argv)
 			signal(SIGPIPE, SIG_IGN);
 		}
 	}
+	if (bio_pipeline) {
+		int *fds[2] = { &custody_request_fd, &custody_ack_fd };
+		for (int i = 0; i < 2; i++) {
+			const char *descriptor = argv[argc - 2 + i];
+			char *end;
+			errno = 0;
+			long value = strtol(descriptor, &end, 10);
+			if (errno || end == descriptor || *end || value < 3 || value > INT_MAX) {
+				fprintf(stderr, "custody_gate_invalid=number\n");
+				return 2;
+			}
+			*fds[i] = (int)value;
+			int flags = fcntl(*fds[i], F_GETFL);
+			struct stat info;
+			if (flags < 0 || fstat(*fds[i], &info) || !S_ISFIFO(info.st_mode) ||
+			    isatty(*fds[i]) ||
+			    (i == 0 && (flags & O_ACCMODE) == O_RDONLY) ||
+			    (i == 1 && (flags & O_ACCMODE) == O_WRONLY) ||
+			    *fds[i] == hat_fd || *fds[i] == challenge_fd ||
+			    (i == 1 && custody_request_fd == custody_ack_fd)) {
+				fprintf(stderr, "custody_gate_invalid=distinct_binary_pipe_fds_required\n");
+				return 2;
+			}
+		}
+	}
 	if (keymaster_probe)
 		return keymaster_info() ? 1 : 0;
 	if (init_sensor || init_bio || capture_once || capture_after_enter || capture_wait ||
 	    sensortest || sensor_otp || finger_lost_check || hw_auth_probe || auth_preflight ||
 	    bio_pipeline || bio_prepare ||
-	    db_export_empty || db_import_export || inventory_existing_db ||
-	    split_added || gallery_delete || match) {
+	    db_export_empty || db_import_export || gallery_delete || match) {
 		power_fd = open("/dev/fpc1020", O_RDWR | O_CLOEXEC);
 		if (power_fd < 0) {
 			perror("power/reset fpc1020");
@@ -1589,15 +1536,6 @@ int main(int argc, char **argv)
 
 	if (init_sensor) {
 		result = 0;
-		goto out;
-	}
-	if (inventory_existing_db) {
-		result = inventory_existing(client_fd, client_session, argv[2]);
-		goto out;
-	}
-	if (split_added) {
-		result = split_added_template(client_fd, client_session,
-					      argv[2], argv[3], argv[4]);
 		goto out;
 	}
 	if (gallery_delete) {
@@ -1743,10 +1681,16 @@ int main(int argc, char **argv)
 					/* BIO_ENROL accepted the final sample (status 0); report
 					 * it before the separate END_ENROL authorization phase. */
 					printf("enrol_progress_status=0 remaining=0\n");
-					/* The TA finalizes the enrol algorithm before its final
-					 * authorization gate. Renew in this same session first;
-					 * never reset BIO state or replay already collected input.
+					/* The TA has finalized the enrol algorithm. The parent
+					 * marker must be durable before authorization can lead
+					 * to END_ENROL, so never wait until after the HAT.
 					 */
+					if (await_custody(custody_request_fd, custody_ack_fd)) {
+						fprintf(stderr, "end_enrol_not_submitted=1 custody_marker_unacknowledged=1\n");
+						goto out;
+					}
+					/* Renew in this same session; never reset BIO state or
+					 * replay already collected input. */
 					printf("enrol_authorization_phase=end_enrol\n");
 					if (get_enrol_challenge(client_fd, client_session, &challenge) ||
 					    authorize_enrol(client_fd, client_session, hat_fd, challenge_fd, challenge)) {

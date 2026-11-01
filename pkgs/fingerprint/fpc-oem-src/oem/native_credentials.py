@@ -32,18 +32,18 @@ def main():
     create = len(arguments) == 3 and arguments[0] == "--create"
     change = len(arguments) == 4 and arguments[0] == "--change-input"
     authorize = len(arguments) == 3 and arguments[0] in ("--auth-preflight", "--auth-preflight-renew")
-    enrol_existing = len(arguments) in (5, 6) and arguments[0] == "--enrol-existing"
-    enrol = enrol_existing or len(arguments) in (4, 5) and arguments[0] == "--enrol"
+    enrol_existing = len(arguments) in (7, 8) and arguments[0] == "--enrol-existing"
+    enrol = enrol_existing or len(arguments) in (6, 7) and arguments[0] == "--enrol"
     if os.geteuid() != 0 or not (create or change or authorize or enrol) or not state.is_absolute():
         print("usage (root): native_credentials.py [--state-dir ABSOLUTE_PRIVATE_DIRECTORY] "
               "--create NATIVE_UID DERIVED_INPUT_FD | --auth-preflight NATIVE_UID DERIVED_INPUT_FD | "
               "--change-input NATIVE_UID CURRENT_INPUT_FD DESIRED_INPUT_FD | "
-              "--enrol DATABASE [IDS_OUT] NATIVE_UID DERIVED_INPUT_FD | "
-              "--enrol-existing INPUT_DATABASE OUTPUT_DATABASE [IDS_OUT] NATIVE_UID DERIVED_INPUT_FD", file=sys.stderr)
+              "--enrol DATABASE [IDS_OUT] NATIVE_UID DERIVED_INPUT_FD CUSTODY_REQUEST_FD CUSTODY_ACK_FD | "
+              "--enrol-existing INPUT_DATABASE OUTPUT_DATABASE [IDS_OUT] NATIVE_UID DERIVED_INPUT_FD CUSTODY_REQUEST_FD CUSTODY_ACK_FD", file=sys.stderr)
         return 2
     try:
-        uid = int(arguments[-2] if enrol else arguments[1], 10)
-        input_fd = int(arguments[-1], 10)
+        uid = int(arguments[-4] if enrol else arguments[1], 10)
+        input_fd = int(arguments[-3] if enrol else arguments[-1], 10)
         if not 0x40000000 <= uid <= 0x7fffffff or input_fd < 3 or os.isatty(input_fd):
             raise ValueError("native UID or binary input FD invalid")
         if fcntl.fcntl(input_fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY:
@@ -55,6 +55,16 @@ def main():
             if current_fd < 3 or current_fd == input_fd or os.isatty(current_fd) or fcntl.fcntl(current_fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY:
                 raise ValueError("current derived input FD invalid")
             os.fstat(current_fd)
+        custody_fds = ()
+        if enrol:
+            custody_fds = tuple(int(value, 10) for value in arguments[-2:])
+            if (any(fd < 3 or os.isatty(fd) for fd in custody_fds) or
+                    len(set((*custody_fds, input_fd))) != 3 or
+                    (fcntl.fcntl(custody_fds[0], fcntl.F_GETFL) & os.O_ACCMODE) == os.O_RDONLY or
+                    (fcntl.fcntl(custody_fds[1], fcntl.F_GETFL) & os.O_ACCMODE) == os.O_WRONLY):
+                raise ValueError("invalid custody pipe FDs")
+            for fd in custody_fds:
+                os.fstat(fd)
         runtime = Path(__file__).resolve().parent / "oem_runtime.py"
         if not runtime.is_file():
             raise ValueError("the colocated OEM runtime is missing")
@@ -183,13 +193,14 @@ def main():
                   "new_credential_not_requested=1 sid_validation=TA_owned_and_client_checked")
             return 0
         if enrol_existing:
-            operation = ["--enrol-existing", *arguments[1:-2],
-                         str(uid), str(handle_fd), str(input_fd)]
+            operation = ["--enrol-existing", *arguments[1:-4],
+                         str(uid), str(handle_fd), str(input_fd), *map(str, custody_fds)]
         elif enrol:
-            operation = ["--enrol", *arguments[1:-2], str(uid), str(handle_fd), str(input_fd)]
+            operation = ["--enrol", *arguments[1:-4], str(uid), str(handle_fd),
+                         str(input_fd), *map(str, custody_fds)]
         else:
             operation = [arguments[0], str(uid), str(handle_fd), str(input_fd)]
-        return run_runtime([*command, *operation], (handle_fd, input_fd))
+        return run_runtime([*command, *operation], (handle_fd, input_fd, *custody_fds))
     except BlockingIOError:
         print("native_credential_provider=BUSY", file=sys.stderr)
         return 1

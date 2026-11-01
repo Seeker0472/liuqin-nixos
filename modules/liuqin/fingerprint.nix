@@ -13,13 +13,10 @@
 #               core (TEE=module) are pulled in by modprobe as dependencies,
 #               so only the two leaf modules are named below.
 #   TOD driver  pkgs.liuqinFpcOemTodDriver: the out-of-tree libfprint TOD
-#               module ("fpc1264_oem") loaded from FP_TOD_DRIVERS_DIR.  It has
-#               no matcher of its own: verify() stages the single stored
-#               FpPrint and runs the OEM runtime with the trustlet's match
-#               result, then commits an adapted template through fprintd;
-#               enroll() (patched in) consumes the prepared credential input,
-#               drives the trustlet's enrolment and returns the opaque
-#               single-finger database as the FpPrint for fprintd to store.
+#               module ("fpc1264_oem") loaded from FP_TOD_DRIVERS_DIR. It
+#               stages the account's canonical gallery for trustlet matching,
+#               and returns an opaque updated gallery on enrolment. fprintd
+#               alone publishes prints and adaptive database updates.
 #   fprintd     pkgs.liuqinFprintdOem: 1.94.5 with the reviewed adaptive-template
 #               persistence change (commit before VerifyStatus success).
 #   PAM         pkgs.liuqinPamFpc: while the account password is being
@@ -124,17 +121,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Keep the enrollment press counter in Settings specific to this tablet.
-    # GNOME itself remains unmodified on other systems using this package set.
-    nixpkgs.overlays = [
-      (final: prev: {
-        gnome-control-center = prev.gnome-control-center.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [
-            ../../pkgs/fingerprint/gnome-settings-enroll-press-count.patch
-          ];
-        });
-      })
-    ];
 
     services.fprintd = {
       enable = true;

@@ -114,6 +114,9 @@ class PendingTransaction:
         if create:
             for path in (Path(root), Path(root) / user, self.directory):
                 private_directory(path)
+                # A synced marker inside a newly created directory is not
+                # durable unless that directory's parent entry is synced too.
+                sync_directory(path.parent)
         else:
             for path in (Path(root), Path(root) / user, self.directory):
                 info = path.lstat()
@@ -257,10 +260,10 @@ class PendingTransaction:
             raise ExportUncertain("accepted export already exists")
 
     def arm(self):
-        """Record that END_ENROL may now create a template.
+        """Persist the single-use custody marker before acknowledging END_ENROL.
 
-        Called from the worker stream before its final authorization gate.
-        Idempotent so a duplicated finalizing hint cannot fail an enrolment.
+        The native client remains blocked on the binary gate until both the
+        marker file and its directory have been synced by write_exclusive.
         """
         marker = {"schema": 2 if self.gallery else 1,
                   "user": self.user, "finger": self.finger}
@@ -269,9 +272,7 @@ class PendingTransaction:
         if os.path.lexists(self.ready):
             raise ExportUncertain("accepted export already exists")
         if os.path.lexists(self.uncertain):
-            if read_marker(self.uncertain) != marker:
-                raise ExportUncertain("existing uncertainty marker does not match this enrolment")
-            return
+            raise ExportUncertain("an earlier enrolment may already have reached the TA")
         write_exclusive(self.uncertain, (json.dumps(marker, sort_keys=True) + "\n").encode("ascii"))
 
     def abort(self):

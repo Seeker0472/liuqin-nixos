@@ -327,54 +327,21 @@ prints remain readable until the first successful gallery enrolment. Static
 `fpcliu.mdt` and its segments come from the OS2.0.4 asset repository;
 Gatekeeper/RPMB state is per-device.
 
-### What is verified, what is not
+### Verified scope
 
-- Previously verified (2026-10-06): Settings enrolment, `gdm-fingerprint`
-  unlock and adaptive template updates with the prior firmware. This is not
-  evidence for the OS2.0.4 firmware or the redesigned enrolment transaction.
-- On OS2.0.4 (2026-10-30/31), a new Linux Gatekeeper credential passed
-  signed preflight. The first physical attempt failed at `sample` with no
-  accepted export or print; its uncertain marker was retained for audit.
-  The new TOD had imposed an exact `remaining=19..0` sequence that the
-  working native client never required and had obscured its own protocol
-  errors. The current worker follows the vendor HAL: `fpc_tee_enrol` status 0
-  is the sole final-sample signal, `remaining` is diagnostic, and a
-  reordered or missing progress hint cannot reject the completed export.
-  After removing that assumption, `seeker` enrolled a `right-index-finger`
-  through fprintd; `fprintd-list` found it and `fprintd-verify` returned
-  `verify-match`. A later switch to the known-good build also returned
-  `verify-match` for that print.
-- The operator reported intermittent unresponsive presses. The stock HAL
-  reads GPIO40's current level before polling for IRQ notifications; our
-  original `/dev/fpc1020` poll consumed each edge and the post-arm drain
-  could discard a real press. Removing the drain alone admitted sensor-setup
-  IRQs and caused `verify-unknown-error`. The current driver instead exposes
-  `/sys/class/misc/fpc1020/device/irq` as a root-readable GPIO level plus
-  IRQ notifications. The worker checks the level before arming and treats a
-  `POLLPRI` notification as the finger event, because GPIO40 is a short
-  pulse rather than a held level. It also re-reads the level every 100 ms so
-  a held finger is still caught if a notification is coalesced. The TA and
-  capture qualify every event; a notification alone is not a match. The
-  enrol UI reports finger-needed only after the first arm. On the tablet, a
-  reset notification remained pending across two polls, its level was
-  readable, and a no-finger verification waited 15 seconds without a false
-  match or immediate capture error. Physical press latency still needs
-  operator validation; positive TA capture-retry handling also needs live
-  validation.
-- In a root-private OS2 lab, the original one-template database and a new
-  two-template export had distinct stable IDs. Selective TA deletion produced
-  a new-only database; the new finger matched it and the old finger did not.
-  On 2026-10-31, a separate production `right-thumb` enrolment completed:
-  `fprintd-list seeker` showed both `right-thumb` and `right-index-finger`,
-  each returned `verify-match` on the combined gallery, and deliberately
-  pressing the index finger for `right-thumb` returned `verify-no-match`.
-  fprintd exited and restarted between checks; the canonical `.gallery` was
-  root-owned mode 0600, no pending export remained, and the old single-finger
-  file was preserved. After the IRQ-contract kernel reboot, `fprintd-list`
-  still showed both prints; post-reboot *physical* matching and production
-  deletion remain unverified.
-- The multi-finger publisher refuses ambiguous exports rather than guessing
-  an ID. Fingerprint authentication for `su`/SSH is not enabled.
+- Previous firmware: Settings enrollment, `gdm-fingerprint` unlock and adaptive
+  updates were verified on 2026-10-06; those results do not validate OS2.0.4.
+- OS2.0.4: `right-index-finger` and `right-thumb` were enrolled; both matched
+  after a daemon reload, and using the index finger to verify the thumb
+  mismatched. The canonical `.gallery` was root-owned mode 0600, no pending
+  export remained, and both labels survived a reboot. The new IRQ interface
+  passed a no-finger verification smoke test. On 2026-11-01 the operator
+  reported the latest build basically usable on the device. Physical
+  early-press latency, positive capture retries and production deletion
+  remain without recorded acceptance; see
+  [PORTING-NOTES.md](PORTING-NOTES.md#fingerprint-fpc1264) for measurements.
+- The publisher rejects ambiguous exports instead of guessing an ID.
+  Fingerprint authentication for `su`/SSH is not enabled.
 
 ### Static firmware and account credential
 
@@ -416,44 +383,31 @@ Never delete Android's credential state.
    `missing_handle` needs explicit first-time provisioning.
    `prepared_input_unexpired` only means its *metadata* has not expired; it
    does not prove the boot-local key is still present.
-2. Settings -> System -> Users -> pick the account -> **Fingerprint Login** ->
-   **Add**. A password PAM/polkit prompt can prepare the one-use trustlet input;
-   if it is absent (for example, an autologin session), run
+2. Settings -> System -> Users -> select the account -> **Fingerprint Login**
+   -> **Add**. A password PAM/polkit prompt can prepare the one-use trustlet
+   input; without one (for example, after autologin), first run
    `sudo liuqin-fpc-credential --prepare-acceptance <user>` from a local
-   terminal first. Press the sensor repeatedly, lifting between presses.
-   Settings shows accepted samples and capture retries as a press count; a
-   lift prompt is not a press. The first press starts capture directly:
-   fprintd does not run a separate duplicate-identification scan for this
-   driver. Only the trustlet's status-0 final sample decides completion:
-   `remaining` is diagnostic, there is no host-side 40-attempt limit, and the
-   reported fprintd stage estimate grows if needed. Continue until Settings
-   says **Complete**, not until a particular count. The runtime has a
-   15-minute session watchdog; the sensor also waits up to 120 seconds for
-   each next press. A lift wait rechecks the trustlet after its level timeout
-   instead of aborting, so a slow or repeated lift is not fatal. A failed or
-   cancelled attempt is not a successful enrolment.
-3. fprintd publishes `/var/lib/fprint/<user>/fpc1264_oem/liuqin-fpc1264-oem/.gallery`.
-   The old per-finger file stays unchanged after migration but is no longer
-   authoritative. The uncertainty marker is written only when the worker
-   reaches its final authorization gate, so a failure during capture or
-   retries leaves no marker and can be retried normally. A root-private
-   accepted database **and** ID inventory survive a daemon crash before
-   publication; an ambiguous TA/export result is blocked from automatic
-   retry. Check `/var/lib/liuqin-fingerprint/pending/` and the failure code
-   before manual recovery; never delete an uncertainty marker blindly.
-4. Check `fprintd-list <user>` for all finger labels, verify each enrolled
-   finger separately (`fprintd-verify -f <finger> <user>`), then test screen
-   unlock. An unrelated finger must mismatch. To delete one label, run
-   `fprintd-delete -f <finger> <user>`; this uses the TA's selective deletion
-   and republishes the gallery atomically, retaining the other fingers. The
-   Settings **Delete Fingerprints** button instead deletes *all* fingers as
-   separate operations; the whole batch is not atomic. After an error, list
-   the remaining fingers before retrying rather than assuming all or none
-   were deleted.
-   Keep the zero-print `.gallery` after deleting the last finger: it prevents
-   stale per-finger files from reappearing. Enrollment with an empty gallery
-   skips duplicate identification and starts a new gallery; do not remove
-   the tombstone to work around an enrollment failure.
+   terminal. Press and lift repeatedly until Settings says **Complete**:
+   only the trustlet decides the final sample, not a fixed press count.
+   There is no preliminary duplicate-finger scan. The runtime has a
+   15-minute session watchdog and waits up to 120 seconds for each press.
+3. fprintd publishes
+   `/var/lib/fprint/<user>/fpc1264_oem/liuqin-fpc1264-oem/.gallery`.
+   Legacy per-finger files are ignored once the gallery exists. Re-enrolling
+   an existing label deletes that label before capture; cancellation does
+   not restore it. Capture failures before the final authorization gate are
+   retryable. A durable uncertainty marker prevents automatic retry if the
+   final TA/export outcome is ambiguous; an accepted database and ID
+   inventory survive a crash before publication. Inspect
+   `/var/lib/liuqin-fingerprint/pending/` before any manual recovery and
+   never discard an uncertainty marker merely because Settings reports failure.
+4. Run `fprintd-list <user>`, verify each finger separately with
+   `fprintd-verify -f <finger> <user>`, test screen unlock and ensure an
+   unrelated finger mismatches. `fprintd-delete -f <finger> <user>`
+   selectively removes one label while retaining the others. Settings'
+   **Delete Fingerprints** removes labels separately, not as one atomic
+   batch: list the remainder after an error. Leave the empty `.gallery`
+   tombstone in place so stale per-finger files cannot reappear.
 
 Command-line path (the same fprintd publisher as Settings):
 
@@ -464,10 +418,9 @@ fprintd-verify <user>                                 # in a session terminal
 sudo liuqin-fpc-credential --sync-password <user>     # after a password change
 ```
 
-If `--status <user>` reports `prepared_input_unexpired`, only the metadata
-is known to be current; the key is checked at consumption. Use `--enrol` for
-the normal CLI path: after Linux-password and Gatekeeper preflight it retains
-a matching PAM-prepared one-use key or replaces a stale/different preparation.
+Use `--enrol` for the normal CLI path: after Linux-password and Gatekeeper
+preflight it retains a matching PAM-prepared one-use key or replaces a
+stale/different preparation.
 Use `--enrol-prepared` only to consume an already prepared key without another
 explicit preparation; a missing key fails before fingerprint capture.
 If it reports `export_uncertain`, **stop**; a root-private marker may reflect
@@ -498,33 +451,14 @@ them too.
 
 ### Debugging
 
-- `sudo liuqin-fpc-credential --status <user>` separates account mismatch,
-  missing handle, expired preparation and accepted-but-unpublished export
-  without reading a key or touching the trustlet.
-- Enrolment emits allowlisted `fpc_event=1 kind=ready|sample|retry|lift|finalizing|recovered|committed|phase|ta_reject`
-  events internally; the TOD driver maps them to fprintd progress and retry
-  notifications. `fpc_error=account_mismatch|prepared_input_missing|prepared_input_expired|busy|export_uncertain|runtime_failure|storage_failure`
-  distinguishes recovery actions without logging passwords, HATs or templates.
-  `phase=sample` identifies the last native command, **not** necessarily its
-  failure: a protocol error may have stopped the child. Phase and TA-reject
-  lines are diagnostic and cannot by themselves discard a completed export;
-  only a validated negative TA response is reported as `ta_status=<number>`.
-  Completion requires the worker's zero exit status, its `committed` event,
-  and a valid private database/inventory.
-- `phase=sensor_wait` means an IRQ/TA wait failed before the final accepted
-  sample. The next press waits up to 120 seconds. A lift wait also waits up
-  to 120 seconds per level check, then rechecks the TA instead of aborting;
-  a quick lift-and-repress is therefore not treated as a failure. It is not
-  proof of successful enrolment. If an uncertainty marker remains, compare
-  its user, finger, timestamp and failure journal with the absence of any
-  ready marker, database export and published print before preserving the
-  marker outside `pending/` for an explicit retry. Never clear it merely
-  because Settings says enrollment failed.
-- `journalctl -b` shows OEM enrol/verify failures; `busctl monitor --system
-  net.reactivated.Fprint` shows D-Bus `EnrollStatus`/`VerifyStatus`. A desktop
-  progress callback is not proof of disk persistence: fprintd reports success
-  only after its print file has been saved and synced. A failed pending-export
-  acknowledgement is retried when the stored print is loaded.
+- `journalctl -b -u fprintd` reports the allowlisted OEM failure code and
+  phase; the driver does not forward raw child output. `busctl monitor
+  --system net.reactivated.Fprint` shows `EnrollStatus`/`VerifyStatus`.
+  Progress hints alone are not proof of a saved print: success requires a
+  completed native worker and a synced fprintd publication.
+- On `export_uncertain`, stop. Inspect the account/finger and private
+  pending export before attempting recovery; absence of a published print
+  does not prove the TA was unchanged.
 
 ## 8. Traps (all measured)
 

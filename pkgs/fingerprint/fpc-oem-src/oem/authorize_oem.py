@@ -19,21 +19,21 @@ def main():
         mode, uid, handle_fd, password_fd = sys.argv[1:]
         database = None
         ids_output = None
-    elif len(sys.argv) == 6 and sys.argv[1] == "--enrol":
-        mode, database, uid, handle_fd, password_fd = sys.argv[1:]
+    elif len(sys.argv) == 8 and sys.argv[1] == "--enrol":
+        mode, database, uid, handle_fd, password_fd, request_fd, ack_fd = sys.argv[1:]
         ids_output = None
-    elif len(sys.argv) == 7 and sys.argv[1] == "--enrol-existing":
-        mode, existing_database, database, uid, handle_fd, password_fd = sys.argv[1:]
+    elif len(sys.argv) == 9 and sys.argv[1] == "--enrol-existing":
+        mode, existing_database, database, uid, handle_fd, password_fd, request_fd, ack_fd = sys.argv[1:]
         ids_output = None
-    elif len(sys.argv) == 7 and sys.argv[1] == "--enrol":
-        mode, database, ids_output, uid, handle_fd, password_fd = sys.argv[1:]
-    elif len(sys.argv) == 8 and sys.argv[1] == "--enrol-existing":
-        mode, existing_database, database, ids_output, uid, handle_fd, password_fd = sys.argv[1:]
+    elif len(sys.argv) == 9 and sys.argv[1] == "--enrol":
+        mode, database, ids_output, uid, handle_fd, password_fd, request_fd, ack_fd = sys.argv[1:]
+    elif len(sys.argv) == 10 and sys.argv[1] == "--enrol-existing":
+        mode, existing_database, database, ids_output, uid, handle_fd, password_fd, request_fd, ack_fd = sys.argv[1:]
     else:
         print("usage: authorize_oem.py --preflight UID HANDLE_FD DERIVED_INPUT_FD | "
               "--preflight-renew UID HANDLE_FD DERIVED_INPUT_FD | "
-              "--enrol DATABASE [IDS_OUT] UID HANDLE_FD DERIVED_INPUT_FD | "
-              "--enrol-existing INPUT_DATABASE OUTPUT_DATABASE [IDS_OUT] UID HANDLE_FD DERIVED_INPUT_FD", file=sys.stderr)
+              "--enrol DATABASE [IDS_OUT] UID HANDLE_FD DERIVED_INPUT_FD CUSTODY_REQUEST_FD CUSTODY_ACK_FD | "
+              "--enrol-existing INPUT_DATABASE OUTPUT_DATABASE [IDS_OUT] UID HANDLE_FD DERIVED_INPUT_FD CUSTODY_REQUEST_FD CUSTODY_ACK_FD", file=sys.stderr)
         return 2
 
     try:
@@ -45,6 +45,12 @@ def main():
             raise ValueError("credential FDs must be distinct")
         os.fstat(handle_fd)
         os.fstat(password_fd)
+        if mode.startswith("--enrol"):
+            request_fd, ack_fd = int(request_fd), int(ack_fd)
+            if len({request_fd, ack_fd, handle_fd, password_fd}) != 4:
+                raise ValueError("custody FDs must be distinct")
+            os.fstat(request_fd)
+            os.fstat(ack_fd)
     except (ValueError, OSError):
         print("invalid UID or open credential FDs", file=sys.stderr)
         return 2
@@ -84,12 +90,14 @@ def main():
                         str(hat_read), str(challenge_write)]
             if ids_output:
                 fpc_args.append(ids_output)
+            fpc_args.extend((str(request_fd), str(ack_fd)))
         else:
             fpc_args = ["--bio-pipeline", database, str(hat_read), str(challenge_write)]
             if ids_output:
                 fpc_args.append(ids_output)
+            fpc_args.extend((str(request_fd), str(ack_fd)))
         client = subprocess.Popen([str(fpc), *fpc_args],
-                                  pass_fds=(hat_read, challenge_write))
+                                  pass_fds=(hat_read, challenge_write, *((request_fd, ack_fd) if mode.startswith("--enrol") else ())))
     except OSError as error:
         print(f"client start failed: {error}", file=sys.stderr)
     finally:

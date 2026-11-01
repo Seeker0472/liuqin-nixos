@@ -16,11 +16,12 @@ file or its recovery link. Cancelled, unmatched and inconclusive results never
 publish adaptation. Discovery ignores the multi-character recovery filenames.
 
 Enrolment has one publisher: the TOD driver returns an opaque FpPrint, and
-fprintd saves it. The native client journals a root-private accepted export
-only after the enrollment reaches its final authorization gate; a failure
-during capture or retries does not create an uncertainty marker. After saving
-the print, fprintd syncs the print file and acknowledges the matching export
-SHA-256 to `enrol_transaction.py`. A daemon crash after save but before
+fprintd saves it. Before the final authorization and `BIO_END_ENROL`, the
+native client waits for a durable root-private uncertainty marker to be
+acknowledged by its parent.
+Capture failures do not create one; an accepted export is retained until
+fprintd syncs the saved print and acknowledges its matching SHA-256 to
+`enrol_transaction.py`. A daemon crash after save but before
 acknowledgement is reconciled when the saved print is loaded. An interrupted
 acknowledgement replays its durable cleanup marker. An uncertain TA/export
 outcome never automatically restarts hardware enrolment.

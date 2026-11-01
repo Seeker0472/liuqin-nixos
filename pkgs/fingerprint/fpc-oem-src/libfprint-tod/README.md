@@ -9,13 +9,14 @@ readable and verifiable without rewriting them.
 
 Enrolment uses `user_credentials.py --enrol-prepared`: the password-derived
 input must first have been prepared through a configured PAM service or
-`liuqin-fpc-credential --prepare-acceptance`. The worker writes the uncertainty
-marker only when the enrollment reaches its final authorization gate, then a
-private accepted export and finger-bound marker after successful END_ENROL.
-A failure or cancellation during capture, retries or lift handling therefore
-leaves no marker and can be retried; only an interrupted final export is
-preserved for explicit recovery. The driver reports ready/sample/retry/lift/
-finalization events as hints to libfprint, but they are not a state machine:
+`liuqin-fpc-credential --prepare-acceptance`. After the final sample and
+before the final authorization, the native client waits for the parent to
+persist and acknowledge a private uncertainty marker; only then does the
+authorization lead to `BIO_END_ENROL`. A failed or cancelled gate never
+submits that command. Successful END_ENROL yields a private accepted
+export and finger-bound marker. Capture, retry and lift failures remain
+retryable; an interrupted final export is preserved for explicit recovery.
+The driver reports progress as hints to libfprint, not as a state machine:
 child exit, stdout EOF and the committed event are the authority. A
 cancellation cannot publish an incomplete result.
 

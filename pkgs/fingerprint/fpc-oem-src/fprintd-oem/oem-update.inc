@@ -609,11 +609,11 @@ file_storage_oem_delete (FpDevice *dev, FpFinger finger, const gchar *username)
   fd_text = g_strdup_printf ("%d", id_pipe[0]);
   gchar *argv[] = { script, (gchar *) "--ufs-rpmb-authenticated",
                     (gchar *) "--delete-template", input, output, fd_text, NULL };
-  attempted = TRUE;
   gboolean spawned = g_spawn_sync (NULL, argv, NULL,
                                    G_SPAWN_LEAVE_DESCRIPTORS_OPEN |
                                    G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
                                    NULL, NULL, NULL, NULL, &status, &error);
+  attempted = spawned;
   close (id_pipe[0]);
   id_pipe[0] = -1;
   if (!spawned || !WIFEXITED (status) || WEXITSTATUS (status) != 0)

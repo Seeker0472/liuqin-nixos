@@ -112,6 +112,15 @@ No pending export remained. A later reboot with the IRQ-contract kernel
 retained both `fprintd-list` entries; physical matching after that reboot
 and production deletion remain unverified.
 
+On 2026-11-01 the operator reported that the latest on-device fingerprint
+build was basically usable. The mainline RPMH PLDO table steps by 8 mV:
+an exact 3.3 V request returned `-EINVAL` and the rail stayed at 2.96 V; a
+fixed-3.3 V boot constraint also failed. The current driver requests the
+first supported step at or above 3.3 V (3.304 V) only while the sensor is
+open, while the boot/default remains 2.96 V. This runtime change still
+needs hardware acceptance; early-press latency, post-reboot matching and
+production deletion remain unmeasured.
+
 ### USB3 device (peripheral data path)
 
 The installed gadget uses NCM with ECM fallback. Its unit retries failed
