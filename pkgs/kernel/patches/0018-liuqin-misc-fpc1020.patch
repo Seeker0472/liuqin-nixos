@@ -141,7 +141,7 @@ powered down after an operation through it.
  obj-$(CONFIG_MISC_RP1)		+= rp1/
 --- /dev/null
 +++ b/drivers/misc/fpc1020.c
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,349 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * FPC1264 fingerprint sensor power/reset/IRQ control for the Xiaomi Pad 6
@@ -158,7 +158,7 @@ powered down after an operation through it.
 + * sysfs attribute (/sys/class/misc/fpc1020/device/irq).  The first open
 + * powers the sensor, the last close powers it down; read the current GPIO40
 + * level and use sysfs notifications only to wake up and re-read it.  The
-+ * electrical sequence (PM8350C LDO9 at 100 mA, GPIO41 reset pulse, GPIO40
++ * electrical sequence (PM8350C LDO9 at 3.3 V and 100 mA, GPIO41 reset pulse, GPIO40
 + * rising-edge interrupt) follows the vendor driver in the stock 5.10 tree,
 + * drivers/input/fingerprint/fpc_ta/fpc1020_tee.c.
 + */
@@ -180,7 +180,7 @@ powered down after an operation through it.
 +
 +#define FPC1020_NAME			"fpc1020"
 +#define FPC1020_TTW_HOLD_MS		2000
-+#define FPC1020_PWR_ON_SLEEP_US		1000
++#define FPC1020_PWR_ON_SLEEP_US		100
 +
 +#define FPC1020_IOC_MAGIC		'f'
 +#define FPC1020_IOC_RESET		_IO(FPC1020_IOC_MAGIC, 1)
@@ -229,6 +229,12 @@ powered down after an operation through it.
 +	/* Hold the sensor in reset while its rail comes up. */
 +	gpiod_set_value_cansleep(fpc->reset_gpio, 1);
 +
++	/* The vendor Android DT fixes this rail at 3.3 V.  The RPMH
++	 * regulator keeps its bootloader voltage unless it is set here. */
++	ret = regulator_set_voltage(fpc->vreg, 3300000, 3300000);
++	if (ret)
++		dev_warn(fpc->dev, "could not set fp_vdd_vreg to 3.3 V: %d\n", ret);
++
 +	ret = regulator_set_load(fpc->vreg, 100000);
 +	if (ret)
 +		dev_warn(fpc->dev, "regulator_set_load failed: %d\n", ret);
@@ -260,6 +266,7 @@ powered down after an operation through it.
 +		disable_irq_wake(fpc->irq);
 +
 +	gpiod_set_value_cansleep(fpc->reset_gpio, 1);	/* hold in reset */
++	usleep_range(FPC1020_PWR_ON_SLEEP_US, FPC1020_PWR_ON_SLEEP_US + 900);
 +	regulator_disable(fpc->vreg);
 +	fpc->prepared = false;
 +}

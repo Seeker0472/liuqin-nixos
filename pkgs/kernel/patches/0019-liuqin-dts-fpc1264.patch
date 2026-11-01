@@ -18,16 +18,16 @@ ported userspace stack was validated with and revisit on hardware.
  		};
  
 +		/*
-+		 * FPC1264 supply.  The community bring-up locked this rail to
-+		 * 2960000-3008000 uV; the vendor Android DT constrains the same
-+		 * PM8350C LDO9 to a fixed 3.3 V.  Keep the community window (the
-+		 * tested userspace stack was validated with it); revisit on
-+		 * hardware.
++		 * FPC1264 supply.  Keep the boot/default voltage at 2.96 V
++		 * (the vendor PMIC boot value) and allow up to 3.3 V.  The
++		 * fingerprint driver raises the rail to 3.3 V only while
++		 * the sensor is open, so a boot-time regulator request
++		 * cannot break unrelated boot hardware.
 +		 */
 +		pm8350c_l9: ldo9 {
 +			regulator-name = "pm8350c_l9";
 +			regulator-min-microvolt = <2960000>;
-+			regulator-max-microvolt = <3008000>;
++			regulator-max-microvolt = <3300000>;
 +			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 +		};
 +
