@@ -1,0 +1,92 @@
+name: Cache native aarch64 device packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-aarch64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'Seeker0472/liuqin-nixos'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.FIRMWARE_ASSETS_SSH_KEY }}
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            accept-flake-config = true
+            max-jobs = 3
+            cores = 3
+      - uses: cachix/cachix-action@v17
+        with:
+          name: liuqin-nixos
+          skipPush: true
+      - name: Build every native device output
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(nix build .#cache-closure --no-link --print-out-paths)
+          printf 'root=%s\n' "$root" >> "$GITHUB_OUTPUT"
+      - name: Push and pin the complete device closure
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CACHIX_AUTH_TOKEN"
+          cachix push liuqin-nixos "${{ steps.build.outputs.root }}"
+          cachix pin liuqin-nixos native-aarch64 "${{ steps.build.outputs.root }}" --keep-revisions 2
+
+  verify:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.FIRMWARE_ASSETS_SSH_KEY }}
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            accept-flake-config = true
+      - uses: cachix/cachix-action@v17
+        with:
+          name: liuqin-nixos
+          skipPush: true
+      - name: Verify every output can be substituted without building
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(nix build .#cache-closure --no-link --print-out-paths --max-jobs 0)
+          count=0
+          for link in "$root"/*; do
+            test -L "$link"
+            target=$(readlink "$link")
+            if ! nix path-info --store https://liuqin-nixos.cachix.org "$target" >/dev/null 2>&1; then
+              nix path-info --store https://cache.nixos.org "$target" >/dev/null
+            fi
+            count=$((count + 1))
+          done
+          test "$count" -gt 0
+          echo "Verified $count native aarch64 outputs with no local builds."

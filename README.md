@@ -45,6 +45,48 @@ nix flake check
 nix run .#unit-verify
 ```
 
+## Native aarch64 binary cache
+
+This flake is set up to publish its native aarch64 device packages to
+`https://liuqin-nixos.cachix.org`. The `cache-closure` output follows
+`pkgs/device-packages.nix`: it includes every derivation in the overlay,
+every declared output of multi-output packages, both U-Boot outputs, and the
+installer and debug USB gadget variants. The vendored fingerprint source path
+is included through the packages that consume it.
+
+The GitHub Actions workflow at `.github/workflows/cache-aarch64.yml` builds
+that output on `ubuntu-24.04-arm`, pushes and pins its closure, then starts a
+fresh ARM runner. The second runner builds the same output with
+`--max-jobs 0` and checks each linked output in Cachix or cache.nixos.org; a
+missing output fails the workflow. Cachix's upstream deduplication means some
+unchanged nixpkgs outputs may be served by cache.nixos.org instead of Cachix.
+
+For the workflow, configure these repository secrets:
+
+- `FIRMWARE_ASSETS_SSH_KEY`: a read-only deploy key for the private
+  `liuqin-firmware-assets-OS2` input.
+- `CACHIX_AUTH_TOKEN`: a write token scoped to the `liuqin-nixos` cache.
+
+For NixOS consumers, add the cache to the system's Nix daemon configuration
+before building the device packages:
+
+```nix
+nix.settings.extra-substituters = [ "https://liuqin-nixos.cachix.org" ];
+nix.settings.extra-trusted-public-keys = [
+  "liuqin-nixos.cachix.org-1:eZAC5Way06MN/QaQjbVZY0dnhleGCH7X7C+EUF2+Hwg="
+];
+```
+
+The flake also carries these settings as a `nixConfig` hint for CLI builds.
+`nixosModules.liuqin` injects the BSP's independently pinned native aarch64
+device package set, so a consumer may use a different nixpkgs revision for its
+own userland while retaining the same device package store paths. Custom
+device-package overlays, kernel overrides, and x86_64-to-aarch64 cross builds
+produce different derivations and need their own cache entries.
+Per-machine NixOS derivations such as `/etc`, initrd, and the final toplevel
+are specific to the consumer's configuration; they are outside this BSP cache
+target.
+
 The unit verifier uses NixOS's assembled unit tree, including upstream units,
 drop-ins and dependency links, and asks systemd to verify `default.target` and
 everything it reaches. It deliberately does not start every installed optional,

@@ -2,7 +2,17 @@
 {
   description = "NixOS for Xiaomi Pad 6 Pro (liuqin, SM8475) on latest stable Linux";
 
+  nixConfig = {
+    extra-substituters = [ "https://liuqin-nixos.cachix.org" ];
+    extra-trusted-public-keys = [
+      "liuqin-nixos.cachix.org-1:eZAC5Way06MN/QaQjbVZY0dnhleGCH7X7C+EUF2+Hwg="
+    ];
+  };
+
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # Device derivations must keep one pin even when a consumer makes the
+  # general nixpkgs input follow its own system revision.
+  inputs.deviceNixpkgs.url = "github:NixOS/nixpkgs/eaad089433ca2bb662274377d33df3d0e51ef28b";
   inputs.firmwareAssets = {
     url = "git+ssh://git@github.com/Seeker0472/liuqin-firmware-assets-OS2.git?ref=main";
     flake = false;
@@ -10,7 +20,7 @@
   # flake.lock pins the private asset repository to an exact revision and
   # content hash; authorized builders fetch it through their GitHub SSH access.
 
-  outputs = { self, nixpkgs, firmwareAssets }:
+  outputs = { self, nixpkgs, deviceNixpkgs, firmwareAssets }:
     let
       lib = nixpkgs.lib;
 
@@ -31,12 +41,75 @@
         config.allowImportFromDerivation = true;
         config.allowUnfreePredicate = allowLiuqinUnfree;
       };
+
+      # The module injects this independently pinned package set into consumer
+      # systems. A consumer may follow a newer nixpkgs for its own userland
+      # without changing the device package store paths.
+      pkgsNativeArm = import deviceNixpkgs {
+        system = "aarch64-linux";
+        overlays = [ self.overlays.default ];
+        config.allowUnfreePredicate = allowLiuqinUnfree;
+      };
+
+      deviceManifest = import ./pkgs/device-packages.nix;
+
+      # Use the cached package set for all device names in a consumer system.
+      # The consumer's own nixpkgs still supplies the rest of the system.
+      deviceOverlay = _final: _prev:
+        builtins.listToAttrs (map (name: {
+          inherit name;
+          value = pkgsNativeArm.${name};
+        }) (deviceManifest.inject ++ builtins.attrNames deviceManifest.native));
+
+      # Cover the entire overlay manifest, including every output of a
+      # multi-output derivation. New derivations enter the cache automatically;
+      # new non-derivation values require an explicit decision here.
+      cachePackages = lib.concatMap (name:
+        let value = pkgsNativeArm.${name};
+        in
+          if lib.isDerivation value then [ { inherit name; package = value; } ]
+          else if name == "liuqinUboot" then [
+            { name = "liuqinUboot"; package = value.uboot; }
+            { name = "liuqinUbootBootimg"; package = value.bootimg; }
+          ]
+          else if name == "mkLiuqinUsbGadget" then [
+            {
+              name = "liuqinUsbGadgetInstaller";
+              package = value {
+                product = "liuqin NixOS installer";
+                configuration = "USB network installer";
+                logToConsole = true;
+                assignAddress = true;
+              };
+            }
+            {
+              name = "liuqinUsbGadgetDebug";
+              package = value {
+                product = "liuqin NixOS debug shell";
+                configuration = "USB debug network";
+                requestDeviceRole = false;
+                superSpeed = true;
+              };
+            }
+          ]
+          # This is a source path consumed by the fingerprint derivations.
+          else if name == "liuqinFpcOemSrc" then [ ]
+          else throw "liuqin cache: unhandled overlay value ${name}"
+      ) (deviceManifest.inject ++ builtins.attrNames deviceManifest.native);
+
+      cacheLinks = lib.concatMap ({ name, package }:
+        map (outputName: {
+          name = "${name}-${outputName}";
+          path = builtins.getAttr outputName package;
+        }) (package.outputs or [ "out" ])
+      ) cachePackages;
     in
     {
       overlays.default = import ./overlay.nix { inherit firmwareAssets; };
 
       lib = {
         inherit allowLiuqinUnfree;
+        inherit pkgsNativeArm;
 
         # The flake's own x86_64->aarch64 cross package set. Pass it as
         # `injectFrom` (as the configurations below do) to reuse the device
@@ -215,10 +288,21 @@
           ksu-return-to-uboot = pkgsHost.callPackage ./pkgs/ksu-return-to-uboot { };
         };
 
+      # One CI target that realises every native device derivation and every
+      # declared output. Its symlinks also make the exact cache coverage
+      # inspectable on a fresh runner after upload.
+      packages.aarch64-linux.cache-closure =
+        pkgsNativeArm.linkFarm "liuqin-device-cache-closure" cacheLinks;
+
       nixosModules.liuqin = { config, lib, ... }: {
         imports = [ ./modules/liuqin ];
         config = lib.mkIf config.hardware.liuqin.enable {
-          nixpkgs.overlays = [ self.overlays.default ];
+          # mkBefore lets an explicit consumer injection (such as the existing
+          # x86_64 cross-built fast profile) override this native default.
+          nixpkgs.overlays = lib.mkBefore [
+            self.overlays.default
+            deviceOverlay
+          ];
         };
       };
 
