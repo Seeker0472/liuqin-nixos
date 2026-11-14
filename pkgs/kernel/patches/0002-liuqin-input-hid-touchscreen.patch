@@ -139,7 +139,7 @@ Merged from: bring-up patches 0002, 0003
  obj-$(CONFIG_HID_NTRIG)		+= hid-ntrig.o
 --- /dev/null
 +++ b/drivers/hid/hid-nanosic.c
-@@ -0,0 +1,2262 @@
+@@ -0,0 +1,2272 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Nanosic WN8030 magnetic-keyboard bridge, as fitted to the Xiaomi Pad 6 Pro.
@@ -2223,6 +2223,16 @@ Merged from: bring-up patches 0002, 0003
 +		return dev_err_probe(dev, ret, "failed to request data irq\n");
 +
 +	ret = devm_device_init_wakeup(dev);
++	if (ret)
++		return ret;
++
++	/*
++	 * The bridge's status IRQ can pulse during CPU freeze and abort deep
++	 * suspend even with the cover shut. The hall switch and PMIC power key
++	 * remain available to wake the tablet. Keep wakeup configurable through
++	 * sysfs, but do not arm either keyboard IRQ by default.
++	 */
++	ret = device_set_wakeup_enable(dev, false);
 +	if (ret)
 +		return ret;
 +

@@ -108,18 +108,19 @@ in
     # monitor; no arbitrary input injection API is exposed to the session.
     boot.kernelModules = [ "uinput" ];
 
-    # logind's default suspend action is deliberately disabled for every lid
-    # context.  It delays closes during its 30-second post-resume holdoff and,
-    # after an unintended wake, repeatedly suspends while the lid remains
-    # closed.  The GNOME session policy below instead locks and blanks
-    # immediately on close, then lights the still-locked session on open.
-    # Power-key policy remains delegated to liuqin-power-keyd.
+    # A blanked screen leaves the entire SoC awake.  Restore logind's lid
+    # suspend action, but shorten its post-resume holdoff: if a non-lid event
+    # wakes a closed tablet, logind retries sleep without leaving it running
+    # for another 30 seconds.  The session helper still locks/blanks the
+    # display and restores it on opening.  Power-key policy stays delegated
+    # to liuqin-power-keyd.
     services.logind.settings.Login = {
       HandlePowerKey = "ignore";
       HandlePowerKeyLongPress = "ignore";
-      HandleLidSwitch = "ignore";
-      HandleLidSwitchExternalPower = "ignore";
+      HandleLidSwitch = "suspend";
+      HandleLidSwitchExternalPower = "suspend";
       HandleLidSwitchDocked = "ignore";
+      HoldoffTimeoutSec = "5s";
     };
 
     # GTK/WebKit dmabuf corruption on the Adreno 730: force the
@@ -195,9 +196,8 @@ in
       unitConfig.StartLimitBurst = 3;
     };
 
-    # dconf defaults: scaling, on-screen keyboard, idle blanking, and the
-    # delegation of the power button to liuqin-power-keyd (both the user
-    # profile and the gdm greeter profile).
+    # dconf defaults: scaling, idle blanking and battery idle suspend, plus
+    # delegation of the power button to liuqin-power-keyd (user and greeter).
     #
     # TODO(automatic-brightness): when the ambient loop moves into our own
     # session service, pin org.gnome.settings-daemon.plugins.power
@@ -228,7 +228,8 @@ in
             [org/gnome/settings-daemon/plugins/power]
             power-button-action='nothing'
             sleep-inactive-ac-type='nothing'
-            sleep-inactive-battery-type='nothing'
+            sleep-inactive-battery-type='suspend'
+            sleep-inactive-battery-timeout=600
 
             [org/gnome/desktop/screensaver]
             lock-enabled=true
@@ -242,6 +243,8 @@ in
           (pkgs.writeTextDir "00-liuqin-power" ''
             [org/gnome/settings-daemon/plugins/power]
             power-button-action='nothing'
+            sleep-inactive-battery-type='suspend'
+            sleep-inactive-battery-timeout=600
           '')
         ];
       }

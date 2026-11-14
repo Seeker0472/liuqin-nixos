@@ -7,7 +7,7 @@
   </enum>
   <schema id="io.github.liuqin.power" path="/io/github/liuqin/power/">
     <key name="short-press-action" enum="io.github.liuqin.power.ShortPressAction">
-      <default>'blank'</default>
+      <default>'suspend'</default>
       <summary>Power button short-press action</summary>
       <description>Choose screen locking and blanking, system suspend, or no action.</description>
     </key>

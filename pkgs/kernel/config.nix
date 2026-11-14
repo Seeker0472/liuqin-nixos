@@ -104,6 +104,10 @@ with kernelLib;
   POWER_SEQUENCING = lib.mkForce yes;
   POWER_SEQUENCING_QCOM_WCN = lib.mkForce module;
 
+  # Record the IRQ that wakes the SoC from suspend in /sys/power/pm_wakeup_irq.
+  # The folio-close suspend loop still has an unidentified wake source.
+  PM_DEBUG = lib.mkForce yes;
+
   # CPU frequency/idle governors used by the downstream desktop config.
   CPU_FREQ_GOV_POWERSAVE = lib.mkForce module;
   CPU_FREQ_GOV_CONSERVATIVE = lib.mkForce module;
