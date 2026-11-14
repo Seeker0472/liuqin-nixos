@@ -42,9 +42,9 @@
         config.allowUnfreePredicate = allowLiuqinUnfree;
       };
 
-      # The module injects this independently pinned package set into consumer
-      # systems. A consumer may follow a newer nixpkgs for its own userland
-      # without changing the device package store paths.
+      # Only fixed inject outputs come from this pinned package set. Consumers
+      # can follow newer nixpkgs for their userland without rebuilding those
+      # device package outputs.
       pkgsNativeArm = import deviceNixpkgs {
         system = "aarch64-linux";
         overlays = [ self.overlays.default ];
@@ -53,13 +53,14 @@
 
       deviceManifest = import ./pkgs/device-packages.nix;
 
-      # Use the cached package set for all device names in a consumer system.
-      # The consumer's own nixpkgs still supplies the rest of the system.
+      # CI caches every manifest output, including pinned native variants.
+      # Installed native helpers instead use the consumer's package set through
+      # overlays.default, so runtime tools match the host's PAM and glibc.
       deviceOverlay = _final: _prev:
         builtins.listToAttrs (map (name: {
           inherit name;
           value = pkgsNativeArm.${name};
-        }) (deviceManifest.inject ++ builtins.attrNames deviceManifest.native));
+        }) deviceManifest.inject);
 
       # Cover the entire overlay manifest, including every output of a
       # multi-output derivation. New derivations enter the cache automatically;
