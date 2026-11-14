@@ -2,6 +2,11 @@ Power: Qualcomm PON/reset and pmic-glink plumbing, plus the qcom_battmgr
 MiPPS ABI - the sysfs contract (verify_digest, request_vdm_cmd, ...), the VDM
 payload byte order and the CC-orientation reporting.
 
+SM8475 battery telemetry selects charge-domain properties without BAT_INFO,
+converts the remaining-charge counter from mAh to uAh, and exposes CHARGE_NOW.
+Full/design charge is already uAh. Firmware power/time placeholders are not
+advertised; userspace derives estimates from measured charge/current/voltage.
+
 The PD-mapper machine table needs this board's own compatible: the liuqin DTB
 identifies as "qcom,sm8475", and without a table entry qcom_pd_mapper stops
 with -ENODEV, so the ADSP's avs/audio (msm/adsp/audio_pd) protection domain is
@@ -233,14 +238,17 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	platform_set_drvdata(pdev, pon);
  
  	return devm_of_platform_populate(&pdev->dev);
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index 91cf39b..bb24708 100644
 --- a/drivers/power/supply/qcom_battmgr.c
 +++ b/drivers/power/supply/qcom_battmgr.c
-@@ -16,12 +16,18 @@
+@@ -16,12 +16,19 @@
  #include <linux/soc/qcom/pmic_glink.h>
  #include <linux/math.h>
  #include <linux/units.h>
 +#include <linux/hex.h>
 +#include <linux/delay.h>
++#include <linux/overflow.h>
 +#if IS_ENABLED(CONFIG_TYPEC)
 +#include <linux/usb/typec_mux.h>
 +#endif
@@ -254,7 +262,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	QCOM_BATTMGR_SM8350,
  	QCOM_BATTMGR_SM8550,
  	QCOM_BATTMGR_X1E80100,
-@@ -34,6 +40,7 @@ enum qcom_battmgr_variant {
+@@ -34,6 +41,7 @@ enum qcom_battmgr_variant {
  #define BATTMGR_NOTIFICATION		0x7
  #define NOTIF_BAT_PROPERTY		0x30
  #define NOTIF_USB_PROPERTY		0x32
@@ -262,7 +270,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  #define NOTIF_WLS_PROPERTY		0x34
  #define NOTIF_BAT_STATUS		0x80
  #define NOTIF_BAT_INFO			0x81
-@@ -87,6 +94,35 @@ enum qcom_battmgr_variant {
+@@ -87,6 +95,35 @@ enum qcom_battmgr_variant {
  #define USB_ADAP_TYPE			7
  #define USB_MOISTURE_DET_EN		8
  #define USB_MOISTURE_DET_STS		9
@@ -298,7 +306,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  #define BATTMGR_WLS_PROPERTY_GET	0x34
  #define BATTMGR_WLS_PROPERTY_SET	0x35
-@@ -120,6 +156,43 @@ struct qcom_battmgr_property_request {
+@@ -120,6 +157,43 @@ struct qcom_battmgr_property_request {
  	__le32 value;
  };
  
@@ -342,7 +350,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  struct qcom_battmgr_update_request {
  	struct pmic_glink_hdr hdr;
  	__le32 battery_id;
-@@ -332,6 +405,29 @@ struct qcom_battmgr {
+@@ -332,6 +406,29 @@ struct qcom_battmgr {
  	struct qcom_battmgr_usb usb;
  	struct qcom_battmgr_wireless wireless;
  
@@ -372,7 +380,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	struct work_struct enable_work;
  
  	/*
-@@ -341,6 +437,576 @@ struct qcom_battmgr {
+@@ -341,6 +438,576 @@ struct qcom_battmgr {
  	struct mutex lock;
  };
  
@@ -949,7 +957,15 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  static int qcom_battmgr_request(struct qcom_battmgr *battmgr, void *data, size_t len)
  {
  	unsigned long left;
-@@ -452,6 +1118,25 @@ static const u8 sm8350_bat_prop_map[] = {
+@@ -442,6 +1109,7 @@ static const u8 sm8350_bat_prop_map[] = {
+ 	[POWER_SUPPLY_PROP_CYCLE_COUNT] = BATT_CYCLE_COUNT,
+ 	[POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN] =  BATT_CHG_FULL_DESIGN,
+ 	[POWER_SUPPLY_PROP_CHARGE_FULL] = BATT_CHG_FULL,
++	[POWER_SUPPLY_PROP_CHARGE_NOW] = BATT_CHG_COUNTER,
+ 	[POWER_SUPPLY_PROP_MODEL_NAME] = BATT_MODEL_NAME,
+ 	[POWER_SUPPLY_PROP_TIME_TO_FULL_AVG] = BATT_TTF_AVG,
+ 	[POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG] = BATT_TTE_AVG,
+@@ -452,6 +1120,25 @@ static const u8 sm8350_bat_prop_map[] = {
  	[POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD] = BATT_CHG_CTRL_END_THR,
  };
  
@@ -975,7 +991,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
  					  enum power_supply_property psp)
  {
-@@ -462,6 +1147,7 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
+@@ -462,6 +1149,7 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
  		return -EINVAL;
  
  	prop = sm8350_bat_prop_map[psp];
@@ -983,7 +999,46 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  	mutex_lock(&battmgr->lock);
  	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, prop, 0);
-@@ -561,6 +1247,9 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+@@ -509,6 +1197,20 @@ out_unlock:
+ 	return ret;
+ }
+ 
++static int qcom_battmgr_bat_charge_counter(struct qcom_battmgr *battmgr,
++					 union power_supply_propval *val)
++{
++	s32 counter = battmgr->info.charge_count;
++
++	/* Xiaomi reports the counter in mAh; full/design charge is already uAh. */
++	if (battmgr->variant == QCOM_BATTMGR_SM8475 &&
++	    check_mul_overflow(counter, MILLI, &counter))
++		return -ERANGE;
++
++	val->intval = counter;
++	return 0;
++}
++
+ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+ 					 enum power_supply_property psp,
+ 					 union power_supply_propval *val)
+@@ -520,6 +1222,17 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+ 	if (!battmgr->service_up)
+ 		return -EAGAIN;
+ 
++	if (battmgr->variant == QCOM_BATTMGR_SM8475) {
++		/* This property protocol has no BAT_INFO response to set the unit. */
++		unit = QCOM_BATTMGR_UNIT_mAh;
++
++		/* Keep firmware placeholders and unverified time units out of the ABI. */
++		if (psp == POWER_SUPPLY_PROP_POWER_NOW ||
++		    psp == POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG ||
++		    psp == POWER_SUPPLY_PROP_TIME_TO_FULL_AVG)
++			return -ENODATA;
++	}
++
+ 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
+ 	    battmgr->variant == QCOM_BATTMGR_X1E80100)
+ 		ret = qcom_battmgr_bat_sc8280xp_update(battmgr, psp);
+@@ -561,6 +1274,9 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
  		break;
  	case POWER_SUPPLY_PROP_CURRENT_NOW:
  		val->intval = battmgr->status.current_now;
@@ -993,7 +1048,64 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  		break;
  	case POWER_SUPPLY_PROP_POWER_NOW:
  		val->intval = battmgr->status.power_now;
-@@ -988,6 +1677,8 @@ static int qcom_battmgr_usb_sm8350_update(struct qcom_battmgr *battmgr,
+@@ -583,11 +1299,12 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+ 	case POWER_SUPPLY_PROP_CHARGE_NOW:
+ 		if (unit != QCOM_BATTMGR_UNIT_mAh)
+ 			return -ENODATA;
++		if (battmgr->variant == QCOM_BATTMGR_SM8475)
++			return qcom_battmgr_bat_charge_counter(battmgr, val);
+ 		val->intval = battmgr->status.capacity;
+ 		break;
+ 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+-		val->intval = battmgr->info.charge_count;
+-		break;
++		return qcom_battmgr_bat_charge_counter(battmgr, val);
+ 	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
+ 		if (unit != QCOM_BATTMGR_UNIT_mWh)
+ 			return -ENODATA;
+@@ -895,6 +1612,41 @@ static const struct power_supply_desc sm8350_bat_psy_desc = {
+ 	.get_property = qcom_battmgr_bat_get_property,
+ };
+ 
++/*
++ * Xiaomi's POWER_NOW is a fixed placeholder and its time estimates are not
++ * in verified Linux ABI units. Export measured charge/current/voltage instead;
++ * userspace can derive energy, power and runtime estimates from those.
++ */
++static const enum power_supply_property sm8475_bat_props[] = {
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_HEALTH,
++	POWER_SUPPLY_PROP_PRESENT,
++	POWER_SUPPLY_PROP_CHARGE_TYPE,
++	POWER_SUPPLY_PROP_CAPACITY,
++	POWER_SUPPLY_PROP_VOLTAGE_OCV,
++	POWER_SUPPLY_PROP_VOLTAGE_NOW,
++	POWER_SUPPLY_PROP_VOLTAGE_MAX,
++	POWER_SUPPLY_PROP_CURRENT_NOW,
++	POWER_SUPPLY_PROP_TEMP,
++	POWER_SUPPLY_PROP_TECHNOLOGY,
++	POWER_SUPPLY_PROP_CHARGE_COUNTER,
++	POWER_SUPPLY_PROP_CYCLE_COUNT,
++	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
++	POWER_SUPPLY_PROP_CHARGE_FULL,
++	POWER_SUPPLY_PROP_CHARGE_NOW,
++	POWER_SUPPLY_PROP_MODEL_NAME,
++	POWER_SUPPLY_PROP_INTERNAL_RESISTANCE,
++	POWER_SUPPLY_PROP_STATE_OF_HEALTH,
++};
++
++static const struct power_supply_desc sm8475_bat_psy_desc = {
++	.name = "qcom-battmgr-bat",
++	.type = POWER_SUPPLY_TYPE_BATTERY,
++	.properties = sm8475_bat_props,
++	.num_properties = ARRAY_SIZE(sm8475_bat_props),
++	.get_property = qcom_battmgr_bat_get_property,
++};
++
+ static const enum power_supply_property sm8550_bat_props[] = {
+ 	POWER_SUPPLY_PROP_STATUS,
+ 	POWER_SUPPLY_PROP_HEALTH,
+@@ -988,6 +1740,8 @@ static int qcom_battmgr_usb_sm8350_update(struct qcom_battmgr *battmgr,
  		return -EINVAL;
  
  	prop = sm8350_usb_prop_map[psp];
@@ -1002,7 +1114,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  	mutex_lock(&battmgr->lock);
  	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, prop, 0);
-@@ -1188,6 +1879,102 @@ static const struct power_supply_desc sm8350_wls_psy_desc = {
+@@ -1188,6 +1942,102 @@ static const struct power_supply_desc sm8350_wls_psy_desc = {
  	.get_property = qcom_battmgr_wls_get_property,
  };
  
@@ -1105,7 +1217,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
  				      const struct qcom_battmgr_message *msg,
  				      int len)
-@@ -1213,10 +2000,14 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
+@@ -1213,10 +2063,14 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
  		break;
  	case NOTIF_USB_PROPERTY:
  		power_supply_changed(battmgr->usb_psy);
@@ -1120,7 +1232,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	default:
  		dev_err(battmgr->dev, "unknown notification: %#x\n", notification);
  		break;
-@@ -1382,7 +2173,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+@@ -1382,7 +2236,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
  	switch (opcode) {
  	case BATTMGR_BAT_PROPERTY_GET:
  		property = le32_to_cpu(resp->intval.property);
@@ -1129,7 +1241,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  			if (payload_len != sizeof(resp->strval)) {
  				dev_warn(battmgr->dev,
  					 "invalid payload length for BATT_MODEL_NAME request: %zd\n",
-@@ -1403,6 +2194,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+@@ -1403,6 +2257,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
  			if (battmgr->error)
  				goto out_complete;
  		}
@@ -1137,7 +1249,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  		switch (property) {
  		case BATT_STATUS:
-@@ -1493,6 +2285,9 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+@@ -1493,6 +2348,9 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
  		battmgr->error = le32_to_cpu(resp->intval.result);
  		if (battmgr->error)
  			goto out_complete;
@@ -1147,7 +1259,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  		switch (property) {
  		case USB_ONLINE:
-@@ -1516,6 +2311,12 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+@@ -1516,6 +2374,12 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
  		case USB_TYPE:
  			battmgr->usb.usb_type = le32_to_cpu(resp->intval.value);
  			break;
@@ -1160,7 +1272,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  		default:
  			dev_warn(battmgr->dev, "unknown property %#x\n", property);
  			break;
-@@ -1534,6 +2335,9 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+@@ -1534,6 +2398,9 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
  		battmgr->error = le32_to_cpu(resp->intval.result);
  		if (battmgr->error)
  			goto out_complete;
@@ -1170,7 +1282,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  		switch (property) {
  		case WLS_ONLINE:
-@@ -1551,6 +2355,12 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+@@ -1551,6 +2418,12 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
  		case WLS_CURR_MAX:
  			battmgr->wireless.current_max = le32_to_cpu(resp->intval.value);
  			break;
@@ -1183,7 +1295,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  		default:
  			dev_warn(battmgr->dev, "unknown property %#x\n", property);
  			break;
-@@ -1569,11 +2379,98 @@ out_complete:
+@@ -1569,11 +2442,98 @@ out_complete:
  	complete(&battmgr->ack);
  }
  
@@ -1283,7 +1395,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  	if (opcode == BATTMGR_NOTIFICATION)
  		qcom_battmgr_notification(battmgr, data, len);
-@@ -1606,6 +2503,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
+@@ -1606,6 +2566,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
  	if (state == SERVREG_SERVICE_STATE_UP) {
  		battmgr->service_up = true;
  		schedule_work(&battmgr->enable_work);
@@ -1291,7 +1403,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	} else {
  		battmgr->service_up = false;
  	}
-@@ -1613,6 +2511,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
+@@ -1613,6 +2574,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
  
  static const struct of_device_id qcom_battmgr_of_variants[] = {
  	{ .compatible = "qcom,glymur-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
@@ -1299,7 +1411,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	{ .compatible = "qcom,kaanapali-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
  	{ .compatible = "qcom,sc8180x-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
  	{ .compatible = "qcom,sc8280xp-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
-@@ -1640,6 +2539,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+@@ -1640,6 +2602,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
  		return -ENOMEM;
  
  	battmgr->dev = dev;
@@ -1307,7 +1419,18 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  
  	psy_cfg.drv_data = battmgr;
  	psy_cfg.fwnode = dev_fwnode(&adev->dev);
-@@ -1716,6 +2616,16 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+@@ -1690,7 +2653,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 			return dev_err_probe(dev, PTR_ERR(battmgr->wls_psy),
+ 					     "failed to register wireless charing power supply\n");
+ 	} else {
+-		if (battmgr->variant == QCOM_BATTMGR_SM8550)
++		if (battmgr->variant == QCOM_BATTMGR_SM8475)
++			psy_desc = &sm8475_bat_psy_desc;
++		else if (battmgr->variant == QCOM_BATTMGR_SM8550)
+ 			psy_desc = &sm8550_bat_psy_desc;
+ 		else
+ 			psy_desc = &sm8350_bat_psy_desc;
+@@ -1716,6 +2681,16 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
  	if (ret)
  		return ret;
  
@@ -1324,7 +1447,7 @@ Merged from: bring-up patches 0006, 0021-battmgr-mipps-abi, 0023-battmgr-mipps-f
  	battmgr->client = devm_pmic_glink_client_alloc(dev, PMIC_GLINK_OWNER_BATTMGR,
  						       qcom_battmgr_callback,
  						       qcom_battmgr_pdr_notify,
-@@ -1725,6 +2635,26 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+@@ -1725,6 +2700,26 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
  
  	pmic_glink_client_register(battmgr->client);
  

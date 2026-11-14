@@ -491,6 +491,22 @@
           touch $out
         '';
 
+      # Exercise the actual patched battery getter with stock charge units and
+      # recorded charging samples, without a tablet or a kernel build.
+      checks.x86_64-linux.liuqin-battery-telemetry =
+        pkgsHost.runCommand "liuqin-battery-telemetry" {
+          nativeBuildInputs = with pkgsHost; [ python3 stdenv.cc patch gnutar xz ];
+        } ''
+          patchFile=${./pkgs/kernel/patches/0005-liuqin-power-pmic-glink-mipps.patch}
+          prefix=linux-${pkgsArm.liuqinKernel.version}
+          sed -n "s|^--- a/|$prefix/|p" "$patchFile" > paths
+          echo "$prefix/include/linux/power_supply.h" >> paths
+          tar -xJf ${pkgsArm.liuqinKernel.src} --strip-components=1 -T paths
+          patch -p1 --batch < "$patchFile"
+          python3 ${./pkgs/kernel/test-battery-telemetry.py} "$PWD"
+          touch $out
+        '';
+
       checks.x86_64-linux.liuqin-kernel-config-policy =
         let
           initial = pkgsHost.writeText "liuqin-kernel-initial-answers.json"
