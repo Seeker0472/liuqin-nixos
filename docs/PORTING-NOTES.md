@@ -28,6 +28,7 @@ the current firmware set.
 | Sensors (SSC/SLPI) | previously partly verified | OS2.0.4 configuration and SLPI behavior need hardware validation |
 | Wi-Fi / Bluetooth | previously verified | OS2.0.4 WLAN/BTFM payloads need hardware validation |
 | Storage (UFS, root guard) | root guard verified; ext4 bitmap errors recurred on 2026-11-14 | current filesystem health needs an offline check |
+| Standby / LPASS clocks | PM-clock lifecycle corrected; ADSP sleep observed | roughly eight-minute early resume persists; overnight battery life unverified |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones versus 81 on Android; no IPA |
 | Fingerprint (FPC1264) | OS2.0.4 dual-finger gallery enrolled; both fingers matched and a cross-finger attempt mismatched after daemon reload; stock-style IRQ level interface booted and passed no-finger smoke | physical early-press response on new kernel, post-reboot match and production deletion unverified |
@@ -90,6 +91,11 @@ Four-speaker playback and WCD9385 capture were measured with the prior payload
 set. OS2.0.4 AudioReach topology and speaker-protection payloads still need
 hardware acceptance. The USB-C headset and digital-microphone paths are not
 implemented.
+
+LPASS WSA/VA/TX/RX PM-clock backports are now patches 0024–0026. Controlled
+battery tests confirm ADSP can sleep after the clock-vote lifecycle correction;
+they do not constitute playback or speaker-protection acceptance. Speakers
+were not tested in this session, as requested.
 
 ### Fingerprint (FPC1264)
 
@@ -189,8 +195,87 @@ it after each power toggle and after `liuqin-bt-preconfigure` completes.
 An ext4 block-bitmap checksum error on `/dev/sda36` was reported through
 2026-10-26. The 2026-10-27 retained logs had no matching errors; the owner
 reports the issue has since been fixed. The repair method is not recorded here.
-Closing the folio locks and blanks the panel but does not suspend, avoiding
-the measured suspend/re-wake loop; see
+The 2026-11-14 boots again reported `ext4_validate_block_bitmap` errors on
+`/dev/sda36`; the earlier report does not establish current filesystem health.
+The final C9 boot again reported a bad block-bitmap checksum in group 1445 and
+mounting a filesystem with errors; the read-only stop snapshot confirms
+`/dev/sda36` is the ext4 root filesystem. No filesystem repair was performed.
+Closing the folio requests suspend through logind. The active-session power
+controller handles locking/blanking and reopening without unlocking; see
+[LID-SUSPEND-LOOP.md](TODO/LID-SUSPEND-LOOP.md). LPASS clock changes allow ADSP
+sleep, but roughly eight-minute early resume persists. The 0.620 W LPASS-only
+and 0.377 W panel-candidate readings have different battery/session conditions
+and cannot establish a saving percentage or overnight endurance.
+
+### Power-key controller
+
+The root `broker.py` owns `pmic_pwrkey` evdev input, active-seat selection,
+logind suspend and a virtual device that projects only `KEY_WAKEUP`. It
+launches a controller under the selected graphical
+session's UID over a private, bounded `SOCK_SEQPACKET` socket. Only that active
+worker may request suspend. Input is grabbed once the desktop is ready and
+released if the worker or its providers fail. systemd cleans up both processes.
+`launch.py` waits for Mutter, reads the user manager's imported configuration
+environment under that UID and execs `session.py` before GLib caches directory
+paths. This preserves custom
+XDG directories, including GDM's per-seat dconf outside its account home. Only
+configuration variables are imported; the package schema and code environment
+stay controlled by the wrapper. A late session bus/manager is retried while
+input remains ungrabbed. The session has no arbitrary input-injection interface.
+
+`policy.py` holds the state machine without device or D-Bus dependencies.
+Mutter `PowerSaveMode`, logind `LockedHint` and `PrepareForSleep` are separate
+facts. User-session lock and display requests are asynchronous. Locking waits
+for `LockedHint`, not a method acknowledgement; an already locked screen
+blanks directly. Transaction tokens reject stale replies after a wake cancels
+locking/blanking. Once suspend is committed, a further press requests display
+wake after resume, with its release consumed. Holding a wake key cannot trigger
+another short press. Accepted wake commands first project `KEY_WAKEUP`, so
+Mutter sees user activity despite the exclusive power-key grab. They then set
+DPMS on, without unlocking. Lid display policy uses this same controller; logind
+continues to own lid suspend. No persistent display-state marker is used.
+
+`nix build .#checks.x86_64-linux.liuqin-power-key` runs gesture/race tests and
+real Gio calls against a private D-Bus with independently delayed lock replies
+and lock-state changes. These checks also run in the native tablet package.
+The current suite has 51 tests, including startup environment ordering and
+configuration-directory isolation. On 2026-11-14 the Fast build completed four
+greeter wake/blank cycles without requesting suspend or bypassing authentication;
+each wake reset Mutter's idle timer. The exact prior GSettings value was restored.
+The same four cycles passed again after reboot, with the controller's
+`XDG_CONFIG_HOME=/var/lib/gdm/seat0/config` and zero service restarts.
+With the display confirmed on and the default suspend policy restored, an evdev
+power press slept 59.687 seconds and resumed on RTC IRQ 22 (success +1, fail +0).
+These tests inject events through the real evdev/session path; physical PMIC-key
+wake and folio movements still need manual acceptance. The short RTC test is not
+a reliable battery-power benchmark. Records are retained under
+`/var/tmp/liuqin-power-environment-{acceptance,suspend-2}-20261114/` on the tablet.
+
+### Battery telemetry
+
+The SM8475 property protocol reports full/design charge in uAh, but its
+remaining-charge counter in mAh. Patch 0005 selects charge-domain reads even
+though this protocol never sends the BAT_INFO response that would initialise
+the unit, converts only the counter to uAh, and exposes that measurement as
+both `charge_counter` and `charge_now`. Full/design charge is not rescaled.
+The firmware percentage remains available separately.
+
+The SM8475 battery descriptor omits `power_now` (observed as a fixed 10 W
+despite varying measured current/voltage) and the firmware time estimates
+(units not yet verified). UPower uses `current_now`, `voltage_now` and the
+charge attributes to derive energy, power and runtime estimates. Other
+Qualcomm variants keep their existing property lists and units.
+
+`nix build .#checks.x86_64-linux.liuqin-battery-telemetry` compiles the actual
+patched getter/property map against stock capacity values and the 2026-11-13
+charging capture. It also checks signed/overflow cases, transport failures
+and isolation from the other protocols. The deployed kernel was verified on
+battery: design/full charge 8600000/7593000 uAh, a remaining-charge sample of
+5944000 uAh, UPower energy 24.49 Wh, and varying measured power. Charging with
+the deployed kernel still needs separate acceptance. A 60-second suspend
+sample returned an unchanged charge counter; it does not establish zero power.
+Later tests measured charge-counter deltas over roughly eight-minute sleep
+windows; their conditions and limits are recorded in
 [LID-SUSPEND-LOOP.md](TODO/LID-SUSPEND-LOOP.md).
 
 ### Video (VPU)
