@@ -1,0 +1,32 @@
+[
+  {
+    "path": "/home/seeker/Develop/liuqin/liuqin-nixos/pkgs/kernel/patches/0001-liuqin-board-dts-bindings.patch",
+    "bytes": 58319,
+    "sha256": "65da0ec6c19c2aa6d5c45cb2ca176e588f82f2b3f22301ba69b69d87aeb3b627"
+  },
+  {
+    "path": "/home/seeker/Develop/liuqin/liuqin-nixos/pkgs/kernel/patches/0003-liuqin-display-panel-msm.patch",
+    "bytes": 44851,
+    "sha256": "60b561b453b361b688ac478ff13a1ca93ae112b9b82c2e3e2d48523205f9d708"
+  },
+  {
+    "path": "/home/seeker/Develop/liuqin/liuqin-nixos/pkgs/u-boot/default.nix",
+    "bytes": 13456,
+    "sha256": "0f31f87346d4656de89706bac02427b47045208052fe972fc2cb7a1743da2be6"
+  },
+  {
+    "path": "/home/seeker/Develop/liuqin/liuqin-nixos/pkgs/bootimg/default.nix",
+    "bytes": 16280,
+    "sha256": "cf0e1a3c045b6e544ec3801e5cb0167429a9a826e961e63149a1a100f275b4af"
+  },
+  {
+    "path": "/home/seeker/nixos-config/flake.nix",
+    "bytes": 3071,
+    "sha256": "ca7e7ee527c483bc1c4517a33c05741b796d2fc494f017df343cb2ac83375cf0"
+  },
+  {
+    "path": "/home/seeker/nixos-config/flake.lock",
+    "bytes": 23511,
+    "sha256": "12f788665b3094cfe891ac5b644cf48ffff660334714378eb4a63b89044bf28e"
+  }
+]

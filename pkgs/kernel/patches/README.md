@@ -56,6 +56,14 @@ patch.
 sequence with the rest and 0019 (the board DT node) applies there as well: it
 does not touch the regions rewritten by the later board DT additions 0014–0016.
 
+The 2026-11-14 workspace display changes in 0001/0003 are still a candidate:
+resource rollback and power-off were checked, but first-image acceptance failed.
+The installed normal fallback retains the earlier display recovery while keeping
+the verified LPASS backports. C6–C9 diagnostic reads, tracing, DTB overrides and
+long-packet switches were not added to this series. See
+[the current display status](../../../docs/TODO/DISPLAY-HANDOFF.md) before deploying
+the workspace display candidate.
+
 ## Why 0014, 0015 and 0016 follow the common board patches
 
 The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend

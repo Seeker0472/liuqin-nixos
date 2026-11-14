@@ -16,8 +16,8 @@ the current firmware set.
 
 | Subsystem | Status | Current limit |
 | --- | --- | --- |
-| DSI display / DRM / backlight | verified | 120 Hz only; the U-Boot path still uses the early hand-off workaround |
-| Touchscreen / pen | owner-confirmed working (2026-10-27) | NVT input devices registered in the read-only snapshot |
+| DSI display / DRM / backlight | usable with the existing boot workaround | 120 Hz only; C2–C9 have not passed first-image acceptance without recovery |
+| Touchscreen / pen | owner-confirmed working (2026-10-27); firmware resumes after display recovery | 2026-11-14 display candidates time out at first ReK; second initialization succeeds |
 | Keyboard folio, touchpad, keys | verified | closed-cover behavior is documented in the lid/suspend note |
 | Camera (3 sensors + AF) | verified | one sensor at a time; app recording/JPEG paths remain open |
 | Audio playback | previously verified | OS2.0.4 protection and playback need hardware acceptance |
@@ -27,7 +27,7 @@ the current firmware set.
 | Xiaomi MiPPS (67 W) | verified with operator-provided keys | reverse authentication (command 8) is unverified |
 | Sensors (SSC/SLPI) | previously partly verified | OS2.0.4 configuration and SLPI behavior need hardware validation |
 | Wi-Fi / Bluetooth | previously verified | OS2.0.4 WLAN/BTFM payloads need hardware validation |
-| Storage (UFS, root guard) | root guard verified; prior ext4 issue owner-reported fixed | latest retained logs had no matching errors |
+| Storage (UFS, root guard) | root guard verified; ext4 bitmap errors recurred on 2026-11-14 | current filesystem health needs an offline check |
 | CPU scheduling / Energy Model | verified | — |
 | Thermal | partial | 38 zones versus 81 on Android; no IPA |
 | Fingerprint (FPC1264) | OS2.0.4 dual-finger gallery enrolled; both fingers matched and a cross-finger attempt mismatched after daemon reload; stock-style IRQ level interface booted and passed no-finger smoke | physical early-press response on new kernel, post-reboot match and production deletion unverified |
@@ -45,18 +45,37 @@ attach a display or generate physical touch input.
 
 ### Display
 
-The internal 1800x2880 DSI panel exposes one 120 Hz mode. The U-Boot boot path
-still requires patch 0003's early pipeline stop/start and one early DPMS cycle;
-this is separate from external DP Alt Mode. Evidence and remaining acceptance
-criteria are in
-[`DISPLAY-CAMERA-REVIEW.md`](TODO/DISPLAY-CAMERA-REVIEW.md).
+The internal 1800x2880 DSI panel exposes one 120 Hz mode. The normal fallback
+still uses the existing early pipeline recovery and one timed DPMS cycle.
+The workspace's 0001/0003 display changes instead give the panel ownership of
+five supplies and reset, check backlight writes, and remove the timed cycle;
+their first image still fails. C2–C9 experiments must not be presented as a
+completed handoff fix. This is separate from external DP Alt Mode.
+
+In the 2026-11-14 stop snapshot, the tablet was running C9 with both
+experimental switches disabled and GDM active after controlled OFF/ON. The
+next-boot profile had been restored to the normal LPASS-fixed fallback; no
+reboot into it was performed after the stop request. Exact system/kernel
+identities, failed experiments and evidence limits are in
+[DISPLAY-HANDOFF.md](TODO/DISPLAY-HANDOFF.md). The earlier display/camera review
+remains in [DISPLAY-CAMERA-REVIEW.md](TODO/DISPLAY-CAMERA-REVIEW.md).
+
+The subsequent [systematic handoff investigation](research/DISPLAY-HANDOFF-2026-11-14.md)
+traces the actual ABL/DisplayDxe shutdown and fixed U-Boot exit path, distinguishes
+the dump's stock continuous-splash driver from mainline initialization, and finds
+PLL bias/mux writes during clock registration before the first modeset. It also
+limits several historical exclusions to their actual sampling points and inputs.
+This was an offline investigation; it did not deploy a fix or resolve first image.
 
 ### Touch and input
 
-The owner reports touchscreen and pen working; the snapshot above confirms the
-NVT input devices are registered. No input failure is currently reported. The
-firmware parser's missing range checks are a separate hardening gap, not an
-observed touchscreen operation problem.
+The 2026-10-27 owner report and snapshot confirm working touch/pen and registered
+NVT devices. In the 2026-11-14 display candidates, the first firmware download
+completes but ReK remains at 0xa0; failure leaves IRQ and ESD handling disabled.
+After controlled display OFF/ON, the second firmware initialization completes.
+DSI1 already has no read response before that boot's touch download, but this
+does not establish that the shared TDDI firmware is irrelevant to display startup.
+The firmware parser's missing range checks remain a separate hardening gap.
 
 ### Camera
 

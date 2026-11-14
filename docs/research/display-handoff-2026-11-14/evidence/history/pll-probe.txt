@@ -1,0 +1,51 @@
+/tmp/liuqin-power-display-review-20261114/linux/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+857: static int dsi_pll_7nm_init(struct msm_dsi_phy *phy)
+858: {
+859: 	struct platform_device *pdev = phy->pdev;
+860: 	struct dsi_pll_7nm *pll_7nm;
+861: 	int ret;
+862: 
+863: 	pll_7nm = devm_kzalloc(&pdev->dev, sizeof(*pll_7nm), GFP_KERNEL);
+864: 	if (!pll_7nm)
+865: 		return -ENOMEM;
+866: 
+867: 	DBG("DSI PLL%d", phy->id);
+868: 
+869: 	pll_7nm_list[phy->id] = pll_7nm;
+870: 
+871: 	spin_lock_init(&pll_7nm->postdiv_lock);
+872: 	spin_lock_init(&pll_7nm->pclk_mux_lock);
+873: 	spin_lock_init(&pll_7nm->pll_enable_lock);
+874: 
+875: 	pll_7nm->phy = phy;
+876: 
+877: 	ret = pll_7nm_register(pll_7nm, phy->provided_clocks->hws);
+878: 	if (ret) {
+879: 		DRM_DEV_ERROR(&pdev->dev, "failed to register PLL: %d\n", ret);
+880: 		return ret;
+881: 	}
+882: 
+883: 	phy->vco_hw = &pll_7nm->clk_hw;
+884: 
+885: 	/* TODO: Remove this when we have proper display handover support */
+886: 	msm_dsi_phy_pll_save_state(phy);
+887: 	/*
+888: 	 * Store also proper vco_current_rate, because its value will be used in
+889: 	 * dsi_7nm_pll_restore_state().
+890: 	 */
+891: 	if (!dsi_pll_7nm_vco_recalc_rate(&pll_7nm->clk_hw, VCO_REF_CLK_RATE))
+892: 		pll_7nm->vco_current_rate = pll_7nm->phy->cfg->min_pll_rate;
+893: 
+894: 	return 0;
+895: }
+896: 
+897: static int dsi_phy_hw_v4_0_is_pll_on(struct msm_dsi_phy *phy)
+898: {
+899: 	void __iomem *base = phy->base;
+900: 	u32 data = 0;
+901: 
+902: 	data = readl(base + REG_DSI_7nm_PHY_CMN_PLL_CNTRL);
+903: 	mb(); /* make sure read happened */
+904: 
+905: 	return (data & BIT(0));
+906: }

@@ -1,0 +1,105 @@
+{
+  "sources": {
+    "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/abl_a.img": {
+      "size": 8388608,
+      "sha256": "430d7505414b880fdd4b8e57b3c0275d127604844d0259f64e4ac7e9cfc67293"
+    },
+    "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/abl_b.img": {
+      "size": 8388608,
+      "sha256": "430d7505414b880fdd4b8e57b3c0275d127604844d0259f64e4ac7e9cfc67293"
+    },
+    "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/uefi_a.img": {
+      "size": 5242880,
+      "sha256": "6032e749c3204f52d7f988ff063410d97af8385fbff70d0486120cb4a4124538"
+    },
+    "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/uefi_b.img": {
+      "size": 5242880,
+      "sha256": "6032e749c3204f52d7f988ff063410d97af8385fbff70d0486120cb4a4124538"
+    },
+    "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/imagefv_a.img": {
+      "size": 50331648,
+      "sha256": "35b1d5d471da1692d6781a5b72f2521697c6471bad85cdc1b6f3f527df05735e"
+    },
+    "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/xbl_a.img": {
+      "size": 8388608,
+      "sha256": "0e1c07280278f528e07a66cd31c965f95552ea49b705d1f5fa4396e50eb709ba"
+    },
+    "/home/seeker/Develop/liuqin/liuqin_images_V14.0.9.0.TMYCNXM_13.0/images/uefi.elf": {
+      "size": 2760024,
+      "sha256": "5412df1242821b736353cb690abfefbf1d4385368e5d0d59cc8d4011c1d4f4ab"
+    },
+    "/home/seeker/Develop/liuqin/liuqin_images_V14.0.9.0.TMYCNXM_13.0/images/abl.elf": {
+      "size": 204120,
+      "sha256": "90163027da1f5c2a61234bf5c28094297e2b25066c0ef2550ac44184dac53a1b"
+    },
+    "/home/seeker/Develop/liuqin/liuqin_images_V14.0.9.0.TMYCNXM_13.0/images/imagefv.elf": {
+      "size": 6298968,
+      "sha256": "7fd9d54dba644f480b0f367a9be519a8024eb48d533287ab4daef0ea03eb3128"
+    }
+  },
+  "outputs": {
+    "abl_a.decompressed": {
+      "size": 966856,
+      "sha256": "2d992d6d04c446f1652146248ebccbabdc2b42a0c3e10e47bc7176499de2eb88"
+    },
+    "abl.pe": {
+      "size": 966672,
+      "sha256": "d590256850ed6431588cf7cbeafb2cf93ee515a756ff2a2f21e72e9a103e75e3"
+    },
+    "DisplayDxe.pe": {
+      "size": 372736,
+      "sha256": "d6a934cc70f37310984d44757662d5a25ea659f7da84a20425bbdf61260d55b0"
+    },
+    "Panel_M81_36_02_0a_dualdsi_dsc_lcd_video.xml": {
+      "size": 6434,
+      "sha256": "d8fb21cb7452966bee0cde7066a6e4ecfb55ed828ce9f352c00ff6f37155a99d"
+    },
+    "Panel_M81_42_02_0b_dualdsi_dsc_lcd_video.xml": {
+      "size": 6195,
+      "sha256": "a3e7649ab12793d1656247ecd548313e3d59899b884e12b00bd92a2c27190b0c"
+    },
+    "rom-DisplayDxe.pe": {
+      "size": 360448,
+      "sha256": "915f7ee9cb6f5219e173481ff4e1596b0e18ea589879c06a4e4eaf174863cc4c"
+    },
+    "rom-Panel_M81_36_02_0a_dualdsi_dsc_lcd_video.xml": {
+      "size": 6434,
+      "sha256": "d8fb21cb7452966bee0cde7066a6e4ecfb55ed828ce9f352c00ff6f37155a99d"
+    },
+    "rom-Panel_M81_42_02_0b_dualdsi_dsc_lcd_video.xml": {
+      "size": 6195,
+      "sha256": "a3e7649ab12793d1656247ecd548313e3d59899b884e12b00bd92a2c27190b0c"
+    },
+    "abl.disasm": {
+      "size": 6317658,
+      "sha256": "ab700b9401da2b777c6e4b76231d68eb6c4f363781a09457cb52a2781d73dc9e"
+    },
+    "DisplayDxe.disasm": {
+      "size": 2469609,
+      "sha256": "a2f3f8fe3303b9697bd177e6293f8ced8016662fb991d2cad7a3e4ecdaa63309"
+    },
+    "annotated-excerpts.txt": {
+      "size": 51098,
+      "sha256": "4a9fadd371447d1bab54a9758ccc07f457d4e65e3e12cd9a297705287ddea459"
+    }
+  },
+  "tools": {
+    "capstone": "5.0.9",
+    "pefile": "2024.8.26",
+    "uefi_firmware": "1.16"
+  },
+  "abl_mapping": {
+    "lzma_file_offset": "0x1078",
+    "pe_offset_in_decompressed": "0xb8",
+    "imagebase": "0x0",
+    "text_rva_equals_pe_file_offset": true
+  },
+  "DisplayDxe_power_protocol": {
+    "guid": "f352021d-9593-4432-bf04-67b9f3b76008",
+    "guid_rva": "0x48108",
+    "interface_rva": "0x48370",
+    "revision": "0x10000",
+    "set_power_rva": "0x36a0",
+    "get_power_rva": "0x3a34"
+  }
+}

@@ -1,0 +1,53 @@
+
+String dump of section '.modinfo':
+  [     0]  parmtype=sdecustom:bool
+  [    18]  parm=sdecustom:Enable customizations for sde clients
+  [    4d]  parmtype=dsi_display0:string
+  [    6a]  parm=dsi_display0:msm_drm.dsi_display0=<display node>:<configX> where <display node> is 'primary dsi display node name' and <configX> where x represents index in the topology list
+  [   11e]  parmtype=dsi_display1:string
+  [   13b]  parm=dsi_display1:msm_drm.dsi_display1=<display node>:<configX> where <display node> is 'secondary dsi display node name' and <configX> where x represents index in the topology list
+  [   1f1]  parm=reglog:Enable register read/write logging
+  [   220]  parmtype=reglog:bool
+  [   235]  parm=vram:Configure VRAM size (for devices without IOMMU/GPUMMU)
+  [   276]  parmtype=vram:charp
+  [   28a]  parm=dumpstate:Dump KMS state on errors
+  [   2b2]  parmtype=dumpstate:bool
+  [   2ca]  parm=modeset:Use kernel modesetting [KMS] (1=on (default), 0=disable)
+  [   310]  parmtype=modeset:bool
+  [   326]  softdep=pre: msm-mmrm
+  [   33c]  author=Rob Clark <robdclark@gmail.com
+  [   362]  description=MSM DRM Driver
+  [   37d]  license=GPL
+  [   389]  license=GPL v2
+  [   398]  description=MSM SMMU driver
+  [   3b4]  parmtype=oled_wp:string
+  [   3cc]  parm=oled_wp:msm_drm.oled_wp=<wp info> while <wp info> is 'white point info' 
+  [   41a]  parmtype=sec_oled_wp:string
+  [   436]  parm=sec_oled_wp:msm_drm.sec_oled_wp=<wp info> while <wp info> is 'white point info' 
+  [   48c]  parmtype=cell_id:string
+  [   4a4]  parm=cell_id:msm_drm.cell_id=<cell id> while <cell id> is 'cell id info' 
+  [   4ee]  parmtype=debugpolicy:string
+  [   50a]  parm=debugpolicy:msm_drm.debugpolicy=<debug policy> to indicate supporting ramdump or not 
+  [   565]  vermagic=5.10.160-gki-g13e2f28f61e9 SMP preempt mod_unload modversions aarch64
+  [   5b4]  name=msm_drm
+  [   5c1]  depends=pm8941-pwrkey,smem,msm_dma_iommu_mapping,qcom_iommu_util,qcom_rpmh,llcc-qcom,msm-mmrm,spmi-pmic-arb,pinctrl-msm,panel_event_notifier,qcom-scm,hdcp_qseecom,fsa4480-i2c,msm_ext_display,qcom_ipc_logging,altmode-glink,dwc3-msm,gh_msgq,gh_irq_lend,gh_rm_drv,gh_mem_notifier
+  [   6d6]  alias=of:N*T*Cqcom,msm-hdcp
+  [   6f2]  alias=of:N*T*Cqcom,msm-hdcpC*
+  [   710]  alias=of:N*T*Cqcom,mdp4
+  [   728]  alias=of:N*T*Cqcom,mdp4C*
+  [   742]  alias=of:N*T*Cqcom,mdss
+  [   75a]  alias=of:N*T*Cqcom,mdssC*
+  [   774]  alias=of:N*T*Cqcom,sde-kms
+  [   78f]  alias=of:N*T*Cqcom,sde-kmsC*
+  [   7ac]  alias=of:N*T*Cqcom,smmu_sde_unsec
+  [   7ce]  alias=of:N*T*Cqcom,smmu_sde_unsecC*
+  [   7f2]  alias=of:N*T*Cqcom,smmu_sde_sec
+  [   812]  alias=of:N*T*Cqcom,smmu_sde_secC*
+  [   834]  alias=of:N*T*Cqcom,smmu_sde_nrt_unsec
+  [   85a]  alias=of:N*T*Cqcom,smmu_sde_nrt_unsecC*
+  [   882]  alias=of:N*T*Cqcom,smmu_sde_nrt_sec
+  [   8a6]  alias=of:N*T*Cqcom,smmu_sde_nrt_secC*
+  [   8cc]  alias=i2c:ktz8866
+  [   8de]  alias=i2c:ktz8866b
+  [   8f1]  scmversion=g29ec99da39a5
+

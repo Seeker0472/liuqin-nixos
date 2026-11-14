@@ -1,0 +1,45 @@
+[
+  {
+    "dtbo_index": 15,
+    "offset": 5567258,
+    "root_props": {
+      "model": "4c 69 75 71 69 6e 20 62 61 73 65 64 20 6f 6e 20 51 75 61 6c 63 6f 6d 6d 20 54 65 63 68 6e 6f 6c 6f 67 69 65 73 2c 20 49 6e 63 20 53 4d 38 34 37 35 00",
+      "compatible": "71 63 6f 6d 2c 63 61 70 65 2d 6d 74 70 00 71 63 6f 6d 2c 63 61 70 65 00 71 63 6f 6d 2c 6d 74 70 00",
+      "qcom,msm-id": "00 00 02 13 00 01 00 00 00 00 02 1c 00 01 00 00 00 00 02 12 00 01 00 00",
+      "qcom,board-id": "00 01 00 08 00 00 00 00"
+    },
+    "path": "//fragment@105/__overlay__/dsi_panel_pwr_supply_M81",
+    "children": [
+      {
+        "index": 0,
+        "node": "qcom,panel-supply-entry@0",
+        "supply": "iovdd",
+        "reg": "00 00 00 00"
+      },
+      {
+        "index": 1,
+        "node": "qcom,panel-supply-entry@1",
+        "supply": "dvddbuck",
+        "reg": "00 00 00 01"
+      },
+      {
+        "index": 2,
+        "node": "qcom,panel-supply-entry@2",
+        "supply": "dvddldo",
+        "reg": "00 00 00 02"
+      },
+      {
+        "index": 3,
+        "node": "qcom,panel-supply-entry@3",
+        "supply": "vsp",
+        "reg": "00 00 00 02"
+      },
+      {
+        "index": 4,
+        "node": "qcom,panel-supply-entry@4",
+        "supply": "vsn",
+        "reg": "00 00 00 02"
+      }
+    ]
+  }
+]

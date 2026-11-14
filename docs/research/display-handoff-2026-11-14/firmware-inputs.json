@@ -1,0 +1,86 @@
+[
+  {
+    "partition": "abl_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/abl_a.img",
+    "bytes": 8388608,
+    "sha256": "430d7505414b880fdd4b8e57b3c0275d127604844d0259f64e4ac7e9cfc67293",
+    "matches_manifest": true
+  },
+  {
+    "partition": "abl_b",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/abl_b.img",
+    "bytes": 8388608,
+    "sha256": "430d7505414b880fdd4b8e57b3c0275d127604844d0259f64e4ac7e9cfc67293",
+    "matches_manifest": true
+  },
+  {
+    "partition": "dtbo_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/dtbo_a.img",
+    "bytes": 25165824,
+    "sha256": "84a684ced68f8f0600d2d79a08b9889a252f375cf238d6a66532f60158c93b6b",
+    "matches_manifest": true
+  },
+  {
+    "partition": "imagefv_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/imagefv_a.img",
+    "bytes": 50331648,
+    "sha256": "35b1d5d471da1692d6781a5b72f2521697c6471bad85cdc1b6f3f527df05735e",
+    "matches_manifest": true
+  },
+  {
+    "partition": "imagefv_b",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/imagefv_b.img",
+    "bytes": 50331648,
+    "sha256": "35b1d5d471da1692d6781a5b72f2521697c6471bad85cdc1b6f3f527df05735e",
+    "matches_manifest": true
+  },
+  {
+    "partition": "uefi_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/uefi_a.img",
+    "bytes": 5242880,
+    "sha256": "6032e749c3204f52d7f988ff063410d97af8385fbff70d0486120cb4a4124538",
+    "matches_manifest": true
+  },
+  {
+    "partition": "uefi_b",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/uefi_b.img",
+    "bytes": 5242880,
+    "sha256": "6032e749c3204f52d7f988ff063410d97af8385fbff70d0486120cb4a4124538",
+    "matches_manifest": true
+  },
+  {
+    "partition": "vendor_boot_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/vendor_boot_a.img",
+    "bytes": 100663296,
+    "sha256": "10eb7e6b73d36feeb75914d3448a3b859fbb4b9d8402018f49f5c7986a323740",
+    "matches_manifest": true
+  },
+  {
+    "partition": "vendor_boot_b",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/vendor_boot_b.img",
+    "bytes": 100663296,
+    "sha256": "10eb7e6b73d36feeb75914d3448a3b859fbb4b9d8402018f49f5c7986a323740",
+    "matches_manifest": true
+  },
+  {
+    "partition": "xbl_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/xbl_a.img",
+    "bytes": 8388608,
+    "sha256": "0e1c07280278f528e07a66cd31c965f95552ea49b705d1f5fa4396e50eb709ba",
+    "matches_manifest": true
+  },
+  {
+    "partition": "xbl_b",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/xbl_b.img",
+    "bytes": 8388608,
+    "sha256": "0e1c07280278f528e07a66cd31c965f95552ea49b705d1f5fa4396e50eb709ba",
+    "matches_manifest": true
+  },
+  {
+    "partition": "xbl_config_a",
+    "path": "/home/seeker/Develop/liuqin/liuqin-stock-dump/images/xbl_config_a.img",
+    "bytes": 524288,
+    "sha256": "5fc558e592e175b59903f7986495ad53f7f9e7a8780a80648cdf582ab55dc79e",
+    "matches_manifest": true
+  }
+]

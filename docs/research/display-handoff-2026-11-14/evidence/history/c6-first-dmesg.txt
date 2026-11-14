@@ -1,0 +1,20 @@
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] Kernel command line: init=/nix/store/ph11m5xwlvgb6lr7xh215h1qjkaq6phf-nixos-system-Hippogriff-26.11.20261111.d4f25a3/init qcom_q6v5_pas.slpi_auto_boot=0 rootwait initcall_blacklist=simplefb_driver_init earlycon=simplefb console=tty0 firmware_class.path=/var/lib/firmware cpuidle.governor=teo kprobe_event=p:lq/p,mipi_dsi_picture_parameter_set,p=+0($arg2):x8[64] systemd.unit=multi-user.target panel_novatek_nt36532.trace_status=1 root=fstab loglevel=7 lsm=landlock,yama,bpf
+[    0.338862] qcom_scm firmware:scm: qseecom: found qseecom with version 0x1402000
+[    0.338972] qcom_scm firmware:scm: qseecom: untested machine, skipping
+[    0.810869] [drm] Loaded GMU firmware v4.0.7
+[    1.224555] panel-nt36532 ae94000.dsi.0: status post-reset DSI0: power=0x00 ret=-61 signal=0x00 len=0
+[    1.228261] panel-nt36532 ae94000.dsi.0: status post-reset DSI1: power=0x00 ret=-61 signal=0x00 len=0
+[    1.649397] panel-nt36532 ae94000.dsi.0: status post-init DSI0: power=0x00 ret=-61 signal=0x00 len=0
+[    1.653416] panel-nt36532 ae94000.dsi.0: status post-init DSI1: power=0x00 ret=-61 signal=0x00 len=0
+[    1.696003] panel-nt36532 ae94000.dsi.0: status post-enable DSI0: power=0x00 ret=-61 signal=0x00 len=0
+[    1.697670] panel-nt36532 ae94000.dsi.0: status post-enable DSI1: power=0x00 ret=-61 signal=0x00 len=0
+[    1.834865] [NVT-ts] nvt_ts_probe 1744: request irq 253 disabled until firmware is ready
+[    1.836137] [NVT-ts] nvt_ts_resume 2137: follower resume #1 start
+[    1.836547] [NVT-ts] nvt_update_firmware 860: firmware update #1
+[    1.848959] [NVT-ts] update_firmware_request 350: filename is novatek/liuqin/novatek_nt36532_m81_fw_csot.bin
+[    2.148777] [NVT-ts] nvt_update_firmware 886: Update firmware success! <248894 us>
+[    3.166635] [NVT-ts] nvt_ts_resume 2156: firmware did not reach ReK: -1
+[    3.167321] [NVT-ts] nvt_ts_resume 2211: resume failed closed: -1 (IRQ off, ESD off)
+[    8.103320] systemd[1]: Hide the ABL-injected Gunyah /hypervisor node from userspace skipped, unmet condition check ConditionPathExists=/sys/firmware/devicetree/base/hypervisor
+[    8.125084] systemd[1]: Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67

@@ -1,0 +1,43 @@
+{
+  "reproduce.py": {
+    "size": 6771,
+    "sha256": "3521f6a805fdd60c44ec8a49c1dbf8f5b358047ea2c7e4b9f3f803ba14e16408"
+  },
+  "reproduce.sh": {
+    "size": 332,
+    "sha256": "05b61b919cc77dd31e3d1b12dfb861cd416ab6bb3bdd749cc80a0187b0243655"
+  },
+  "emulate_name_match.py": {
+    "size": 2448,
+    "sha256": "67c33c3de961b82687582e2aad337793e15a0234d6dfab1df066cb1a8dff411c"
+  },
+  "emulate_name_match.sh": {
+    "size": 309,
+    "sha256": "0cb41098027462e52d1ac20808aa9e50c1c880443df886408254d54971502ce8"
+  },
+  "unit-address-emulation.json": {
+    "size": 1503,
+    "sha256": "c1fa20b8b146648f844fe31ada7fc468cef8153144a633b5cccad5905d368ab0"
+  },
+  "clock-resources-8.1.json": {
+    "size": 1044,
+    "sha256": "522415998a0190fd97333649e10f231ce3f8458bc6a59cc838a87116cd55c003"
+  },
+  "report.md": {
+    "size": 19934,
+    "sha256": "c9e40d40369d6a51bcd574fd4d9fec5ef65350b858a253b4adbd3b66b55be01b"
+  },
+  "annotated-excerpts.txt": {
+    "size": 51098,
+    "sha256": "4a9fadd371447d1bab54a9758ccc07f457d4e65e3e12cd9a297705287ddea459"
+  },
+  "EFIClock.h": {
+    "size": 38359,
+    "sha256": "cde6e7f5b3c11ff692022e3549b7c994c6e2d4dc2b87f94650f77e88aa5f6f36"
+  },
+  "EFITlmm.h": {
+    "size": 3068,
+    "sha256": "5474cce187e221e199f7f6e94af23f2deccd8a0f97edfc64aa36bc100fdb5358"
+  },
+  "external_abi_header_source": "https://github.com/edk2-porting/edk2-msm/tree/e1952621f419f8db60ed28271264e1b5184c571d/Silicon/Qualcomm/QcomPkg/Include/Protocol"
+}

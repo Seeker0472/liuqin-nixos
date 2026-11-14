@@ -1,0 +1,32 @@
+[
+  {
+    "commit": "b8cea71bc62f3dd540857b6a596f5d9c53520543",
+    "git_path": "patches/kernel/0001-liuqin-dts-bindings.patch",
+    "evidence_file": "b8cea71-0001-liuqin-dts-bindings.patch",
+    "sha256": "1d8b613456aad810b96a44c790a94a0752e8bb23591d2434b9028d32954c613f"
+  },
+  {
+    "commit": "b8cea71bc62f3dd540857b6a596f5d9c53520543",
+    "git_path": "patches/kernel/0015-liuqin-msm-first-modeset-cycle.patch",
+    "evidence_file": "b8cea71-0015-liuqin-msm-first-modeset-cycle.patch",
+    "sha256": "d7a4074bd0d5c3622f2a73c3e66ac6bb3a46b7e60405814b2d61370674cda622"
+  },
+  {
+    "commit": "2f148f48d06cf761e1f4d4fd592c6b2345ebdf42",
+    "git_path": "pkgs/kernel/patches/0003-liuqin-display-panel-msm.patch",
+    "evidence_file": "2f148f4-0003-liuqin-display-panel-msm.patch",
+    "sha256": "80d9a07730b95845de07c6b7aac7c5db7d1307844562a14079cab295d7db5484"
+  },
+  {
+    "commit": "2f148f48d06cf761e1f4d4fd592c6b2345ebdf42",
+    "git_path": "docs/PORTING-NOTES.md",
+    "evidence_file": "2f148f4-PORTING-NOTES.md.txt",
+    "sha256": "36aed730629f7bd185ae0c432b7a2602e1025c85c12482f5d1359c75d9ab26c3"
+  },
+  {
+    "commit": "9e40c71a6adc4bc23dc5fc4640a53553785e5767",
+    "git_path": "docs/TODO/DISPLAY-CAMERA-REVIEW.md",
+    "evidence_file": "9e40c71-DISPLAY-CAMERA-REVIEW.md.txt",
+    "sha256": "f2854e2d7dec79ab705874252d992eb5ca0cc2c6e58139dd0f3bee3c07314c8a"
+  }
+]

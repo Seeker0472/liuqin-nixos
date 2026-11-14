@@ -1,0 +1,48 @@
+{
+  "power-domains": {
+    "array_rva": "0x3f930",
+    "entries": [
+      "disp_cc_mdss_core_gdsc"
+    ]
+  },
+  "common": {
+    "array_rva": "0x4c678",
+    "entries": [
+      "gcc_disp_ahb_clk",
+      "disp_cc_xo_clk"
+    ]
+  },
+  "mdp-type0": {
+    "array_rva": "0x4bbb0",
+    "entries": [
+      "gcc_disp_hf_axi_clk",
+      "gcc_disp_sf_axi_clk",
+      "disp_cc_mdss_ahb_clk",
+      "disp_cc_mdss_mdp_clk",
+      "disp_cc_mdss_rot_clk",
+      "disp_cc_mdss_vsync_clk",
+      "disp_cc_mdss_rscc_ahb_clk",
+      "disp_cc_mdss_rscc_vsync_clk"
+    ]
+  },
+  "dsi0-type1": {
+    "array_rva": "0x4c258",
+    "entries": [
+      "disp_cc_mdss_esc0_clk",
+      "disp_cc_mdss_byte0_clk",
+      "disp_cc_mdss_byte0_intf_clk",
+      "disp_cc_mdss_pclk0_clk",
+      "disp_cc_mdss_byte0_div_clk_src"
+    ]
+  },
+  "dsi1-type2": {
+    "array_rva": "0x4c468",
+    "entries": [
+      "disp_cc_mdss_esc1_clk",
+      "disp_cc_mdss_byte1_clk",
+      "disp_cc_mdss_byte1_intf_clk",
+      "disp_cc_mdss_pclk1_clk",
+      "disp_cc_mdss_byte1_div_clk_src"
+    ]
+  }
+}

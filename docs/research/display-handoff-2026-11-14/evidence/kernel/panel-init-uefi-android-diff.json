@@ -1,0 +1,39 @@
+{
+  "UEFI_entries": 198,
+  "UEFI_packets": 195,
+  "Android_packets": 194,
+  "diff": [
+    {
+      "tag": "replace",
+      "UEFI_idx": [
+        3,
+        4
+      ],
+      "Android_idx": [
+        3,
+        4
+      ],
+      "UEFI": [
+        "d1 28"
+      ],
+      "Android": [
+        "d1 20"
+      ]
+    },
+    {
+      "tag": "delete",
+      "UEFI_idx": [
+        105,
+        106
+      ],
+      "Android_idx": [
+        105,
+        105
+      ],
+      "UEFI": [
+        "0f 20"
+      ],
+      "Android": []
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+/tmp/liuqin-power-display-review-20261114/linux/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+398: static void dsi_pll_disable_pll_bias(struct dsi_pll_7nm *pll)
+399: {
+400: 	unsigned long flags;
+401: 	u32 data;
+402: 
+403: 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+404: 	--pll->pll_enable_cnt;
+405: 	if (pll->pll_enable_cnt < 0) {
+406: 		spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+407: 		DRM_DEV_ERROR_RATELIMITED(&pll->phy->pdev->dev,
+408: 					  "bug: imbalance in disabling PLL bias\n");
+409: 		return;
+410: 	} else if (pll->pll_enable_cnt > 0) {
+411: 		spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+412: 		return;
+413: 	} /* else: == 0 */
+414: 
+415: 	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+416: 	data &= ~DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
+417: 	writel(0, pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
+418: 	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+419: 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+420: 	ndelay(250);
+421: }
+422: 
+423: static void dsi_pll_enable_pll_bias(struct dsi_pll_7nm *pll)
+424: {
+425: 	unsigned long flags;
+426: 	u32 data;
+427: 
+428: 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+429: 	pll->pll_enable_cnt++;
+430: 	WARN_ON(pll->pll_enable_cnt == INT_MAX);
+431: 
+432: 	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+433: 	data |= DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
+434: 	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+435: 
+436: 	writel(0xc0, pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
+437: 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+438: 	ndelay(250);
+439: }
+440: 
+441: static void dsi_pll_cmn_clk_cfg0_write(struct dsi_pll_7nm *pll, u32 val)
+442: {
+443: 	unsigned long flags;
+444: 
+445: 	spin_lock_irqsave(&pll->postdiv_lock, flags);
+446: 	writel(val, pll->phy->base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);

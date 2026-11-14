@@ -1,0 +1,67 @@
+{
+  "unicorn": "2.1.4",
+  "abl_pe_sha256": "d590256850ed6431588cf7cbeafb2cf93ee515a756ff2a2f21e72e9a103e75e3",
+  "comparator_rva": "0x52368",
+  "query_rva": "0xb38b2",
+  "query_length": 13,
+  "intercepted_functions": {
+    "0x69100": "return a valid supplied node-name pointer for FDT structure access",
+    "0x70ac": "debug assertions disabled"
+  },
+  "results": [
+    {
+      "query": "splash_region",
+      "node": "splash_region",
+      "match": true,
+      "scan_helper_arguments": [],
+      "instructions": 146
+    },
+    {
+      "query": "splash_region",
+      "node": "splash_region@b8000000",
+      "match": true,
+      "scan_helper_arguments": [
+        {
+          "rva": "0x65d74",
+          "x0": "0xb38b2",
+          "x1": 64,
+          "x2": 13
+        },
+        {
+          "rva": "0x66034",
+          "x0": "0xb38b2",
+          "x1": 64,
+          "x2": 13
+        }
+      ],
+      "instructions": 246
+    },
+    {
+      "query": "splash_region",
+      "node": "linux_splash@b8000000",
+      "match": false,
+      "scan_helper_arguments": [],
+      "instructions": 82
+    },
+    {
+      "query": "splash_region",
+      "node": "splash_region2@b8000000",
+      "match": false,
+      "scan_helper_arguments": [
+        {
+          "rva": "0x65d74",
+          "x0": "0xb38b2",
+          "x1": 64,
+          "x2": 13
+        },
+        {
+          "rva": "0x66034",
+          "x0": "0xb38b2",
+          "x1": 64,
+          "x2": 13
+        }
+      ],
+      "instructions": 246
+    }
+  ]
+}

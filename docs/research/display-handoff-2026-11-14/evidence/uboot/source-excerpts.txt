@@ -1,0 +1,374 @@
+
+FILE: board/qualcomm/liuqin/video.c
+LINES: 219..287
+219: void board_pre_console_flush(void)
+220: {
+221: 	struct udevice *dev;
+222: 	struct vidconsole_priv *priv;
+223: 
+224: 	if (!early_font)
+225: 		return;
+226: 
+227: 	early_wrap();	/* wipe the framebuffer, reset the early cursor */
+228: 
+229: 	if (uclass_get_device(UCLASS_VIDEO_CONSOLE, 0, &dev))
+230: 		return;
+231: 
+232: 	priv = dev_get_uclass_priv(dev);
+233: 	priv->ycur = 0;
+234: 	priv->xcur_frac = priv->xstart_frac;
+235: }
+236: 
+237: #endif /* CONFIG_LIUQIN_EARLY_VIDEO */
+238: 
+239: /* Bind the font the early renderer picked, so both write the same glyphs. */
+240: void liuqin_early_video_init(void)
+241: {
+242: #if CONFIG_IS_ENABLED(LIUQIN_EARLY_VIDEO)
+243: 	early_select_font();
+244: #endif
+245: }
+246: 
+247: /*
+248:  * DM video driver: reuse the ABL framebuffer as-is; the display pipeline is
+249:  * already scanning it out, no hardware setup required.
+250:  */
+251: static int liuqin_video_probe(struct udevice *dev)
+252: {
+253: 	struct video_priv *priv = dev_get_uclass_priv(dev);
+254: 
+255: 	priv->xsize = LIUQIN_FB_WIDTH;
+256: 	priv->ysize = LIUQIN_FB_HEIGHT;
+257: 	priv->line_length = LIUQIN_FB_STRIDE;
+258: 	priv->bpix = VIDEO_BPP32;
+259: 	priv->format = VIDEO_X8R8G8B8;
+260: 	/* Force the 16x32 font in the vidconsole probe path. */
+261: 	priv->font_size = 32;
+262: 	video_set_flush_dcache(dev, true);
+263: 
+264: 	return 0;
+265: }
+266: 
+267: static int liuqin_video_bind(struct udevice *dev)
+268: {
+269: 	struct video_uc_plat *plat = dev_get_uclass_plat(dev);
+270: 
+271: 	plat->base = LIUQIN_FB_BASE;
+272: 	plat->size = LIUQIN_FB_SIZE;
+273: 
+274: 	return 0;
+275: }
+276: 
+277: static const struct video_ops liuqin_video_ops = {
+278: };
+279: 
+280: U_BOOT_DRIVER(liuqin_video) = {
+281: 	.name	= "liuqin_video",
+282: 	.id	= UCLASS_VIDEO,
+283: 	.ops	= &liuqin_video_ops,
+284: 	.bind	= liuqin_video_bind,
+285: 	.probe	= liuqin_video_probe,
+286: 	.flags	= DM_FLAG_PRE_RELOC,
+287: };
+
+FILE: arch/arm/lib/bootm.c
+LINES: 45..84
+45: __weak void board_quiesce_devices(void)
+46: {
+47: }
+48: 
+49: /**
+50:  * announce_and_cleanup() - Print message and prepare for kernel boot
+51:  *
+52:  * @fake: non-zero to do everything except actually boot
+53:  */
+54: static void announce_and_cleanup(int fake)
+55: {
+56: 	bootstage_mark_name(BOOTSTAGE_ID_BOOTM_HANDOFF, "start_kernel");
+57: #ifdef CONFIG_BOOTSTAGE_FDT
+58: 	bootstage_fdt_add_report();
+59: #endif
+60: #ifdef CONFIG_BOOTSTAGE_REPORT
+61: 	bootstage_report();
+62: #endif
+63: 
+64: #ifdef CONFIG_USB_DEVICE
+65: 	udc_disconnect();
+66: #endif
+67: 
+68: 	board_quiesce_devices();
+69: 
+70: 	printf("\nStarting kernel ...%s\n\n", fake ?
+71: 		"(fake run for tracing)" : "");
+72: 	/*
+73: 	 * Call remove function of all devices with a removal flag set.
+74: 	 * This may be useful for last-stage operations, like cancelling
+75: 	 * of DMA operation or releasing device internal buffers.
+76: 	 */
+77: 	dm_remove_devices_flags(DM_REMOVE_ACTIVE_ALL | DM_REMOVE_NON_VITAL);
+78: 
+79: 	/* Remove all active vital devices next */
+80: 	dm_remove_devices_flags(DM_REMOVE_ACTIVE_ALL);
+81: 
+82: 	cleanup_before_linux();
+83: }
+84: 
+LINES: 291..330
+291: static void boot_jump_linux(struct bootm_headers *images, int flag)
+292: {
+293: #ifdef CONFIG_ARM64
+294: 	void (*kernel_entry)(void *fdt_addr, void *res0, void *res1,
+295: 			void *res2);
+296: 	int fake = (flag & BOOTM_STATE_OS_FAKE_GO);
+297: 
+298: 	kernel_entry = (void (*)(void *fdt_addr, void *res0, void *res1,
+299: 				void *res2))images->ep;
+300: 
+301: 	debug("## Transferring control to Linux (at address %lx)...\n",
+302: 		(ulong) kernel_entry);
+303: 	bootstage_mark(BOOTSTAGE_ID_RUN_OS);
+304: 
+305: 	announce_and_cleanup(fake);
+306: 
+307: 	if (!fake) {
+308: #ifdef CONFIG_ARMV8_PSCI
+309: 		armv8_setup_psci();
+310: #endif
+311: 		do_nonsec_virt_switch();
+312: 
+313: 		update_os_arch_secondary_cores(images->os.arch);
+314: 
+315: #ifdef CONFIG_ARMV8_SWITCH_TO_EL1
+316: 		armv8_switch_to_el2((u64)images->ft_addr, 0, 0, 0,
+317: 				    (u64)switch_to_el1, ES_TO_AARCH64);
+318: #else
+319: 		if ((IH_ARCH_DEFAULT == IH_ARCH_ARM64) &&
+320: 		    (images->os.arch == IH_ARCH_ARM))
+321: 			armv8_switch_to_el2(0, (u64)gd->bd->bi_arch_number,
+322: 					    (u64)images->ft_addr, 0,
+323: 					    (u64)images->ep,
+324: 					    ES_TO_AARCH32);
+325: 		else
+326: 			armv8_switch_to_el2((u64)images->ft_addr, 0, 0, 0,
+327: 					    images->ep,
+328: 					    ES_TO_AARCH64);
+329: #endif
+330: 	}
+
+FILE: drivers/core/root.c
+LINES: 130..151
+130: }
+131: 
+132: int dm_uninit(void)
+133: {
+134: 	/* Remove non-vital devices first */
+135: 	device_remove(dm_root(), DM_REMOVE_NON_VITAL);
+136: 	device_remove(dm_root(), DM_REMOVE_NORMAL);
+137: 	device_unbind(dm_root());
+138: 	gd->dm_root = NULL;
+139: 
+140: 	return 0;
+141: }
+142: 
+143: #if CONFIG_IS_ENABLED(DM_DEVICE_REMOVE)
+144: int dm_remove_devices_flags(uint flags)
+145: {
+146: 	device_remove(dm_root(), flags);
+147: 
+148: 	return 0;
+149: }
+150: #endif
+151: 
+
+FILE: drivers/core/device-remove.c
+LINES: 175..205
+175:  *	DMA shutdown or OS prepare)
+176:  * -EPROBE_DEFER if @flags is DM_REMOVE_NON_VITAL but @drv_flags contains
+177:  *	DM_FLAG_VITAL (indicates the device is vital and should not be removed)
+178:  */
+179: static int flags_remove(uint flags, uint drv_flags)
+180: {
+181: 	if (!(flags & DM_REMOVE_NORMAL)) {
+182: 		bool vital_match;
+183: 		bool active_match;
+184: 
+185: 		active_match = !(flags & DM_REMOVE_ACTIVE_ALL) ||
+186: 			(drv_flags & flags);
+187: 		vital_match = !(flags & DM_REMOVE_NON_VITAL) ||
+188: 			!(drv_flags & DM_FLAG_VITAL);
+189: 		if (!vital_match)
+190: 			return -EPROBE_DEFER;
+191: 		if (!active_match)
+192: 			return -EKEYREJECTED;
+193: 	}
+194: 
+195: 	return 0;
+196: }
+197: 
+198: int device_remove(struct udevice *dev, uint flags)
+199: {
+200: 	const struct driver *drv;
+201: 	int ret;
+202: 
+203: 	if (!dev)
+204: 		return -EINVAL;
+205: 
+
+FILE: drivers/video/video-uclass.c
+LINES: 697..720
+697: __maybe_unused static int video_destroy(struct uclass *uc)
+698: {
+699: 	struct video_uc_priv *uc_priv = uclass_get_priv(uc);
+700: 
+701: 	if (uc_priv->cyc_active) {
+702: 		cyclic_unregister(&uc_priv->cyc);
+703: 		uc_priv->cyc_active = false;
+704: 	}
+705: 
+706: 	return 0;
+707: }
+708: 
+709: UCLASS_DRIVER(video) = {
+710: 	.id		= UCLASS_VIDEO,
+711: 	.name		= "video",
+712: 	.flags		= DM_UC_FLAG_SEQ_ALIAS,
+713: 	.post_bind	= video_post_bind,
+714: 	.post_probe	= video_post_probe,
+715: 	.priv_auto	= sizeof(struct video_uc_priv),
+716: 	.per_device_auto	= sizeof(struct video_priv),
+717: 	.per_device_plat_auto	= sizeof(struct video_uc_plat),
+718: 	CONFIG_IS_ENABLED(CYCLIC, (.destroy = video_destroy, ))
+719: };
+
+FILE: board/qualcomm/liuqin/liuqin.c
+LINES: 275..330
+275: /*
+276:  * The UFS controller and its PHY sit on rails the boot chain leaves off: VCC
+277:  * (flash core, 2.5 V) and VCCQ/vdd-hba (1.2 V) for the controller, plus the
+278:  * PHY's vdda-phy (0.88 V, shared with USB) and vdda-pll (1.2 V). Voltages follow
+279:  * the stock bootloader DT.
+280:  */
+281: static void liuqin_ufs_supplies_enable(void)
+282: {
+283: 	/*
+284: 	 * By name, not by ofnode: uclass_get_device_by_ofnode() fails with
+285: 	 * -ENODEV for these RPMh regulators (the same reason the USB bring-up
+286: 	 * reaches LDO10 by name). Names are "<resource><pmic-id>", so
+287: 	 * pm8350 -> ldob, pm8350c -> ldoc.
+288: 	 */
+289: 	liuqin_enable_reg_by_name("ldob7", 2504000);
+290: 	liuqin_enable_reg_by_name("ldob9", 1200000);
+291: 	liuqin_enable_reg_by_name("ldob5", 880000);
+292: 	liuqin_enable_reg_by_name("ldoc10", 1200000);
+293: }
+294: 
+295: void qcom_board_late_init(void)
+296: {
+297: 	static const char *const ufs_nodes[] = {
+298: 		"/soc@0/ufshc@1d84000",
+299: 		"/soc@0/phy@1d80000",
+300: 	};
+301: 	int i, j;
+302: 
+303: 	liuqin_stage("qcom_board_late_init");
+304: 	env_set("fastboot.build", LIUQIN_DIAG_TAG);
+305: 	liuqin_diag_gunyah();
+306: 	liuqin_vwdt_pet();
+307: 
+308: 	liuqin_usb_phy_enable();
+309: 	liuqin_vwdt_pet();
+310: 	ptn3222_repeater_init();
+311: 	liuqin_vwdt_pet();
+312: 
+313: 	/*
+314: 	 * UFS bring-up: the QMP UFS PHY driver never touches its own clocks, so
+315: 	 * enable every clock the controller and the PHY list before the bus is
+316: 	 * scanned (the drivers themselves only handle the device rails).
+317: 	 */
+318: 	liuqin_ufs_supplies_enable();
+319: 	for (i = 0; i < ARRAY_SIZE(ufs_nodes); i++) {
+320: 		ofnode node = ofnode_path(ufs_nodes[i]);
+321: 
+322: 		if (!ofnode_valid(node))
+323: 			continue;
+324: 		for (j = 0; ; j++) {
+325: 			struct clk clk;
+326: 
+327: 			if (clk_get_by_index_nodev(node, j, &clk))
+328: 				break;
+329: 			clk_enable(&clk);
+330: 		}
+
+FILE: arch/arm/mach-snapdragon/of_fixup.c
+LINES: 104..174
+104: static void fixup_usb_nodes(void)
+105: {
+106: 	struct device_node *glue_np = NULL;
+107: 	int ret;
+108: 
+109: 	while ((glue_np = of_find_compatible_node(glue_np, NULL, "qcom,dwc3"))) {
+110: 		ret = fixup_qcom_dwc3(glue_np);
+111: 		if (ret)
+112: 			log_warning("Failed to fixup node %s: %d\n", glue_np->name, ret);
+113: 	}
+114: }
+115: 
+116: /* Remove all references to the rpmhpd device */
+117: static void fixup_power_domains(void)
+118: {
+119: 	struct device_node *pd = NULL, *np = NULL;
+120: 	struct property *prop;
+121: 	const __be32 *val;
+122: 
+123: 	/* All Qualcomm platforms name the rpm(h)pd "power-controller" */
+124: 	for_each_of_allnodes(pd) {
+125: 		if (pd->name && !strcmp("power-controller", pd->name))
+126: 			break;
+127: 	}
+128: 
+129: 	/* Sanity check that this is indeed a power domain controller */
+130: 	if (!of_find_property(pd, "#power-domain-cells", NULL)) {
+131: 		log_err("Found power-controller but it doesn't have #power-domain-cells\n");
+132: 		return;
+133: 	}
+134: 
+135: 	/* Remove all references to the power domain controller */
+136: 	for_each_of_allnodes(np) {
+137: 		if (!(prop = of_find_property(np, "power-domains", NULL)))
+138: 			continue;
+139: 
+140: 		val = prop->value;
+141: 		if (val[0] == cpu_to_fdt32(pd->phandle))
+142: 			of_remove_property(np, prop);
+143: 	}
+144: }
+145: 
+146: #define time_call(func, ...) \
+147: 	do { \
+148: 		u64 start = timer_get_us(); \
+149: 		func(__VA_ARGS__); \
+150: 		debug(#func " took %lluus\n", timer_get_us() - start); \
+151: 	} while (0)
+152: 
+153: void qcom_of_fixup_nodes(void)
+154: {
+155: 	time_call(fixup_usb_nodes);
+156: 	time_call(fixup_power_domains);
+157: }
+158: 
+159: int ft_board_setup(void *blob, struct bd_info __maybe_unused *bd)
+160: {
+161: 	struct fdt_header *fdt = blob;
+162: 	int node;
+163: 
+164: 	/* On RB2 we need to fix-up the dr_mode */
+165: 	if (!fdt_node_check_compatible(fdt, 0, "qcom,qrb4210-rb2")) {
+166: 		fdt_for_each_node_by_compatible(node, blob, 0, "snps,dwc3") {
+167: 			log_debug("%s: Setting 'dr_mode' to OTG\n", fdt_get_name(blob, node, NULL));
+168: 			fdt_setprop_string(fdt, node, "dr_mode", "otg");
+169: 			break;
+170: 		}
+171: 	}
+172: 
+173: 	return 0;
+174: }

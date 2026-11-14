@@ -1,0 +1,592 @@
+
+FILE: drivers/gpu/drm/msm/msm_mdss.c
+
+309: static int msm_mdss_reset(struct device *dev)
+310: {
+311: 	struct reset_control *reset;
+312: 
+313: 	reset = reset_control_get_optional_exclusive(dev, NULL);
+314: 	if (!reset) {
+315: 		/* Optional reset not specified */
+316: 		return 0;
+317: 	} else if (IS_ERR(reset)) {
+318: 		return dev_err_probe(dev, PTR_ERR(reset),
+319: 				     "failed to acquire mdss reset\n");
+320: 	}
+321: 
+322: 	reset_control_assert(reset);
+323: 	/*
+324: 	 * Tests indicate that reset has to be held for some period of time,
+325: 	 * make it one frame in a typical system
+326: 	 */
+327: 	msleep(20);
+328: 	reset_control_deassert(reset);
+329: 
+330: 	reset_control_put(reset);
+331: 
+332: 	return 0;
+333: }
+334: 
+335: /*
+
+365: static struct msm_mdss *msm_mdss_init(struct platform_device *pdev, bool is_mdp5)
+366: {
+367: 	const struct msm_mdss_data *mdss_data;
+368: 	struct msm_mdss *msm_mdss;
+369: 	int ret;
+370: 	int irq;
+371: 
+372: 	ret = msm_mdss_reset(&pdev->dev);
+373: 	if (ret)
+374: 		return ERR_PTR(ret);
+375: 
+376: 	msm_mdss = devm_kzalloc(&pdev->dev, sizeof(*msm_mdss), GFP_KERNEL);
+
+469: static int mdss_probe(struct platform_device *pdev)
+470: {
+471: 	struct msm_mdss *mdss;
+472: 	bool is_mdp5 = of_device_is_compatible(pdev->dev.of_node, "qcom,mdss");
+473: 	struct device *dev = &pdev->dev;
+474: 	int ret;
+475: 
+476: 	mdss = msm_mdss_init(pdev, is_mdp5);
+477: 	if (IS_ERR(mdss))
+478: 		return PTR_ERR(mdss);
+479: 
+480: 	platform_set_drvdata(pdev, mdss);
+481: 
+482: 	/*
+483: 	 * MDP5/DPU based devices don't have a flat hierarchy. There is a top
+484: 	 * level parent: MDSS, and children: MDP5/DPU, DSI, HDMI, eDP etc.
+485: 	 * Populate the children devices, find the MDP5/DPU node, and then add
+486: 	 * the interfaces to our components list.
+487: 	 */
+488: 	ret = of_platform_populate(dev->of_node, NULL, NULL, dev);
+489: 	if (ret) {
+490: 		DRM_DEV_ERROR(dev, "failed to populate children devices\n");
+491: 		msm_mdss_destroy(mdss);
+492: 		return ret;
+493: 	}
+494: 
+495: 	return 0;
+496: }
+497: 
+
+FILE: drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+
+640: 		return dev_err_probe(dev, phy->id,
+641: 				     "Couldn't identify PHY index\n");
+642: 
+643: 	phy->regulator_ldo_mode = of_property_read_bool(dev->of_node,
+644: 				"qcom,dsi-phy-regulator-ldo-mode");
+645: 	if (!of_property_read_u32(dev->of_node, "phy-type", &phy_type))
+646: 		phy->cphy_mode = (phy_type == PHY_TYPE_CPHY);
+647: 
+648: 	phy->base = msm_ioremap_size(pdev, "dsi_phy", &phy->base_size);
+649: 	if (IS_ERR(phy->base))
+650: 		return dev_err_probe(dev, PTR_ERR(phy->base),
+651: 				     "Failed to map phy base\n");
+652: 
+653: 	phy->pll_base = msm_ioremap_size(pdev, "dsi_pll", &phy->pll_size);
+
+680: 					    &phy->supplies);
+681: 	if (ret)
+682: 		return ret;
+683: 
+684: 	platform_set_drvdata(pdev, phy);
+685: 
+686: 	ret = devm_pm_runtime_enable(dev);
+687: 	if (ret)
+688: 		return ret;
+689: 
+690: 	ret = devm_pm_clk_create(dev);
+691: 	if (ret)
+692: 		return ret;
+693: 
+694: 	ret = pm_clk_add(dev, "iface");
+695: 	if (ret < 0)
+696: 		return dev_err_probe(dev, ret, "Unable to get iface clk\n");
+697: 
+698: 	if (phy->cfg->ops.pll_init) {
+699: 		ret = phy->cfg->ops.pll_init(phy);
+700: 		if (ret)
+701: 			return dev_err_probe(dev, ret,
+702: 					     "PLL init failed; need separate clk driver\n");
+703: 	}
+704: 
+705: 	ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,
+706: 				     phy->provided_clocks);
+707: 	if (ret)
+708: 		return dev_err_probe(dev, ret,
+709: 				     "Failed to register clk provider\n");
+710: 
+711: 	return 0;
+712: }
+713: 
+714: static const struct dev_pm_ops dsi_phy_pm_ops = {
+715: 	SET_RUNTIME_PM_OPS(pm_clk_suspend, pm_clk_resume, NULL)
+716: };
+717: 
+718: static struct platform_driver dsi_phy_platform_driver = {
+719: 	.probe      = dsi_phy_driver_probe,
+720: 	.driver     = {
+721: 		.name   = "msm_dsi_phy",
+722: 		.of_match_table = dsi_phy_dt_match,
+723: 		.pm = &dsi_phy_pm_ops,
+724: 	},
+725: };
+
+827: void msm_dsi_phy_pll_save_state(struct msm_dsi_phy *phy)
+828: {
+829: 	if (phy->cfg->ops.save_pll_state) {
+830: 		phy->cfg->ops.save_pll_state(phy);
+831: 		phy->state_saved = true;
+832: 	}
+833: }
+834: 
+835: int msm_dsi_phy_pll_restore_state(struct msm_dsi_phy *phy)
+836: {
+837: 	int ret;
+838: 
+839: 	if (phy->cfg->ops.restore_pll_state && phy->state_saved) {
+840: 		ret = phy->cfg->ops.restore_pll_state(phy);
+841: 		if (ret)
+842: 			return ret;
+843: 
+844: 		phy->state_saved = false;
+845: 	}
+846: 
+847: 	return 0;
+848: }
+849: 
+850: void msm_dsi_phy_snapshot(struct msm_disp_state *disp_state, struct msm_dsi_phy *phy)
+
+FILE: drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+
+398: static void dsi_pll_disable_pll_bias(struct dsi_pll_7nm *pll)
+399: {
+400: 	unsigned long flags;
+401: 	u32 data;
+402: 
+403: 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+404: 	--pll->pll_enable_cnt;
+405: 	if (pll->pll_enable_cnt < 0) {
+406: 		spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+407: 		DRM_DEV_ERROR_RATELIMITED(&pll->phy->pdev->dev,
+408: 					  "bug: imbalance in disabling PLL bias\n");
+409: 		return;
+410: 	} else if (pll->pll_enable_cnt > 0) {
+411: 		spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+412: 		return;
+413: 	} /* else: == 0 */
+414: 
+415: 	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+416: 	data &= ~DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
+417: 	writel(0, pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
+418: 	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+419: 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+420: 	ndelay(250);
+421: }
+422: 
+423: static void dsi_pll_enable_pll_bias(struct dsi_pll_7nm *pll)
+424: {
+425: 	unsigned long flags;
+426: 	u32 data;
+427: 
+428: 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+429: 	pll->pll_enable_cnt++;
+430: 	WARN_ON(pll->pll_enable_cnt == INT_MAX);
+431: 
+432: 	data = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+433: 	data |= DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
+434: 	writel(data, pll->phy->base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+435: 
+436: 	writel(0xc0, pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
+437: 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
+438: 	ndelay(250);
+439: }
+440: 
+441: static void dsi_pll_cmn_clk_cfg0_write(struct dsi_pll_7nm *pll, u32 val)
+
+491: static int dsi_pll_7nm_vco_prepare(struct clk_hw *hw)
+492: {
+493: 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
+494: 	int rc;
+495: 
+496: 	dsi_pll_enable_pll_bias(pll_7nm);
+497: 	if (pll_7nm->slave)
+498: 		dsi_pll_enable_pll_bias(pll_7nm->slave);
+499: 
+500: 	/* Start PLL */
+501: 	writel(BIT(0), pll_7nm->phy->base + REG_DSI_7nm_PHY_CMN_PLL_CNTRL);
+502: 
+503: 	/*
+504: 	 * ensure all PLL configurations are written prior to checking
+505: 	 * for PLL lock.
+506: 	 */
+507: 	wmb();
+508: 
+509: 	/* Check for PLL lock */
+510: 	rc = dsi_pll_7nm_lock_status(pll_7nm);
+511: 	if (rc) {
+512: 		pr_err("PLL(%d) lock failed\n", pll_7nm->phy->id);
+513: 		goto error;
+514: 	}
+515: 
+516: 	pll_7nm->phy->pll_on = true;
+517: 
+518: 	/*
+519: 	 * assert power on reset for PHY digital in case the PLL is
+520: 	 * enabled after CX of analog domain power collapse. This needs
+521: 	 * to be done before enabling the global clk.
+522: 	 */
+523: 	dsi_pll_phy_dig_reset(pll_7nm);
+524: 	if (pll_7nm->slave)
+525: 		dsi_pll_phy_dig_reset(pll_7nm->slave);
+526: 
+527: 	dsi_pll_enable_global_clk(pll_7nm);
+528: 	if (pll_7nm->slave)
+529: 		dsi_pll_enable_global_clk(pll_7nm->slave);
+530: 
+531: 	writel(0x1, pll_7nm->phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
+532: 	if (pll_7nm->slave)
+533: 		writel(0x1, pll_7nm->slave->phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
+534: 
+535: error:
+536: 	return rc;
+537: }
+538: 
+539: static void dsi_pll_disable_sub(struct dsi_pll_7nm *pll)
+540: {
+541: 	writel(0, pll->phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
+542: 	dsi_pll_disable_pll_bias(pll);
+543: }
+544: 
+545: static void dsi_pll_7nm_vco_unprepare(struct clk_hw *hw)
+546: {
+547: 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
+548: 
+549: 	/*
+550: 	 * To avoid any stray glitches while abruptly powering down the PLL
+551: 	 * make sure to gate the clock using the clock enable bit before
+552: 	 * powering down the PLL
+553: 	 */
+554: 	dsi_pll_disable_global_clk(pll_7nm);
+555: 	writel(0, pll_7nm->phy->base + REG_DSI_7nm_PHY_CMN_PLL_CNTRL);
+556: 	dsi_pll_disable_sub(pll_7nm);
+557: 	if (pll_7nm->slave) {
+558: 		dsi_pll_disable_global_clk(pll_7nm->slave);
+559: 		dsi_pll_disable_sub(pll_7nm->slave);
+560: 	}
+561: 	/* flush, ensure all register writes are done */
+562: 	wmb();
+563: 	pll_7nm->phy->pll_on = false;
+564: }
+565: 
+566: static unsigned long dsi_pll_7nm_vco_recalc_rate(struct clk_hw *hw,
+
+566: static unsigned long dsi_pll_7nm_vco_recalc_rate(struct clk_hw *hw,
+567: 						  unsigned long parent_rate)
+568: {
+569: 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
+570: 	void __iomem *base = pll_7nm->phy->pll_base;
+571: 	u64 ref_clk = VCO_REF_CLK_RATE;
+572: 	u64 vco_rate = 0x0;
+573: 	u64 multiplier;
+574: 	u32 frac;
+575: 	u32 dec;
+576: 	u64 pll_freq, tmp64;
+577: 
+578: 	dsi_pll_enable_pll_bias(pll_7nm);
+579: 	dec = readl(base + REG_DSI_7nm_PHY_PLL_DECIMAL_DIV_START_1);
+580: 	dec &= 0xff;
+581: 
+582: 	frac = readl(base + REG_DSI_7nm_PHY_PLL_FRAC_DIV_START_LOW_1);
+583: 	frac |= ((readl(base + REG_DSI_7nm_PHY_PLL_FRAC_DIV_START_MID_1) &
+584: 		  0xff) << 8);
+585: 	frac |= ((readl(base + REG_DSI_7nm_PHY_PLL_FRAC_DIV_START_HIGH_1) &
+586: 		  0x3) << 16);
+587: 
+588: 	/*
+589: 	 * TODO:
+590: 	 *	1. Assumes prescaler is disabled
+591: 	 */
+592: 	multiplier = 1 << FRAC_BITS;
+593: 	pll_freq = dec * (ref_clk * 2);
+594: 	tmp64 = (ref_clk * 2 * frac);
+595: 	pll_freq += div_u64(tmp64, multiplier);
+596: 
+597: 	vco_rate = pll_freq;
+598: 	pll_7nm->vco_current_rate = vco_rate;
+599: 
+600: 	DBG("DSI PLL%d returning vco rate = %lu, dec = %x, frac = %x",
+601: 	    pll_7nm->phy->id, (unsigned long)vco_rate, dec, frac);
+602: 
+603: 	dsi_pll_disable_pll_bias(pll_7nm);
+604: 
+605: 	return (unsigned long)vco_rate;
+606: }
+
+615: 
+616: 	return 0;
+617: }
+618: 
+619: static const struct clk_ops clk_ops_dsi_pll_7nm_vco = {
+620: 	.determine_rate = dsi_pll_7nm_clk_determine_rate,
+621: 	.set_rate = dsi_pll_7nm_vco_set_rate,
+622: 	.recalc_rate = dsi_pll_7nm_vco_recalc_rate,
+623: 	.prepare = dsi_pll_7nm_vco_prepare,
+624: 	.unprepare = dsi_pll_7nm_vco_unprepare,
+625: };
+626: 
+627: /*
+628:  * PLL Callbacks
+629:  */
+630: 
+631: static void dsi_7nm_pll_save_state(struct msm_dsi_phy *phy)
+632: {
+633: 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(phy->vco_hw);
+634: 	struct pll_7nm_cached_state *cached = &pll_7nm->cached_state;
+635: 	void __iomem *phy_base = pll_7nm->phy->base;
+636: 	u32 cmn_clk_cfg0, cmn_clk_cfg1;
+637: 
+638: 	dsi_pll_enable_pll_bias(pll_7nm);
+639: 	cached->pll_out_div = readl(pll_7nm->phy->pll_base +
+640: 			REG_DSI_7nm_PHY_PLL_PLL_OUTDIV_RATE);
+641: 	cached->pll_out_div &= 0x3;
+642: 
+643: 	cmn_clk_cfg0 = readl(phy_base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
+644: 	cached->bit_clk_div = FIELD_GET(DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_3_0__MASK, cmn_clk_cfg0);
+645: 	cached->pix_clk_div = FIELD_GET(DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_7_4__MASK, cmn_clk_cfg0);
+646: 
+647: 	cmn_clk_cfg1 = readl(phy_base + REG_DSI_7nm_PHY_CMN_CLK_CFG1);
+648: 	cached->pll_mux = FIELD_GET(DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL__MASK, cmn_clk_cfg1);
+649: 
+650: 	dsi_pll_disable_pll_bias(pll_7nm);
+651: 	DBG("DSI PLL%d outdiv %x bit_clk_div %x pix_clk_div %x pll_mux %x",
+652: 	    pll_7nm->phy->id, cached->pll_out_div, cached->bit_clk_div,
+653: 	    cached->pix_clk_div, cached->pll_mux);
+654: }
+655: 
+656: static int dsi_7nm_pll_restore_state(struct msm_dsi_phy *phy)
+
+723:  * require special clock ops that also configure the slave PLL registers
+724:  */
+725: static int pll_7nm_register(struct dsi_pll_7nm *pll_7nm, struct clk_hw **provided_clocks)
+726: {
+727: 	char clk_name[32];
+728: 	struct clk_init_data vco_init = {
+729: 		.parent_data = &(const struct clk_parent_data) {
+730: 			.fw_name = "ref",
+731: 		},
+732: 		.num_parents = 1,
+733: 		.name = clk_name,
+734: 		.flags = CLK_IGNORE_UNUSED,
+735: 		.ops = &clk_ops_dsi_pll_7nm_vco,
+736: 	};
+737: 	struct device *dev = &pll_7nm->phy->pdev->dev;
+738: 	struct clk_hw *hw, *pll_out_div, *pll_bit, *pll_by_2_bit;
+739: 	struct clk_hw *pll_post_out_div, *phy_pll_out_dsi_parent;
+740: 	int ret;
+741: 
+742: 	DBG("DSI%d", pll_7nm->phy->id);
+743: 
+744: 	snprintf(clk_name, sizeof(clk_name), "dsi%dvco_clk", pll_7nm->phy->id);
+745: 	pll_7nm->clk_hw.init = &vco_init;
+746: 
+747: 	ret = devm_clk_hw_register(dev, &pll_7nm->clk_hw);
+748: 	if (ret)
+749: 		return ret;
+750: 
+751: 	snprintf(clk_name, sizeof(clk_name), "dsi%d_pll_out_div_clk", pll_7nm->phy->id);
+752: 
+
+855: }
+856: 
+857: static int dsi_pll_7nm_init(struct msm_dsi_phy *phy)
+858: {
+859: 	struct platform_device *pdev = phy->pdev;
+860: 	struct dsi_pll_7nm *pll_7nm;
+861: 	int ret;
+862: 
+863: 	pll_7nm = devm_kzalloc(&pdev->dev, sizeof(*pll_7nm), GFP_KERNEL);
+864: 	if (!pll_7nm)
+865: 		return -ENOMEM;
+866: 
+867: 	DBG("DSI PLL%d", phy->id);
+868: 
+869: 	pll_7nm_list[phy->id] = pll_7nm;
+870: 
+871: 	spin_lock_init(&pll_7nm->postdiv_lock);
+872: 	spin_lock_init(&pll_7nm->pclk_mux_lock);
+873: 	spin_lock_init(&pll_7nm->pll_enable_lock);
+874: 
+875: 	pll_7nm->phy = phy;
+876: 
+877: 	ret = pll_7nm_register(pll_7nm, phy->provided_clocks->hws);
+878: 	if (ret) {
+879: 		DRM_DEV_ERROR(&pdev->dev, "failed to register PLL: %d\n", ret);
+880: 		return ret;
+881: 	}
+882: 
+883: 	phy->vco_hw = &pll_7nm->clk_hw;
+884: 
+885: 	/* TODO: Remove this when we have proper display handover support */
+886: 	msm_dsi_phy_pll_save_state(phy);
+887: 	/*
+888: 	 * Store also proper vco_current_rate, because its value will be used in
+889: 	 * dsi_7nm_pll_restore_state().
+890: 	 */
+891: 	if (!dsi_pll_7nm_vco_recalc_rate(&pll_7nm->clk_hw, VCO_REF_CLK_RATE))
+892: 		pll_7nm->vco_current_rate = pll_7nm->phy->cfg->min_pll_rate;
+893: 
+894: 	return 0;
+895: }
+
+FILE: drivers/clk/clk.c
+
+3980: 		hlist_add_head(&core->child_node, &clk_root_list);
+3981: 		core->orphan = false;
+3982: 	} else {
+3983: 		hlist_add_head(&core->child_node, &clk_orphan_list);
+3984: 		core->orphan = true;
+3985: 	}
+3986: 	hash_add(clk_hashtable, &core->hashtable_node,
+3987: 		 full_name_hash(NULL, core->name, strlen(core->name)));
+3988: 
+3989: 	/*
+3990: 	 * Set clk's accuracy.  The preferred method is to use
+3991: 	 * .recalc_accuracy. For simple clocks and lazy developers the default
+3992: 	 * fallback is to use the parent's accuracy.  If a clock doesn't have a
+3993: 	 * parent (or is orphaned) then accuracy is set to zero (perfect
+3994: 	 * clock).
+3995: 	 */
+3996: 	if (core->ops->recalc_accuracy)
+3997: 		core->accuracy = core->ops->recalc_accuracy(core->hw,
+3998: 					clk_core_get_accuracy_no_lock(parent));
+3999: 	else if (parent)
+4000: 		core->accuracy = parent->accuracy;
+4001: 	else
+4002: 		core->accuracy = 0;
+4003: 
+4004: 	/*
+4005: 	 * Set clk's phase by clk_core_get_phase() caching the phase.
+4006: 	 * Since a phase is by definition relative to its parent, just
+4007: 	 * query the current clock phase, or just assume it's in phase.
+4008: 	 */
+4009: 	phase = clk_core_get_phase(core);
+4010: 	if (phase < 0) {
+4011: 		ret = phase;
+4012: 		pr_warn("%s: Failed to get phase for clk '%s'\n", __func__,
+4013: 			core->name);
+4014: 		goto out;
+4015: 	}
+4016: 
+4017: 	/*
+4018: 	 * Set clk's duty cycle.
+4019: 	 */
+4020: 	clk_core_update_duty_cycle_nolock(core);
+4021: 
+4022: 	/*
+4023: 	 * Set clk's rate.  The preferred method is to use .recalc_rate.  For
+4024: 	 * simple clocks and lazy developers the default fallback is to use the
+4025: 	 * parent's rate.  If a clock doesn't have a parent (or is orphaned)
+4026: 	 * then rate is set to zero.
+4027: 	 */
+4028: 	if (core->ops->recalc_rate)
+4029: 		rate = core->ops->recalc_rate(core->hw,
+4030: 				clk_core_get_rate_nolock(parent));
+4031: 	else if (parent)
+4032: 		rate = parent->rate;
+4033: 	else
+4034: 		rate = 0;
+4035: 	core->rate = core->req_rate = rate;
+4036: 
+4037: 	/*
+4038: 	 * Enable CLK_IS_CRITICAL clocks so newly added critical clocks
+4039: 	 * don't get accidentally disabled when walking the orphan tree and
+4040: 	 * reparenting clocks
+4041: 	 */
+4042: 	if (core->flags & CLK_IS_CRITICAL) {
+4043: 		ret = clk_core_prepare(core);
+4044: 		if (ret) {
+4045: 			pr_warn("%s: critical clk '%s' failed to prepare\n",
+4046: 			       __func__, core->name);
+4047: 			goto out;
+4048: 		}
+4049: 
+4050: 		ret = clk_core_enable_lock(core);
+
+4306: __clk_register(struct device *dev, struct device_node *np, struct clk_hw *hw)
+4307: {
+4308: 	int ret;
+4309: 	struct clk_core *core;
+4310: 	const struct clk_init_data *init = hw->init;
+4311: 
+4312: 	/*
+4313: 	 * The init data is not supposed to be used outside of registration path.
+4314: 	 * Set it to NULL so that provider drivers can't use it either and so that
+4315: 	 * we catch use of hw->init early on in the core.
+4316: 	 */
+4317: 	hw->init = NULL;
+4318: 
+4319: 	core = kzalloc_obj(*core);
+4320: 	if (!core) {
+4321: 		ret = -ENOMEM;
+4322: 		goto fail_out;
+4323: 	}
+4324: 
+4325: 	kref_init(&core->ref);
+
+4390: 		       np, ERR_PTR(ret), init->name, hw);
+4391: 	}
+4392: 	return ERR_PTR(ret);
+4393: }
+4394: 
+4395: /**
+4396:  * dev_or_parent_of_node() - Get device node of @dev or @dev's parent
+4397:  * @dev: Device to get device node of
+4398:  *
+4399:  * Return: device node pointer of @dev, or the device node pointer of
+4400:  * @dev->parent if dev doesn't have a device node, or NULL if neither
+4401:  * @dev or @dev->parent have a device node.
+4402:  */
+4403: static struct device_node *dev_or_parent_of_node(struct device *dev)
+4404: {
+4405: 	struct device_node *np;
+4406: 
+4407: 	if (!dev)
+4408: 		return NULL;
+4409: 
+4410: 	np = dev_of_node(dev);
+4411: 	if (!np)
+4412: 		np = dev_of_node(dev->parent);
+4413: 
+4414: 	return np;
+
+4446: int clk_hw_register(struct device *dev, struct clk_hw *hw)
+4447: {
+4448: 	return PTR_ERR_OR_ZERO(__clk_register(dev, dev_or_parent_of_node(dev),
+4449: 			       hw));
+4450: }
+4451: EXPORT_SYMBOL_GPL(clk_hw_register);
+
+4663: int devm_clk_hw_register(struct device *dev, struct clk_hw *hw)
+4664: {
+4665: 	struct clk_hw **hwp;
+4666: 	int ret;
+4667: 
+4668: 	hwp = devres_alloc(devm_clk_hw_unregister_cb, sizeof(*hwp), GFP_KERNEL);
+4669: 	if (!hwp)
+4670: 		return -ENOMEM;
+4671: 
+4672: 	ret = clk_hw_register(dev, hw);
+4673: 	if (!ret) {
+4674: 		*hwp = hw;
+4675: 		devres_add(dev, hwp);
+4676: 	} else {
+4677: 		devres_free(hwp);
+4678: 	}
+4679: 
+4680: 	return ret;
+4681: }

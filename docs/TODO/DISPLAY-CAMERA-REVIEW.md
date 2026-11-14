@@ -2,6 +2,11 @@
 
 日期：2026-10-23。设备：Xiaomi Pad 6 Pro（liuqin / SM8475）。内核：Linux 7.2.5。
 
+显示部分的后续结论以 [2026-11-14 系统调查](../research/DISPLAY-HANDOFF-2026-11-14.md)
+为准：已追踪实际 ABL / DisplayDxe 二进制，核对固定 U-Boot 和 dump 原厂显示模块，
+补全 splash 决策前提，并发现 PLL probe 的早期主动写入。本文保留当时的审查过程，
+其中“找不到 splash 节点就关屏”等简写和晚期寄存器的排除结论不能脱离新报告条件使用。
+
 本文记录架构审查中尚未处理的两项：第 3 项是首次 modeset 后延迟 1.5 秒执行
 DPMS OFF/ON；第 5 项是相机 GDSC 和 GCC AXI 时钟常开。其他审查项在独立
 worktree 中处理，本文不重新确认其完成状态。

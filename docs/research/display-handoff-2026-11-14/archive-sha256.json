@@ -1,0 +1,246 @@
+{
+  "README.md": {
+    "bytes": 5236,
+    "sha256": "ae2c7392fedc5de89b23c80705af9bdc7c5c807fa35e0358533f0b091906a3fa"
+  },
+  "abl.md": {
+    "bytes": 20123,
+    "sha256": "7a756575bc426372c53223d1a6140db62ab6164295b18d42f917f6039c8c64f6"
+  },
+  "evidence/abl/Panel_M81_36_02_0a_dualdsi_dsc_lcd_video.xml": {
+    "bytes": 6434,
+    "sha256": "d8fb21cb7452966bee0cde7066a6e4ecfb55ed828ce9f352c00ff6f37155a99d"
+  },
+  "evidence/abl/Panel_M81_42_02_0b_dualdsi_dsc_lcd_video.xml": {
+    "bytes": 6195,
+    "sha256": "a3e7649ab12793d1656247ecd548313e3d59899b884e12b00bd92a2c27190b0c"
+  },
+  "evidence/abl/analysis-extra-manifest.json": {
+    "bytes": 1455,
+    "sha256": "edd37fc232bbe7aa549d8c07b819cb611e03f4578b5e3f07f98bff2f956cfcd6"
+  },
+  "evidence/abl/annotated-excerpts.txt": {
+    "bytes": 51098,
+    "sha256": "4a9fadd371447d1bab54a9758ccc07f457d4e65e3e12cd9a297705287ddea459"
+  },
+  "evidence/abl/clock-resources-8.1.json": {
+    "bytes": 1044,
+    "sha256": "522415998a0190fd97333649e10f231ce3f8458bc6a59cc838a87116cd55c003"
+  },
+  "evidence/abl/emulate_name_match.py": {
+    "bytes": 2448,
+    "sha256": "67c33c3de961b82687582e2aad337793e15a0234d6dfab1df066cb1a8dff411c"
+  },
+  "evidence/abl/emulate_name_match.sh": {
+    "bytes": 309,
+    "sha256": "0cb41098027462e52d1ac20808aa9e50c1c880443df886408254d54971502ce8"
+  },
+  "evidence/abl/manifest.json": {
+    "bytes": 3891,
+    "sha256": "3797d09cf050912aeabc578acd079e61bbc627f25b1451024d1403de1c753bc1"
+  },
+  "evidence/abl/reproduce.py": {
+    "bytes": 6771,
+    "sha256": "3521f6a805fdd60c44ec8a49c1dbf8f5b358047ea2c7e4b9f3f803ba14e16408"
+  },
+  "evidence/abl/reproduce.sh": {
+    "bytes": 332,
+    "sha256": "05b61b919cc77dd31e3d1b12dfb861cd416ab6bb3bdd749cc80a0187b0243655"
+  },
+  "evidence/abl/unit-address-emulation.json": {
+    "bytes": 1503,
+    "sha256": "c1fa20b8b146648f844fe31ada7fc468cef8153144a633b5cccad5905d368ab0"
+  },
+  "evidence/history/2f148f4-0003-liuqin-display-panel-msm.patch": {
+    "bytes": 42001,
+    "sha256": "80d9a07730b95845de07c6b7aac7c5db7d1307844562a14079cab295d7db5484"
+  },
+  "evidence/history/2f148f4-PORTING-NOTES.md.txt": {
+    "bytes": 49609,
+    "sha256": "36aed730629f7bd185ae0c432b7a2602e1025c85c12482f5d1359c75d9ab26c3"
+  },
+  "evidence/history/9e40c71-DISPLAY-CAMERA-REVIEW.md.txt": {
+    "bytes": 13822,
+    "sha256": "f2854e2d7dec79ab705874252d992eb5ca0cc2c6e58139dd0f3bee3c07314c8a"
+  },
+  "evidence/history/b8cea71-0001-liuqin-dts-bindings.patch": {
+    "bytes": 60297,
+    "sha256": "1d8b613456aad810b96a44c790a94a0752e8bb23591d2434b9028d32954c613f"
+  },
+  "evidence/history/b8cea71-0015-liuqin-msm-first-modeset-cycle.patch": {
+    "bytes": 6086,
+    "sha256": "d7a4074bd0d5c3622f2a73c3e66ac6bb3a46b7e60405814b2d61370674cda622"
+  },
+  "evidence/history/c6-after-dmesg.txt": {
+    "bytes": 3720,
+    "sha256": "4e42cdb5d7f4ae5949658ceeb91f8c83ef451e8515d081eaec96b05dd2406fa6"
+  },
+  "evidence/history/c6-first-dmesg.txt": {
+    "bytes": 2341,
+    "sha256": "24090189294056379ef525e7501a9ab39e26d867aba700382ac3c7133aa1b026"
+  },
+  "evidence/history/c6-kms-diff.json": {
+    "bytes": 135760,
+    "sha256": "41c8721107b72b47bce3260d4b9cc5feaeabb32bbba9ddad9de6ef371ce69a6c"
+  },
+  "evidence/history/c8-after-dmesg.txt": {
+    "bytes": 3389,
+    "sha256": "434d712742b7ab6949ac7e839df91650e2155d1af76815a832e1cbf2053c3931"
+  },
+  "evidence/history/c8-first-dmesg.txt": {
+    "bytes": 2358,
+    "sha256": "67fa09aa6eb1f5b45c80088fda26ba0aa858f5394def0956bef6a4559b728309"
+  },
+  "evidence/history/c9-first-dmesg.txt": {
+    "bytes": 2375,
+    "sha256": "1de0d94940c2587a3ed628221adee09e8eec758c4aa8438ac0af0a625c975310"
+  },
+  "evidence/history/c9-first-trace.txt": {
+    "bytes": 20137,
+    "sha256": "3d87e4464aac9dbe5fd6c595413402df26317e1edd29965db0bfda28b81cfc8b"
+  },
+  "evidence/history/git-evidence-manifest.json": {
+    "bytes": 1373,
+    "sha256": "76af40f66648bd012f7e5f321bf16bf1b51fde2a3f1f6dfd9ec6e267cf6be70d"
+  },
+  "evidence/history/gpio-comparison.json": {
+    "bytes": 3129,
+    "sha256": "9bee4db5ffec86d92b7a575965ac9df70be7af9b2ebd87cdceb33fd71bab67c2"
+  },
+  "evidence/history/pll-bias-lifecycle.txt": {
+    "bytes": 1868,
+    "sha256": "cb7c8c603d4cab0f51a29cd2f0c854198e874d218509e7074937e995482765e4"
+  },
+  "evidence/history/pll-probe.txt": {
+    "bytes": 1585,
+    "sha256": "301d9c4b2a285824d14794df2aa590274d8fae2fe3dc4057878af30d89de40c3"
+  },
+  "evidence/history/pll-recalc.txt": {
+    "bytes": 1407,
+    "sha256": "7f360f33c5a30b5adc9799d6888d09c91fc0c82968fdfebc70d87196cc7193d8"
+  },
+  "evidence/history/pll-save-state.txt": {
+    "bytes": 1250,
+    "sha256": "9cb0eb9a68e270d59e4dd4fc5d0f2101579e08e970b758dfae229b6536889cae"
+  },
+  "evidence/kernel/annotate-disassembly.py": {
+    "bytes": 1067,
+    "sha256": "729b4924f3c11818b63f68767d1d7c725735700447e1802ed43a6bdce7de120a"
+  },
+  "evidence/kernel/clk-registration-extra-excerpts.txt": {
+    "bytes": 1254,
+    "sha256": "da1d2fe923d92e312259e05bab70badee0c7df2842b88aaf833f61c1655cec6b"
+  },
+  "evidence/kernel/dsi_display_cont_splash_config.annotated.S": {
+    "bytes": 7944,
+    "sha256": "51b21aba983cb72c602abc711074ee74f70af1d435c1304f5bac2e35b13353b1"
+  },
+  "evidence/kernel/dsi_display_enable.annotated.S": {
+    "bytes": 39021,
+    "sha256": "15eb056a6c77e5143fc833ff535fd3593f5b10a59ce1a6d7bf190b6ba2200e6f"
+  },
+  "evidence/kernel/dsi_display_phy_sw_reset.annotated.S": {
+    "bytes": 3969,
+    "sha256": "3b3d3f89ee94c69ed58e2dc489f70f7b3c608bb92d6df0d378f818932dacab9e"
+  },
+  "evidence/kernel/dsi_display_prepare.annotated.S": {
+    "bytes": 40940,
+    "sha256": "c5c212b60c7b827bdf51b5487e75547441dd935f41d9c75ea8ad81f93ed6e430"
+  },
+  "evidence/kernel/dsi_display_splash_res_cleanup.annotated.S": {
+    "bytes": 3245,
+    "sha256": "de52b08c764dbc94ad60b3f0c803455a5da35b98b9c325d10cde79aa428bfbce"
+  },
+  "evidence/kernel/dsi_panel_doubleclick_enable.annotated.S": {
+    "bytes": 410,
+    "sha256": "9206c9aa0459513db1dd61faf62b0f5fe2622974609942a09dba23623f612154"
+  },
+  "evidence/kernel/dsi_panel_post_unprepare.annotated.S": {
+    "bytes": 16447,
+    "sha256": "38fb984642ef82ccac59cf6020250da60dcebf16e82cbeaf28e053a148304ea5"
+  },
+  "evidence/kernel/dsi_panel_pre_prepare.annotated.S": {
+    "bytes": 15367,
+    "sha256": "8ecb72efc7921a50295f1506f23d4bf52fc2311f7764bed66eaa08f0aef107de"
+  },
+  "evidence/kernel/dsi_phy_enable.annotated.S": {
+    "bytes": 8479,
+    "sha256": "e2b8e99550a58ac8bc468b3f43ae0a764f189f0f268bf77f4d6b7ab52bcfeb6f"
+  },
+  "evidence/kernel/dsi_pwr_parse_supply_node.annotated.S": {
+    "bytes": 24613,
+    "sha256": "6d782b22530f506bcbfdd8f80508edc39bd9e81be1aff48dda33d052d57f715d"
+  },
+  "evidence/kernel/dump-module-modinfo.txt": {
+    "bytes": 2951,
+    "sha256": "af92a9c9495557c19a291f15420a0453ab7af2752730899eaf66b97d809f4568"
+  },
+  "evidence/kernel/evidence-sha256.json": {
+    "bytes": 3863,
+    "sha256": "054c9d76759ad1c8f6996d3982a1823ed95db00e4130e56f4a0552f1e2333a7b"
+  },
+  "evidence/kernel/mi_dsi_pwr_enable_vregs.annotated.S": {
+    "bytes": 11563,
+    "sha256": "241d90afc58a19c81c22e32adb48a26b86c4edb3605b901930f386c999e5765e"
+  },
+  "evidence/kernel/normal-2f148f4-0003.patch": {
+    "bytes": 42001,
+    "sha256": "80d9a07730b95845de07c6b7aac7c5db7d1307844562a14079cab295d7db5484"
+  },
+  "evidence/kernel/normal-HEAD-0003.patch": {
+    "bytes": 40811,
+    "sha256": "8c8b05256b32fc22074a6f05741830a3ddb4d69b983b584583a6377eb2c175ea"
+  },
+  "evidence/kernel/panel-init-uefi-android-diff.json": {
+    "bytes": 523,
+    "sha256": "62d5a5cc2d1f4d3724a1d381c55ae8890a9096c7bff876f6b53de6daf53c2a25"
+  },
+  "evidence/kernel/pll-probe-source-excerpts.txt": {
+    "bytes": 18334,
+    "sha256": "c61e09a7fef89bc876bf65c32fc75678d955e3b71b96f44a0ec887fd2dd7e385"
+  },
+  "evidence/kernel/sde_rm_cont_splash_res_init.annotated.S": {
+    "bytes": 17777,
+    "sha256": "6a3ee2d0ba6d967656811843efbc804b544c03dd2a03fa8e99f8d74fd846e1a2"
+  },
+  "evidence/kernel/stock-supply-order.json": {
+    "bytes": 1300,
+    "sha256": "c4d71da8cd1ef905fa4ca274d3b836fc849958a0804934ece2b5c5b7ee5f9abf"
+  },
+  "evidence/kernel/stock-supply-order.py": {
+    "bytes": 1711,
+    "sha256": "b5c9b7c440b9b4de55ba8b1a712396fa3236d1a01a272a41f03fc97ed8d9f43f"
+  },
+  "evidence/uboot/port-manifest-check.txt": {
+    "bytes": 1142,
+    "sha256": "a5e5b589ce8a58f2c88fe94e11d548e914631310dd10c64faa075104686f8f4b"
+  },
+  "evidence/uboot/source-excerpts.txt": {
+    "bytes": 10811,
+    "sha256": "7fb406813b15acb364d13d55c655a83cf01a6bfd86be5fee1939dd9486484e5a"
+  },
+  "evidence/uboot/source-fingerprints.json": {
+    "bytes": 3184,
+    "sha256": "c0469994b501232d685567c03e5a7be17ec5588ae6d23d06dadab49ec5377c09"
+  },
+  "firmware-inputs.json": {
+    "bytes": 3029,
+    "sha256": "c5d6f737167b4d73c3abe573c54b3c2e1a98acf8f250e1aee1f6e14d5ff94d41"
+  },
+  "history.md": {
+    "bytes": 6024,
+    "sha256": "88a4298ac87a31a758ffea4228ddfb687ac0dffed5317368daddd4139cb45cda"
+  },
+  "kernel.md": {
+    "bytes": 19186,
+    "sha256": "5c50f36bac7eb86dc93baab4291f9bdbee66c8a133a89d3e5ac1fe0f16aca486"
+  },
+  "source-inputs-before.json": {
+    "bytes": 1151,
+    "sha256": "d1b19d9ee543ae4e7f49199c4e3e4b9691e8f288b2e5cc55e2b43be76f3f9dcc"
+  },
+  "uboot.md": {
+    "bytes": 30171,
+    "sha256": "854a2a74223b167c7a39494e8f4dd34fb3733215bed173a85f1bb46907ca51c1"
+  }
+}

@@ -1,0 +1,25 @@
+/tmp/liuqin-power-display-review-20261114/linux/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+631: static void dsi_7nm_pll_save_state(struct msm_dsi_phy *phy)
+632: {
+633: 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(phy->vco_hw);
+634: 	struct pll_7nm_cached_state *cached = &pll_7nm->cached_state;
+635: 	void __iomem *phy_base = pll_7nm->phy->base;
+636: 	u32 cmn_clk_cfg0, cmn_clk_cfg1;
+637: 
+638: 	dsi_pll_enable_pll_bias(pll_7nm);
+639: 	cached->pll_out_div = readl(pll_7nm->phy->pll_base +
+640: 			REG_DSI_7nm_PHY_PLL_PLL_OUTDIV_RATE);
+641: 	cached->pll_out_div &= 0x3;
+642: 
+643: 	cmn_clk_cfg0 = readl(phy_base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
+644: 	cached->bit_clk_div = FIELD_GET(DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_3_0__MASK, cmn_clk_cfg0);
+645: 	cached->pix_clk_div = FIELD_GET(DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_7_4__MASK, cmn_clk_cfg0);
+646: 
+647: 	cmn_clk_cfg1 = readl(phy_base + REG_DSI_7nm_PHY_CMN_CLK_CFG1);
+648: 	cached->pll_mux = FIELD_GET(DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL__MASK, cmn_clk_cfg1);
+649: 
+650: 	dsi_pll_disable_pll_bias(pll_7nm);
+651: 	DBG("DSI PLL%d outdiv %x bit_clk_div %x pix_clk_div %x pll_mux %x",
+652: 	    pll_7nm->phy->id, cached->pll_out_div, cached->bit_clk_div,
+653: 	    cached->pix_clk_div, cached->pll_mux);
+654: }

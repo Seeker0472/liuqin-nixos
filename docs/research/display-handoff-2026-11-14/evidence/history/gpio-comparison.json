@@ -1,0 +1,86 @@
+[
+  {
+    "experiment": "liuqin-display-c3-20261114",
+    "first": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  low  func0 2mA pull down"
+    },
+    "off": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out low  func0 16mA pull up",
+      "66": "gpio66  : out low  func0 16mA pull up",
+      "93": "gpio93  : out low  func0 16mA pull up",
+      "116": "gpio116 : in  low  func0 2mA pull down"
+    },
+    "after": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  high func0 2mA pull down"
+    }
+  },
+  {
+    "experiment": "liuqin-display-c6-20261114",
+    "first": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  low  func0 2mA pull down"
+    },
+    "after": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  high func0 2mA pull down"
+    }
+  },
+  {
+    "experiment": "liuqin-display-c8-20261114",
+    "first": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  low  func0 2mA pull down"
+    },
+    "after": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  high func0 2mA pull down"
+    }
+  },
+  {
+    "experiment": "liuqin-display-c9-20261114",
+    "first": {
+      "0": "gpio0   : in  1 2mA no pull",
+      "2": "gpio2   : in  1 2mA keeper",
+      "20": "gpio20  : in  0 2mA pull down",
+      "53": "gpio53  : out high func0 16mA pull up",
+      "66": "gpio66  : out high func0 16mA pull up",
+      "93": "gpio93  : out high func0 16mA pull up",
+      "116": "gpio116 : in  low  func0 2mA pull down"
+    }
+  }
+]

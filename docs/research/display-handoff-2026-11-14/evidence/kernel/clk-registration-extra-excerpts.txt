@@ -1,0 +1,39 @@
+/tmp/liuqin-power-display-review-20261114/linux/drivers/clk/clk.c
+3877: static int __clk_core_init(struct clk_core *core)
+3878: {
+3879: 	int ret;
+3880: 	struct clk_core *parent;
+3881: 	unsigned long rate;
+3882: 	int phase;
+3883: 
+3884: 	clk_prepare_lock();
+3885: 
+3886: 	/*
+3887: 	 * Set hw->core after grabbing the prepare_lock to synchronize with
+3888: 	 * callers of clk_core_fill_parent_index() where we treat hw->core
+3889: 	 * being NULL as the clk not being registered yet. This is crucial so
+3890: 	 * that clks aren't parented until their parent is fully registered.
+3891: 	 */
+3892: 	core->hw->core = core;
+3893: 
+3894: 	ret = clk_pm_runtime_get(core);
+3895: 	if (ret)
+3896: 		goto unlock;
+3897: 
+3898: 	/* check to see if a clock with this name is already registered */
+3899: 	if (clk_core_lookup(core->name)) {
+3900: 		pr_debug("%s: clk %s already initialized\n",
+4358: 	 * provider module to itself and prevent it from ever being removed.
+4359: 	 */
+4360: 	hw->clk = alloc_clk(core, NULL, NULL);
+4361: 	if (IS_ERR(hw->clk)) {
+4362: 		ret = PTR_ERR(hw->clk);
+4363: 		goto fail_create_clk;
+4364: 	}
+4365: 
+4366: 	clk_core_link_consumer(core, hw->clk);
+4367: 
+4368: 	ret = __clk_core_init(core);
+4369: 	if (!ret)
+4370: 		return hw->clk;
+4371: 

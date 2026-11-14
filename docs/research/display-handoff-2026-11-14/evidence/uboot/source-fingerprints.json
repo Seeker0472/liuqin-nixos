@@ -1,0 +1,91 @@
+{
+  "commit": "a4f9d7fccf2cd2fc68b8496d723cd92fd16ff80f",
+  "baseline_nar_hash": "sha256-VG4TxrLaom56o4RaCHyDGe06paFIUq5A+a+Do16rKE4=",
+  "files": {
+    "arch/arm/lib/bootm.c": {
+      "sha256": "407fed5e5dbecfe623847639e1d338742328afbfe8176b0110579edee001dae4",
+      "lines": 431,
+      "baseline_same": true
+    },
+    "arch/arm/lib/bootm-fdt.c": {
+      "sha256": "4b50bb24ebafac66b8ae6780dec961e3dbcfa334551fd8cb677f48b2018c3935",
+      "lines": 79,
+      "baseline_same": true
+    },
+    "arch/arm/cpu/armv8/cpu.c": {
+      "sha256": "9e1e101491fa2a40270f7d3265d94acd394d18f106004ac79979fecd1aa665bb",
+      "lines": 96,
+      "baseline_same": true
+    },
+    "arch/arm/mach-snapdragon/board.c": {
+      "sha256": "7c773d36654bdbe91ed8844de3435a3bfec3046c693b1cc7e4729ac589563f5a",
+      "lines": 660,
+      "baseline_same": false
+    },
+    "arch/arm/mach-snapdragon/of_fixup.c": {
+      "sha256": "e8484f668ae63dfa419bc31a356c4ac41cc020c4730acd388df796bd3d697300",
+      "lines": 174,
+      "baseline_same": true
+    },
+    "drivers/core/device-remove.c": {
+      "sha256": "0b2410bd8eda7b67b9ca7ce9ae8e6d813f0886cc298e23df2f944491a149b777",
+      "lines": 274,
+      "baseline_same": true
+    },
+    "drivers/video/video-uclass.c": {
+      "sha256": "b1577491ea432ec78bf1e2e4dd5e8c6ebea3e99494c6ffde0bcb9f01af002cb4",
+      "lines": 719,
+      "baseline_same": true
+    },
+    "drivers/iommu/qcom-hyp-smmu.c": {
+      "sha256": "73555ea76b1a1ce4ffa922694adab35ebbb45157decb2dac007217102d812e2c",
+      "lines": 407,
+      "baseline_same": false
+    },
+    "drivers/clk/qcom/clock-sm8450.c": {
+      "sha256": "f8d440c898a7b763c4e2e4d7b95cec38adad87dd36edcb842bf74369ecec1ab5",
+      "lines": 271,
+      "baseline_same": true
+    },
+    "boot/image-fdt.c": {
+      "sha256": "8dcbd31b6ccf15ee8355cc68cf9a8ef4582cfa797b56353f5598831771dc69af",
+      "lines": 690,
+      "baseline_same": true
+    },
+    "boot/fdt_support.c": {
+      "sha256": "e7e392bce7bc136fb12a6deb90ac1c54d9107b5b8fde89ac38a4cfe4415b2b00",
+      "lines": 2223,
+      "baseline_same": true
+    },
+    "boot/pxe_utils.c": {
+      "sha256": "14dd0d0ba64a7323468765d7de09c6b2bc03fe3fb39b863055ac32650d8fe1f0",
+      "lines": 1960,
+      "baseline_same": false
+    },
+    "board/qualcomm/liuqin/video.c": {
+      "sha256": "58ed17216b72d5fd5d7985dcda9bc06884eb8104db2521bd944572bf19dd3907",
+      "lines": 287,
+      "baseline_same": false
+    },
+    "board/qualcomm/liuqin/liuqin.c": {
+      "sha256": "9765b93ee36b44a4a8a60ab93cb660b4d01749cf7a934c6691685e325d725098",
+      "lines": 514,
+      "baseline_same": false
+    },
+    "board/qualcomm/liuqin/liuqin.env": {
+      "sha256": "bd452107adb0db4565890257db59f6765946e3c970fb9e3acf9d68c9ea89fa45",
+      "lines": 172,
+      "baseline_same": false
+    },
+    "dts/upstream/src/arm64/qcom/sm8450-xiaomi-liuqin.dts": {
+      "sha256": "78b6be2f32147f0fd0d4ae023a7634116517d3bbfca773f81416a117d1b91abe",
+      "lines": 395,
+      "baseline_same": false
+    },
+    "arch/arm/dts/sm8450-xiaomi-liuqin-u-boot.dtsi": {
+      "sha256": "a5daba0d4089f541838c254ac2f044b5827e761d916290c0a6f6754eee6bdab5",
+      "lines": 133,
+      "baseline_same": false
+    }
+  }
+}

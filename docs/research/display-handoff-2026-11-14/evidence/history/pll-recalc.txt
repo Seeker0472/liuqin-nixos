@@ -1,0 +1,42 @@
+/tmp/liuqin-power-display-review-20261114/linux/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+566: static unsigned long dsi_pll_7nm_vco_recalc_rate(struct clk_hw *hw,
+567: 						  unsigned long parent_rate)
+568: {
+569: 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
+570: 	void __iomem *base = pll_7nm->phy->pll_base;
+571: 	u64 ref_clk = VCO_REF_CLK_RATE;
+572: 	u64 vco_rate = 0x0;
+573: 	u64 multiplier;
+574: 	u32 frac;
+575: 	u32 dec;
+576: 	u64 pll_freq, tmp64;
+577: 
+578: 	dsi_pll_enable_pll_bias(pll_7nm);
+579: 	dec = readl(base + REG_DSI_7nm_PHY_PLL_DECIMAL_DIV_START_1);
+580: 	dec &= 0xff;
+581: 
+582: 	frac = readl(base + REG_DSI_7nm_PHY_PLL_FRAC_DIV_START_LOW_1);
+583: 	frac |= ((readl(base + REG_DSI_7nm_PHY_PLL_FRAC_DIV_START_MID_1) &
+584: 		  0xff) << 8);
+585: 	frac |= ((readl(base + REG_DSI_7nm_PHY_PLL_FRAC_DIV_START_HIGH_1) &
+586: 		  0x3) << 16);
+587: 
+588: 	/*
+589: 	 * TODO:
+590: 	 *	1. Assumes prescaler is disabled
+591: 	 */
+592: 	multiplier = 1 << FRAC_BITS;
+593: 	pll_freq = dec * (ref_clk * 2);
+594: 	tmp64 = (ref_clk * 2 * frac);
+595: 	pll_freq += div_u64(tmp64, multiplier);
+596: 
+597: 	vco_rate = pll_freq;
+598: 	pll_7nm->vco_current_rate = vco_rate;
+599: 
+600: 	DBG("DSI PLL%d returning vco rate = %lu, dec = %x, frac = %x",
+601: 	    pll_7nm->phy->id, (unsigned long)vco_rate, dec, frac);
+602: 
+603: 	dsi_pll_disable_pll_bias(pll_7nm);
+604: 
+605: 	return (unsigned long)vco_rate;
+606: }

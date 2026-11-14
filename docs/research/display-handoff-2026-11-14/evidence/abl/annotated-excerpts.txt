@@ -1,0 +1,1577 @@
+
+## abl: GetVariable DisplaySplashBufferInfo, size 12
+## RVA 0x2a7e0 .. 0x2a820 (exclusive)
+0002a7e0 mov        w8, #0x10
+0002a7e4 str        w8, [sp, #0x4c]
+0002a7e8 adrp       x8, #0xc2000
+0002a7ec ldr        x8, [x8, #0xda8]
+0002a7f0 ldr        x8, [x8, #0x48]
+0002a7f4 adrp       x0, #0xb3000
+0002a7f8 add        x0, x0, #0xe26
+0002a7fc adrp       x1, #0xbd000
+0002a800 add        x1, x1, #0x8bc
+0002a804 adrp       x3, #0xbe000
+0002a808 add        x3, x3, #0x1b8
+0002a80c adrp       x4, #0xc2000
+0002a810 add        x4, x4, #0xea0
+0002a814 blr        x8
+0002a818 str        x0, [sp, #0x68]
+0002a81c ldr        x8, [sp, #0x68]
+
+## abl: Actual GetMemoryMap and ExitBootServices ABI call
+## RVA 0x16370 .. 0x163e8 (exclusive)
+00016370 ldr        x8, [sp, #0x40]
+00016374 tbnz       x8, #0x3f, #0x163d0
+00016378 b          #0x1637c
+0001637c ldr        x9, [sp, #0x10]
+00016380 adrp       x8, #0xc2000
+00016384 ldr        x8, [x8, #0xda0]
+00016388 ldr        x8, [x8, #0xe8]
+0001638c adrp       x10, #0xc2000
+00016390 ldr        x0, [x10, #0xd90]
+00016394 ldur       x1, [x9, #-0x18]
+00016398 blr        x8
+0001639c str        x0, [sp, #0x40]
+000163a0 ldr        x8, [sp, #0x40]
+000163a4 tbz        x8, #0x3f, #0x163cc
+000163a8 b          #0x163ac
+000163ac ldr        x0, [sp, #0x38]
+000163b0 ldr        x1, [sp, #0x30]
+000163b4 bl         #0x60c8
+000163b8 ldr        x9, [sp, #0x10]
+000163bc mov        x8, xzr
+000163c0 str        x8, [sp, #0x38]
+000163c4 stur       x8, [x9, #-0x10]
+000163c8 b          #0x163cc
+000163cc b          #0x163d0
+000163d0 b          #0x163d4
+000163d4 ldr        x8, [sp, #0x40]
+000163d8 tbnz       x8, #0x3f, #0x16264
+000163dc b          #0x163e0
+000163e0 ldr        x8, [sp, #0x40]
+000163e4 str        x8, [sp, #0x48]
+
+## abl: BootServices shutdown success check and raw AArch64 entry
+## RVA 0x1b8fc .. 0x1ba54 (exclusive)
+0001b8fc bl         #0x16208
+0001b900 str        x0, [sp, #0xe0]
+0001b904 ldr        x8, [sp, #0xe0]
+0001b908 tbz        x8, #0x3f, #0x1b96c
+0001b90c b          #0x1b910
+0001b910 b          #0x1b914
+0001b914 bl         #0x728c
+0001b918 and        w8, w0, #0xff
+0001b91c cbz        w8, #0x1b964
+0001b920 b          #0x1b924
+0001b924 b          #0x1b928
+0001b928 mov        w8, #-0x80000000
+0001b92c mov        w0, w8
+0001b930 bl         #0x72b4
+0001b934 and        w8, w0, #0xff
+0001b938 cbz        w8, #0x1b95c
+0001b93c b          #0x1b940
+0001b940 ldr        x2, [sp, #0xe0]
+0001b944 adrp       x1, #0xb0000
+0001b948 add        x1, x1, #0xe46
+0001b94c mov        w8, #-0x80000000
+0001b950 mov        w0, w8
+0001b954 bl         #0x6cd8
+0001b958 b          #0x1b95c
+0001b95c b          #0x1b960
+0001b960 b          #0x1b964
+0001b964 b          #0x1b968
+0001b968 b          #0x1ba58
+0001b96c ldr        x8, [sp, #0x68]
+0001b970 ldur       x0, [x8, #-0xf0]
+0001b974 ldur       x1, [x8, #-0x90]
+0001b978 ldur       x2, [x8, #-0xd8]
+0001b97c ldur       x3, [x8, #-0x80]
+0001b980 ldr        w9, [sp, #0xbc]
+0001b984 mov        w4, w9
+0001b988 ldur       x5, [x8, #-0x78]
+0001b98c ldr        x7, [sp, #0x98]
+0001b990 ldr        x8, [sp, #0xa0]
+0001b994 mov        x9, sp
+0001b998 str        x8, [x9]
+0001b99c mov        w8, #0x200000
+0001b9a0 mov        w6, w8
+0001b9a4 bl         #0x16430
+0001b9a8 mov        w0, #1
+0001b9ac bl         #0x3dd90
+0001b9b0 bl         #0x50d78
+0001b9b4 and        w8, w0, #0xff
+0001b9b8 cbz        w8, #0x1b9c8
+0001b9bc b          #0x1b9c0
+0001b9c0 bl         #0x51080
+0001b9c4 b          #0x1b9c8
+0001b9c8 ldr        x8, [sp, #0x68]
+0001b9cc ldurb      w8, [x8, #-0x10]
+0001b9d0 cbz        w8, #0x1ba30
+0001b9d4 b          #0x1b9d8
+0001b9d8 ldrb       w8, [sp, #0xb4]
+0001b9dc cbz        w8, #0x1ba0c
+0001b9e0 b          #0x1b9e4
+0001b9e4 ldr        x8, [sp, #0x68]
+0001b9e8 ldur       x0, [x8, #-0x90]
+0001b9ec ldur       x1, [x8, #-0x78]
+0001b9f0 bl         #0x1e568
+0001b9f4 str        x0, [sp, #0xe0]
+0001b9f8 ldr        x8, [sp, #0xe0]
+0001b9fc tbz        x8, #0x3f, #0x1ba08
+0001ba00 b          #0x1ba04
+0001ba04 b          #0x1ba58
+0001ba08 b          #0x1ba0c
+0001ba0c ldr        x9, [sp, #0x68]
+0001ba10 ldur       x8, [x9, #-0x90]
+0001ba14 str        x8, [sp, #0xc0]
+0001ba18 ldr        x8, [sp, #0xc0]
+0001ba1c ldur       x2, [x9, #-0x78]
+0001ba20 mov        w1, wzr
+0001ba24 mov        w0, w1
+0001ba28 blr        x8
+0001ba2c b          #0x1ba58
+0001ba30 ldr        x9, [sp, #0x68]
+0001ba34 ldur       x8, [x9, #-0x90]
+0001ba38 str        x8, [sp, #0xc8]
+0001ba3c ldr        x8, [sp, #0xc8]
+0001ba40 ldur       x0, [x9, #-0x78]
+0001ba44 mov        x3, xzr
+0001ba48 mov        x1, x3
+0001ba4c mov        x2, x3
+0001ba50 blr        x8
+
+## abl: DT path lookup, negative return goes to Off
+## RVA 0x2a8ec .. 0x2a978 (exclusive)
+0002a8ec ldr        x0, [sp, #0x70]
+0002a8f0 adrp       x1, #0xb3000
+0002a8f4 add        x1, x1, #0x8a1
+0002a8f8 bl         #0x51788
+0002a8fc str        w0, [sp, #0x5c]
+0002a900 ldr        w8, [sp, #0x5c]
+0002a904 tbz        w8, #0x1f, #0x2a974
+0002a908 b          #0x2a90c
+0002a90c b          #0x2a910
+0002a910 bl         #0x728c
+0002a914 and        w8, w0, #0xff
+0002a918 cbz        w8, #0x2a95c
+0002a91c b          #0x2a920
+0002a920 b          #0x2a924
+0002a924 mov        w8, #2
+0002a928 mov        w0, w8
+0002a92c bl         #0x72b4
+0002a930 and        w8, w0, #0xff
+0002a934 cbz        w8, #0x2a954
+0002a938 b          #0x2a93c
+0002a93c adrp       x1, #0xb3000
+0002a940 add        x1, x1, #0x8c0
+0002a944 mov        w8, #2
+0002a948 mov        w0, w8
+0002a94c bl         #0x6cd8
+0002a950 b          #0x2a954
+0002a954 b          #0x2a958
+0002a958 b          #0x2a95c
+0002a95c b          #0x2a960
+0002a960 bl         #0x2cd30
+0002a964 mov        x8, #0xe
+0002a968 movk       x8, #0x8000, lsl #48
+0002a96c str        x8, [sp, #0x78]
+0002a970 b          #0x2adfc
+0002a974 ldr        w8, [sp, #0x5c]
+
+## abl: Node name comparator including unit address branch
+## RVA 0x52368 .. 0x5245c (exclusive)
+00052368 sub        sp, sp, #0x40
+0005236c str        x30, [sp, #0x30]
+00052370 str        x0, [sp, #0x20]
+00052374 str        w1, [sp, #0x1c]
+00052378 str        x2, [sp, #0x10]
+0005237c str        w3, [sp, #0xc]
+00052380 ldr        x0, [sp, #0x20]
+00052384 ldr        w8, [sp, #0x1c]
+00052388 add        w1, w8, #4
+0005238c ldr        w8, [sp, #0xc]
+00052390 add        w2, w8, #1
+00052394 bl         #0x69100
+00052398 str        x0, [sp]
+0005239c ldr        x8, [sp]
+000523a0 cbnz       x8, #0x523b4
+000523a4 b          #0x523a8
+000523a8 mov        w8, wzr
+000523ac strb       w8, [sp, #0x2c]
+000523b0 b          #0x5244c
+000523b4 ldr        x0, [sp]
+000523b8 ldr        x1, [sp, #0x10]
+000523bc ldr        w8, [sp, #0xc]
+000523c0 mov        w2, w8
+000523c4 bl         #0x65e4c
+000523c8 cbz        x0, #0x523dc
+000523cc b          #0x523d0
+000523d0 mov        w8, wzr
+000523d4 strb       w8, [sp, #0x2c]
+000523d8 b          #0x5244c
+000523dc ldr        x8, [sp]
+000523e0 ldr        w9, [sp, #0xc]
+000523e4 ldrsb      w8, [x8, x9]
+000523e8 cbnz       w8, #0x523fc
+000523ec b          #0x523f0
+000523f0 mov        w8, #1
+000523f4 strb       w8, [sp, #0x2c]
+000523f8 b          #0x5244c
+000523fc ldr        x0, [sp, #0x10]
+00052400 ldr        w2, [sp, #0xc]
+00052404 mov        w8, #0x40
+00052408 mov        w1, w8
+0005240c bl         #0x65d74
+00052410 cbnz       x0, #0x5243c
+00052414 b          #0x52418
+00052418 ldr        x8, [sp]
+0005241c ldr        w9, [sp, #0xc]
+00052420 ldrsb      w8, [x8, x9]
+00052424 subs       w8, w8, #0x40
+00052428 b.ne       #0x5243c
+0005242c b          #0x52430
+00052430 mov        w8, #1
+00052434 strb       w8, [sp, #0x2c]
+00052438 b          #0x5244c
+0005243c b          #0x52440
+00052440 mov        w8, wzr
+00052444 strb       w8, [sp, #0x2c]
+00052448 b          #0x5244c
+0005244c ldrb       w0, [sp, #0x2c]
+00052450 ldr        x30, [sp, #0x30]
+00052454 add        sp, sp, #0x40
+00052458 ret        
+
+## abl: Actual scan helper argument and backend
+## RVA 0x65d74 .. 0x65e4c (exclusive)
+00065d74 sub        sp, sp, #0x30
+00065d78 stp        x30, x21, [sp, #0x10]
+00065d7c stp        x20, x19, [sp, #0x20]
+00065d80 adrp       x8, #0xbe000
+00065d84 ldr        x8, [x8, #0x148]
+00065d88 str        x8, [sp, #8]
+00065d8c cbz        x1, #0x65e18
+00065d90 mov        w19, w2
+00065d94 mov        x20, x1
+00065d98 mov        x21, x0
+00065d9c bl         #0x70ac
+00065da0 cbnz       x21, #0x65dc4
+00065da4 tst        w0, #0xff
+00065da8 b.eq       #0x65dc4
+00065dac adrp       x0, #0xbc000
+00065db0 adrp       x2, #0xbc000
+00065db4 add        x0, x0, #0x508
+00065db8 mov        w1, #0x34
+00065dbc add        x2, x2, #0x65a
+00065dc0 bl         #0x70d4
+00065dc4 bl         #0x70ac
+00065dc8 tst        w0, #0xff
+00065dcc b.eq       #0x65df4
+00065dd0 sub        x8, x20, #1
+00065dd4 cmn        x21, x8
+00065dd8 b.lo       #0x65df4
+00065ddc adrp       x0, #0xbc000
+00065de0 adrp       x2, #0xbc000
+00065de4 add        x0, x0, #0x508
+00065de8 mov        w1, #0x35
+00065dec add        x2, x2, #0x580
+00065df0 bl         #0x70d4
+00065df4 bl         #0x65e38
+00065df8 b.ne       #0x65e34
+00065dfc mov        x0, x21
+00065e00 mov        x1, x20
+00065e04 mov        w2, w19
+00065e08 ldp        x20, x19, [sp, #0x20]
+00065e0c ldp        x30, x21, [sp, #0x10]
+00065e10 add        sp, sp, #0x30
+00065e14 b          #0x66034
+00065e18 bl         #0x65e38
+00065e1c b.ne       #0x65e34
+00065e20 ldp        x20, x19, [sp, #0x20]
+00065e24 mov        x0, xzr
+00065e28 ldp        x30, x21, [sp, #0x10]
+00065e2c add        sp, sp, #0x30
+00065e30 ret        
+00065e34 bl         #0x15e3c
+00065e38 adrp       x9, #0xbe000
+00065e3c ldr        x8, [sp, #8]
+00065e40 ldr        x9, [x9, #0x148]
+00065e44 cmp        x9, x8
+00065e48 ret        
+
+## abl: Scan backend uses x1 length and w2 value
+## RVA 0x66034 .. 0x66058 (exclusive)
+00066034 cbz        x1, #0x66104
+00066038 mov        w5, #0x401
+0006603c movk       w5, #0x4010, lsl #16
+00066040 dup        v0.16b, w2
+00066044 and        x3, x0, #0xffffffffffffffe0
+00066048 dup        v5.4s, w5
+0006604c ands       x9, x0, #0x1f
+00066050 and        x10, x1, #0x1f
+00066054 b.eq       #0x66094
+
+## abl: reg property check, errors do not go to Off
+## RVA 0x2a9e4 .. 0x2aaf8 (exclusive)
+0002a9e4 ldr        x8, [sp, #0x30]
+0002a9e8 ldr        x0, [sp, #0x70]
+0002a9ec ldr        w1, [sp, #0x58]
+0002a9f0 subs       x3, x8, #0xc
+0002a9f4 adrp       x2, #0xb2000
+0002a9f8 add        x2, x2, #0x9fe
+0002a9fc bl         #0x67750
+0002aa00 str        x0, [sp, #0x60]
+0002aa04 ldr        x8, [sp, #0x60]
+0002aa08 cbnz       x8, #0x2aa74
+0002aa0c b          #0x2aa10
+0002aa10 b          #0x2aa14
+0002aa14 bl         #0x728c
+0002aa18 and        w8, w0, #0xff
+0002aa1c cbz        w8, #0x2aa60
+0002aa20 b          #0x2aa24
+0002aa24 b          #0x2aa28
+0002aa28 mov        w8, #-0x80000000
+0002aa2c mov        w0, w8
+0002aa30 bl         #0x72b4
+0002aa34 and        w8, w0, #0xff
+0002aa38 cbz        w8, #0x2aa58
+0002aa3c b          #0x2aa40
+0002aa40 adrp       x1, #0xb3000
+0002aa44 add        x1, x1, #0x928
+0002aa48 mov        w8, #-0x80000000
+0002aa4c mov        w0, w8
+0002aa50 bl         #0x6cd8
+0002aa54 b          #0x2aa58
+0002aa58 b          #0x2aa5c
+0002aa5c b          #0x2aa60
+0002aa60 b          #0x2aa64
+0002aa64 mov        x8, #0xe
+0002aa68 movk       x8, #0x8000, lsl #48
+0002aa6c str        x8, [sp, #0x78]
+0002aa70 b          #0x2adfc
+0002aa74 ldr        x8, [sp, #0x30]
+0002aa78 ldur       w8, [x8, #-0xc]
+0002aa7c subs       w8, w8, #0x10
+0002aa80 b.eq       #0x2aaf8
+0002aa84 b          #0x2aa88
+0002aa88 b          #0x2aa8c
+0002aa8c bl         #0x728c
+0002aa90 and        w8, w0, #0xff
+0002aa94 cbz        w8, #0x2aae4
+0002aa98 b          #0x2aa9c
+0002aa9c b          #0x2aaa0
+0002aaa0 mov        w8, #-0x80000000
+0002aaa4 mov        w0, w8
+0002aaa8 bl         #0x72b4
+0002aaac and        w8, w0, #0xff
+0002aab0 cbz        w8, #0x2aadc
+0002aab4 b          #0x2aab8
+0002aab8 ldr        x8, [sp, #0x30]
+0002aabc ldur       w3, [x8, #-0xc]
+0002aac0 adrp       x1, #0xb3000
+0002aac4 add        x1, x1, #0x957
+0002aac8 mov        w8, #-0x80000000
+0002aacc mov        w0, w8
+0002aad0 mov        w2, #0x10
+0002aad4 bl         #0x6cd8
+0002aad8 b          #0x2aadc
+0002aadc b          #0x2aae0
+0002aae0 b          #0x2aae4
+0002aae4 b          #0x2aae8
+0002aae8 mov        x8, #4
+0002aaec movk       x8, #0x8000, lsl #48
+0002aaf0 str        x8, [sp, #0x78]
+0002aaf4 b          #0x2adfc
+
+## abl: caller ignores splash update result
+## RVA 0x29208 .. 0x29224 (exclusive)
+00029208 ldr        x8, [sp, #0xe0]
+0002920c ldr        x0, [x8, #0x68]
+00029210 bl         #0x2a778
+00029214 ldr        x8, [sp, #0xe0]
+00029218 ldr        x0, [x8, #0x68]
+0002921c bl         #0x2ae40
+00029220 ldr        x8, [sp, #0xe0]
+
+## abl: Locate Display Power Protocol; SetDisplayPowerState(Off=1)
+## RVA 0x2cd7c .. 0x2cdb4 (exclusive)
+0002cd7c adrp       x8, #0xc2000
+0002cd80 ldr        x8, [x8, #0xda0]
+0002cd84 ldr        x8, [x8, #0x140]
+0002cd88 adrp       x0, #0xbd000
+0002cd8c add        x0, x0, #0xb2c
+0002cd90 blr        x8
+0002cd94 str        x0, [sp, #0x28]
+0002cd98 ldr        x8, [sp, #0x28]
+0002cd9c cbnz       x8, #0x2cdb4
+0002cda0 b          #0x2cda4
+0002cda4 ldr        x8, [sp, #0x10]
+0002cda8 ldur       x8, [x8, #-0x10]
+0002cdac cbnz       x8, #0x2ce10
+0002cdb0 b          #0x2cdb4
+
+## abl: power protocol indirect call at +8
+## RVA 0x2ce10 .. 0x2ce30 (exclusive)
+0002ce10 ldr        x8, [sp, #0x10]
+0002ce14 ldur       x0, [x8, #-0x10]
+0002ce18 ldr        x8, [x0, #8]
+0002ce1c mov        w1, #1
+0002ce20 blr        x8
+0002ce24 str        x0, [sp, #0x28]
+0002ce28 ldr        x8, [sp, #0x28]
+0002ce2c cbz        x8, #0x2ce90
+
+## DisplayDxe: ExitBootServices event registration callback 0x154c
+## RVA 0x17ac .. 0x1818 (exclusive)
+000017ac adrp       x2, #0x1000
+000017b0 adrp       x4, #0x51000
+000017b4 add        x2, x2, #0x54c
+000017b8 mov        w0, #0x201
+000017bc add        x4, x4, #0x30
+000017c0 ldp        w9, w10, [x8]
+000017c4 mov        w1, #8
+000017c8 mov        x3, xzr
+000017cc ldp        w11, w8, [x8, #8]
+000017d0 stp        w9, w10, [sp, #0xd8]
+000017d4 str        wzr, [sp, #0xd4]
+000017d8 stp        w11, w8, [sp, #0xe0]
+000017dc adrp       x8, #0x38000
+000017e0 add        x8, x8, #0xd0
+000017e4 ldp        w9, w10, [x8]
+000017e8 ldp        w11, w8, [x8, #8]
+000017ec stp        w9, w10, [x29, #-0x18]
+000017f0 adrp       x9, #0x38000
+000017f4 add        x9, x9, #0xe0
+000017f8 stp        w11, w8, [x29, #-0x10]
+000017fc ldr        x11, [x22, #0xac0]
+00001800 ldp        w8, w10, [x9]
+00001804 ldp        w12, w9, [x9, #8]
+00001808 stp        w8, w10, [x29, #-0x28]
+0000180c ldr        x8, [x11, #0x50]
+00001810 stp        w12, w9, [x29, #-0x20]
+00001814 blr        x8
+
+## DisplayDxe: SetDisplayPowerState Off branch
+## RVA 0x39b8 .. 0x3a34 (exclusive)
+000039b8 mov        x20, xzr
+000039bc mov        x25, xzr
+000039c0 mov        x21, #-0x7ffffffffffffff9
+000039c4 ldr        w8, [x22, x20, lsl #2]
+000039c8 cbz        w8, #0x3a08
+000039cc mov        w0, w20
+000039d0 mov        w1, wzr
+000039d4 bl         #0x1cb50
+000039d8 cbnz       w0, #0x3a04
+000039dc sub        x1, x29, #0xb8
+000039e0 mov        w0, w20
+000039e4 mov        w2, wzr
+000039e8 bl         #0x1b870
+000039ec cbnz       w0, #0x3a04
+000039f0 sub        x1, x29, #0xb8
+000039f4 mov        w0, w20
+000039f8 mov        w2, #1
+000039fc bl         #0x1b870
+00003a00 cbz        w0, #0x3a18
+00003a04 mov        x25, #-0x7ffffffffffffff9
+00003a08 add        x20, x20, #1
+00003a0c cmp        x20, #3
+00003a10 b.ne       #0x39c4
+00003a14 b          #0x3788
+00003a18 add        x2, sp, #0x1e0
+00003a1c mov        w0, w20
+00003a20 mov        w1, #4
+00003a24 bl         #0x1c814
+00003a28 cmp        w0, #0
+00003a2c csel       x25, x25, x21, eq
+00003a30 b          #0x3a08
+
+## DisplayDxe: MDPDeInit: stop pipe then panel deinit
+## RVA 0x1cbe0 .. 0x1cc64 (exclusive)
+0001cbe0 mov        w10, #0x658
+0001cbe4 madd       x10, x9, x10, x8
+0001cbe8 ldr        w10, [x10, #0x24]
+0001cbec and        w10, w10, #0xfffffffc
+0001cbf0 cmp        w10, #8
+0001cbf4 b.ne       #0x1cc34
+0001cbf8 mov        w10, #0x658
+0001cbfc madd       x8, x9, x10, x8
+0001cc00 ldr        w8, [x8, #0x2a0]
+0001cc04 cmp        w8, #1
+0001cc08 b.ne       #0x1cc34
+0001cc0c mov        x0, x20
+0001cc10 mov        w1, #1
+0001cc14 mov        x2, xzr
+0001cc18 mov        w3, wzr
+0001cc1c bl         #0x1dd3c
+0001cc20 cbz        w0, #0x1cc34
+0001cc24 adrp       x1, #0x40000
+0001cc28 mov        w0, #1
+0001cc2c add        x1, x1, #0x6f8
+0001cc30 bl         #0x21550
+0001cc34 mov        x0, x20
+0001cc38 bl         #0x1f8e4
+0001cc3c cbz        w0, #0x1cc54
+0001cc40 adrp       x1, #0x40000
+0001cc44 mov        w2, w0
+0001cc48 add        x1, x1, #0x741
+0001cc4c mov        w0, #1
+0001cc50 bl         #0x21550
+0001cc54 mov        x0, x20
+0001cc58 bl         #0x1dbcc
+0001cc5c mov        w20, w0
+0001cc60 cbz        w0, #0x1cbbc
+
+## DisplayDxe: panel deinit: polling, controller update, reset, TERM buffer
+## RVA 0x13888 .. 0x13970 (exclusive)
+00013888 cbnz       w26, #0x13970
+0001388c add        x0, sp, #0x290
+00013890 mov        x1, x21
+00013894 bl         #0x218f0
+00013898 ldr        x0, [x25]
+0001389c add        x2, sp, #0x290
+000138a0 mov        w1, #0xf
+000138a4 bl         #0x1416c
+000138a8 cbnz       w0, #0x138d8
+000138ac cmp        w28, #0xf
+000138b0 b.hi       #0x138d8
+000138b4 ldr        w8, [sp, #0x290]
+000138b8 cbz        w8, #0x138d8
+000138bc ldr        x8, [x24, #0xac0]
+000138c0 mov        x0, x22
+000138c4 ldr        x8, [x8, #0xf8]
+000138c8 blr        x8
+000138cc ldr        x0, [x25]
+000138d0 add        w28, w28, #1
+000138d4 b          #0x1389c
+000138d8 ldr        w8, [x19, #0x24]
+000138dc orr        w8, w8, #2
+000138e0 cmp        w8, #0xa
+000138e4 b.ne       #0x1393c
+000138e8 add        x0, sp, #8
+000138ec mov        x1, x21
+000138f0 bl         #0x218f0
+000138f4 ldr        x0, [x25]
+000138f8 add        x2, sp, #8
+000138fc mov        w1, #2
+00013900 bl         #0x13c60
+00013904 cbz        w0, #0x13918
+00013908 adrp       x1, #0x3e000
+0001390c mov        w0, #2
+00013910 add        x1, x1, #0x93e
+00013914 bl         #0x21550
+00013918 ldr        x0, [x25]
+0001391c add        x2, sp, #8
+00013920 mov        w1, w23
+00013924 bl         #0x13c60
+00013928 cbz        w0, #0x1393c
+0001392c adrp       x1, #0x3e000
+00013930 mov        w0, #2
+00013934 add        x1, x1, #0x97a
+00013938 bl         #0x21550
+0001393c ldr        w8, [x19, #0x2a0]
+00013940 cbnz       w8, #0x1396c
+00013944 ldr        x1, [x19, #0x330]
+00013948 mov        x0, x20
+0001394c mov        x2, x19
+00013950 bl         #0x12d6c
+00013954 cbz        w0, #0x1396c
+00013958 adrp       x1, #0x3e000
+0001395c mov        w0, #2
+00013960 add        x1, x1, #0x9bb
+00013964 mov        w2, wzr
+00013968 bl         #0x21550
+0001396c ldr        w8, [x27]
+
+## DisplayDxe: DSI property13 calls host reset before TERM
+## RVA 0x1404c .. 0x14054 (exclusive)
+0001404c bl         #0x15cec
+00014050 b          #0x1414c
+
+## DisplayDxe: TERM parser: FF -> delay; FD -> controller mask
+## RVA 0x12e00 .. 0x12e70 (exclusive)
+00012e00 ldrb       w10, [x9]
+00012e04 cmp        w10, #0xfe
+00012e08 b.eq       #0x12e20
+00012e0c cmp        w10, #0xff
+00012e10 b.ne       #0x12e44
+00012e14 ldrb       w0, [x9, #1]
+00012e18 bl         #0x21928
+00012e1c b          #0x12f84
+00012e20 cmp        w8, #4
+00012e24 b.ne       #0x12eac
+00012e28 ldrb       w8, [x9, #1]
+00012e2c ldrb       w10, [x9, #2]
+00012e30 ldrb       w9, [x9, #3]
+00012e34 lsl        w8, w8, #0x10
+00012e38 bfi        w8, w10, #8, #8
+00012e3c orr        w1, w8, w9
+00012e40 b          #0x12eb0
+00012e44 add        x11, x9, #1
+00012e48 cmp        w10, #0xfd
+00012e4c b.ne       #0x12fb8
+00012e50 ldrb       w8, [x11]
+00012e54 adrp       x10, #0x4b000
+00012e58 and        w9, w8, #3
+00012e5c tst        w8, #3
+00012e60 ldr        w8, [x25, #0x4b8]
+00012e64 csinc      w9, w9, wzr, ne
+00012e68 strb       w9, [x10, #0x530]
+00012e6c cbz        w8, #0x12f84
+
+## DisplayDxe: TERM parser: iterate controller mask and write
+## RVA 0x12fb8 .. 0x13008 (exclusive)
+00012fb8 ldr        w9, [x21, #0x28]
+00012fbc sub        w8, w8, #1
+00012fc0 sturb      w10, [x29, #-0x18]
+00012fc4 stur       x11, [x29, #-0x20]
+00012fc8 stur       w8, [x29, #-0x28]
+00012fcc cbz        w9, #0x12f84
+00012fd0 mov        x19, xzr
+00012fd4 adrp       x8, #0x4b000
+00012fd8 ldrb       w8, [x8, #0x530]
+00012fdc lsr        w8, w8, w19
+00012fe0 tbz        w8, #0, #0x12ffc
+00012fe4 ldr        x8, [sp, #8]
+00012fe8 sub        x1, x29, #0x38
+00012fec ldr        x0, [x8, x19, lsl #3]
+00012ff0 bl         #0x13b24
+00012ff4 cbnz       w0, #0x1300c
+00012ff8 ldr        w9, [x21, #0x28]
+00012ffc add        x19, x19, #1
+00013000 cmp        x19, w9, uxtw
+00013004 b.lo       #0x12fd4
+
+## DisplayDxe: M81 board powerdown, not a five-rail cold power cycle
+## RVA 0x106a4 .. 0x107b4 (exclusive)
+000106a4 sub        sp, sp, #0x30
+000106a8 stp        x29, x30, [sp, #0x10]
+000106ac add        x29, sp, #0x10
+000106b0 stp        x20, x19, [sp, #0x20]
+000106b4 add        x8, x1, w0, uxtw #3
+000106b8 cmp        w0, #8
+000106bc csel       w20, w0, wzr, lo
+000106c0 str        xzr, [sp, #8]
+000106c4 ldr        x8, [x8, #0x20]
+000106c8 cbz        x8, #0x10700
+000106cc adrp       x8, #0x51000
+000106d0 adrp       x0, #0x48000
+000106d4 mov        x19, x1
+000106d8 add        x0, x0, #0x288
+000106dc add        x2, sp, #8
+000106e0 mov        x1, xzr
+000106e4 ldr        x8, [x8, #0xac0]
+000106e8 ldr        x8, [x8, #0x140]
+000106ec blr        x8
+000106f0 cbz        x0, #0x10718
+000106f4 adrp       x1, #0x3b000
+000106f8 add        x1, x1, #0x11a
+000106fc b          #0x10708
+00010700 adrp       x1, #0x3d000
+00010704 add        x1, x1, #0x734
+00010708 mov        w0, #-0x80000000
+0001070c bl         #0x4364
+00010710 mov        w0, #4
+00010714 b          #0x107a4
+00010718 ldr        x8, [sp, #8]
+0001071c mov        w11, #0x4000
+00010720 ldr        w9, [x19, #0x6c]
+00010724 mov        w19, #0x8000
+00010728 movk       w19, #0x2000, lsl #16
+0001072c movk       w11, #0xe, lsl #16
+00010730 mov        w10, w19
+00010734 mov        w1, wzr
+00010738 ldr        x8, [x8, #8]
+0001073c bfi        w10, w9, #4, #0xa
+00010740 orr        w0, w10, w11
+00010744 blr        x8
+00010748 mov        w8, #0x38
+0001074c adrp       x9, #0x51000
+00010750 add        x9, x9, #0xf58
+00010754 mov        w1, wzr
+00010758 mul        x8, x20, x8
+0001075c ldr        x8, [x9, x8]
+00010760 ldr        x9, [sp, #8]
+00010764 ldp        w8, w10, [x8, #4]
+00010768 ldr        x9, [x9, #8]
+0001076c and        w10, w10, #0xf
+00010770 bfi        w10, w8, #4, #0xa
+00010774 orr        w0, w10, w19
+00010778 blr        x9
+0001077c mov        w0, #9
+00010780 mov        w1, #0x98
+00010784 bl         #0x2e8c4
+00010788 mov        w0, #0xa
+0001078c bl         #0x21928
+00010790 adrp       x1, #0x3d000
+00010794 mov        w0, #-0x80000000
+00010798 add        x1, x1, #0xde2
+0001079c bl         #0x4364
+000107a0 mov        w0, wzr
+000107a4 ldp        x20, x19, [sp, #0x20]
+000107a8 ldp        x29, x30, [sp, #0x10]
+000107ac add        sp, sp, #0x30
+000107b0 ret        
+
+## DisplayDxe: ResetInfo reorder and defaults
+## RVA 0x13714 .. 0x13788 (exclusive)
+00013714 ldr        w13, [x19, #0x348]
+00013718 ldr        w9, [x19, #0x344]
+0001371c ldr        w12, [x19, #0x338]
+00013720 ldr        w11, [x19, #0x4d0]
+00013724 ldr        w8, [x19, #0x33c]
+00013728 ldr        w10, [x19, #0x340]
+0001372c bfi        x9, x13, #0x20, #0x20
+00013730 cmp        w12, #6
+00013734 stp        w11, w12, [sp, #8]
+00013738 str        x9, [sp, #0x18]
+0001373c stp        w10, w8, [sp, #0x10]
+00013740 b.lo       #0x1374c
+00013744 mov        w11, #1
+00013748 str        w11, [sp, #0xc]
+0001374c cbnz       w10, #0x13758
+00013750 mov        w10, #0x3e8
+00013754 str        w10, [sp, #0x10]
+00013758 fmov       d0, x9
+0001375c cbnz       w8, #0x13768
+00013760 mov        w8, #0x32
+00013764 str        w8, [sp, #0x14]
+00013768 fmov       w8, s0
+0001376c cbnz       w8, #0x13778
+00013770 mov        w8, #0x2710
+00013774 str        w8, [sp, #0x18]
+00013778 ldr        w0, [x19]
+0001377c add        x2, sp, #8
+00013780 mov        w1, #8
+00013784 bl         #0xc5e0
+
+## DisplayDxe: M81 ResetInfo default sequence selection
+## RVA 0x10de4 .. 0x10e70 (exclusive)
+00010de4 ldr        w8, [x19, #4]
+00010de8 sub        w8, w8, #2
+00010dec cmp        w8, #3
+00010df0 b.hi       #0x10e20
+00010df4 adrp       x9, #0x3d000
+00010df8 add        x9, x9, #0x1a0
+00010dfc adr        x10, #0x10e0c
+00010e00 ldrb       w11, [x9, x8]
+00010e04 add        x10, x10, x11, lsl #2
+00010e08 br         x10
+00010e0c ldr        x0, [x29, #0x18]
+00010e10 mov        x1, x19
+00010e14 mov        w2, wzr
+00010e18 mov        w3, #1
+00010e1c b          #0x10e5c
+00010e20 ldr        x0, [x29, #0x18]
+00010e24 mov        x1, x19
+00010e28 mov        w2, #1
+00010e2c mov        w3, wzr
+00010e30 b          #0x10e44
+00010e34 ldr        x0, [x29, #0x18]
+00010e38 mov        x1, x19
+00010e3c mov        w2, wzr
+00010e40 mov        w3, #1
+00010e44 mov        w4, #1
+00010e48 b          #0x10e60
+00010e4c ldr        x0, [x29, #0x18]
+00010e50 mov        x1, x19
+00010e54 mov        w2, #1
+00010e58 mov        w3, wzr
+00010e5c mov        w4, wzr
+00010e60 bl         #0x10e7c
+00010e64 ldr        w0, [x19, #0x10]
+00010e68 bl         #0x21954
+00010e6c mov        w0, wzr
+
+## DisplayDxe: M81 reset writes and microsecond delays
+## RVA 0x10e7c .. 0x10f10 (exclusive)
+00010e7c stp        x29, x30, [sp, #-0x40]!
+00010e80 str        x23, [sp, #0x10]
+00010e84 mov        x29, sp
+00010e88 stp        x22, x21, [sp, #0x20]
+00010e8c stp        x20, x19, [sp, #0x30]
+00010e90 mov        x21, x1
+00010e94 mov        w23, #0x4000
+00010e98 movk       w23, #0x2006, lsl #16
+00010e9c ldr        x9, [x0, #0x20]
+00010ea0 mov        x22, x0
+00010ea4 mov        w1, w2
+00010ea8 ldr        w8, [x21]
+00010eac mov        w0, w23
+00010eb0 mov        w19, w4
+00010eb4 mov        w20, w3
+00010eb8 bfi        w0, w8, #4, #0xa
+00010ebc blr        x9
+00010ec0 ldr        w0, [x21, #8]
+00010ec4 bl         #0x21954
+00010ec8 ldr        w8, [x21]
+00010ecc mov        w0, w23
+00010ed0 ldr        x9, [x22, #0x20]
+00010ed4 mov        w1, w20
+00010ed8 bfi        w0, w8, #4, #0xa
+00010edc blr        x9
+00010ee0 ldr        w0, [x21, #0xc]
+00010ee4 bl         #0x21954
+00010ee8 ldr        w8, [x21]
+00010eec mov        w1, w19
+00010ef0 ldr        x2, [x22, #0x20]
+00010ef4 ldp        x20, x19, [sp, #0x30]
+00010ef8 bfi        w23, w8, #4, #0xa
+00010efc orr        w0, w23, #0x80000
+00010f00 ldp        x22, x21, [sp, #0x20]
+00010f04 ldr        x23, [sp, #0x10]
+00010f08 ldp        x29, x30, [sp], #0x40
+00010f0c br         x2
+
+## DisplayDxe: DSIDriver_Close display/clock/device calls
+## RVA 0x12440 .. 0x12578 (exclusive)
+00012440 stp        x29, x30, [sp, #-0x50]!
+00012444 str        x25, [sp, #0x10]
+00012448 mov        x29, sp
+0001244c stp        x24, x23, [sp, #0x20]
+00012450 stp        x22, x21, [sp, #0x30]
+00012454 stp        x20, x19, [sp, #0x40]
+00012458 cmp        w0, #8
+0001245c mov        w8, #0x38
+00012460 csel       w22, w0, wzr, lo
+00012464 adrp       x23, #0x52000
+00012468 add        x23, x23, #0xb58
+0001246c umaddl     x21, w22, w8, x23
+00012470 ldr        w8, [x21, #0x28]!
+00012474 cbnz       w8, #0x12480
+00012478 mov        w8, #1
+0001247c str        w8, [x21]
+00012480 mov        w8, #0x38
+00012484 adrp       x20, #0x3e000
+00012488 mov        x19, xzr
+0001248c mov        w25, #1
+00012490 madd       x8, x22, x8, x23
+00012494 add        x20, x20, #0x5e2
+00012498 add        x24, x8, #0x18
+0001249c ldr        x0, [x24, x19, lsl #3]
+000124a0 add        x1, x29, #0x1c
+000124a4 add        x2, x29, #0x18
+000124a8 bl         #0x143f8
+000124ac ldr        w8, [x29, #0x18]
+000124b0 cbz        w8, #0x124e4
+000124b4 ldr        x0, [x24, x19, lsl #3]
+000124b8 bl         #0x13b20
+000124bc cbnz       w0, #0x124fc
+000124c0 ldr        w8, [x29, #0x1c]
+000124c4 cmp        w8, #0
+000124c8 cinc       w0, w25, ne
+000124cc bl         #0x1ac48
+000124d0 cbz        w0, #0x124e4
+000124d4 mov        w0, #2
+000124d8 mov        x1, x20
+000124dc mov        w2, w19
+000124e0 bl         #0x21550
+000124e4 ldr        w8, [x21]
+000124e8 add        x19, x19, #1
+000124ec cmp        x19, x8
+000124f0 b.lo       #0x1249c
+000124f4 cbnz       w8, #0x12518
+000124f8 b          #0x12560
+000124fc adrp       x1, #0x3e000
+00012500 mov        w0, #2
+00012504 add        x1, x1, #0x5ae
+00012508 mov        w2, w19
+0001250c bl         #0x21550
+00012510 ldr        w8, [x21]
+00012514 cbz        w8, #0x12560
+00012518 mov        w8, #0x38
+0001251c mov        x19, xzr
+00012520 madd       x8, x22, x8, x23
+00012524 add        x20, x8, #8
+00012528 ldr        x0, [x20, x19, lsl #3]
+0001252c mov        w1, wzr
+00012530 bl         #0x13a10
+00012534 cbnz       w0, #0x1254c
+00012538 ldr        w8, [x21]
+0001253c add        x19, x19, #1
+00012540 cmp        x19, x8
+00012544 b.lo       #0x12528
+00012548 b          #0x12560
+0001254c adrp       x1, #0x3e000
+00012550 mov        w0, #2
+00012554 add        x1, x1, #0x61b
+00012558 mov        w2, w19
+0001255c bl         #0x21550
+00012560 ldp        x20, x19, [sp, #0x40]
+00012564 ldp        x22, x21, [sp, #0x30]
+00012568 ldp        x24, x23, [sp, #0x20]
+0001256c ldr        x25, [sp, #0x10]
+00012570 ldp        x29, x30, [sp], #0x50
+00012574 ret        
+
+## DisplayDxe: DSI Display_Close and clock release
+## RVA 0x149d0 .. 0x14a98 (exclusive)
+000149d0 stp        x29, x30, [sp, #-0x30]!
+000149d4 str        x21, [sp, #0x10]
+000149d8 mov        x29, sp
+000149dc stp        x20, x19, [sp, #0x20]
+000149e0 ubfx       x19, x0, #0x10, #0x10
+000149e4 cmp        w19, #2
+000149e8 mov        w11, #0xc78
+000149ec and        w8, w0, #0xffff
+000149f0 csel       w9, w19, wzr, lo
+000149f4 adrp       x10, #0x52000
+000149f8 cmp        w8, #4
+000149fc add        x10, x10, #0xd18
+00014a00 csel       w8, w8, wzr, lo
+00014a04 umaddl     x11, w9, w11, x10
+00014a08 mov        w12, #0x2e4
+00014a0c umaddl     x11, w8, w12, x11
+00014a10 ldr        w11, [x11, #0x2bc]
+00014a14 cbz        w11, #0x14a2c
+00014a18 mov        w11, #0xc78
+00014a1c madd       x11, x9, x11, x10
+00014a20 ldr        w12, [x11, #0xc]
+00014a24 sub        w12, w12, #1
+00014a28 str        w12, [x11, #0xc]
+00014a2c mov        w11, #0xc78
+00014a30 mov        w20, #0x2e4
+00014a34 mov        w0, w19
+00014a38 mov        w1, #2
+00014a3c madd       x9, x9, x11, x10
+00014a40 madd       x8, x8, x20, x9
+00014a44 ldr        w10, [x9, #0x10]
+00014a48 add        x21, x8, #0x8c
+00014a4c sub        w10, w10, #1
+00014a50 str        w10, [x9, #0x10]
+00014a54 bl         #0x15ef4
+00014a58 mov        w0, w19
+00014a5c bl         #0x15cec
+00014a60 mov        x0, x21
+00014a64 mov        w1, w20
+00014a68 bl         #0x15914
+00014a6c mov        w0, w19
+00014a70 mov        w1, wzr
+00014a74 bl         #0x15e38
+00014a78 mov        w8, #0x1a1a0000
+00014a7c orr        w0, w19, w8
+00014a80 bl         #0x15bac
+00014a84 ldp        x20, x19, [sp, #0x20]
+00014a88 mov        w0, wzr
+00014a8c ldr        x21, [sp, #0x10]
+00014a90 ldp        x29, x30, [sp], #0x30
+00014a94 ret        
+
+## DisplayDxe: DSI Device_Close and PHY callback
+## RVA 0x146ec .. 0x14778 (exclusive)
+000146ec sub        sp, sp, #0x60
+000146f0 stp        x29, x30, [sp, #0x40]
+000146f4 add        x29, sp, #0x40
+000146f8 stp        x20, x19, [sp, #0x50]
+000146fc mov        w8, #-0x1a1a0001
+00014700 mov        w9, #0xc78
+00014704 and        w19, w0, w8
+00014708 adrp       x10, #0x52000
+0001470c cmp        w19, #2
+00014710 add        x10, x10, #0xd18
+00014714 csel       w8, w19, wzr, lo
+00014718 umaddl     x20, w8, w9, x10
+0001471c ldr        w8, [x20, #8]!
+00014720 subs       w8, w8, #1
+00014724 str        w8, [x20]
+00014728 b.eq       #0x14734
+0001472c mov        w0, #9
+00014730 b          #0x14768
+00014734 tbnz       w1, #0, #0x14758
+00014738 mov        w1, #0x34
+0001473c add        x0, sp, #8
+00014740 bl         #0x15914
+00014744 add        x1, sp, #8
+00014748 mov        w0, w19
+0001474c bl         #0x16578
+00014750 mov        w0, w19
+00014754 bl         #0x17f68
+00014758 mov        w1, #0xc78
+0001475c mov        x0, x20
+00014760 bl         #0x15914
+00014764 mov        w0, wzr
+00014768 ldp        x20, x19, [sp, #0x50]
+0001476c ldp        x29, x30, [sp, #0x40]
+00014770 add        sp, sp, #0x60
+00014774 ret        
+
+## DisplayDxe: DSI backend HW_VERSION 2.6 selection
+## RVA 0x17e90 .. 0x17f80 (exclusive)
+00017e90 sub        sp, sp, #0x20
+00017e94 stp        x29, x30, [sp, #0x10]
+00017e98 add        x29, sp, #0x10
+00017e9c mov        x0, sp
+00017ea0 bl         #0x1654c
+00017ea4 ldr        w8, [sp]
+00017ea8 cmp        w8, #2
+00017eac b.ne       #0x17f38
+00017eb0 ldr        w8, [sp, #4]
+00017eb4 cmp        w8, #6
+00017eb8 b.ne       #0x17f38
+00017ebc adrp       x8, #0x54000
+00017ec0 adrp       x9, #0x19000
+00017ec4 adrp       x10, #0x18000
+00017ec8 add        x8, x8, #0x618
+00017ecc add        x9, x9, #0xdf4
+00017ed0 add        x10, x10, #0xa8
+00017ed4 adrp       x11, #0x18000
+00017ed8 add        x11, x11, #0x12c
+00017edc stp        x9, x10, [x8]
+00017ee0 adrp       x9, #0x18000
+00017ee4 adrp       x10, #0x18000
+00017ee8 add        x9, x9, #0xe4
+00017eec add        x10, x10, #0x124
+00017ef0 stp        x9, x10, [x8, #0x10]
+00017ef4 adrp       x9, #0x18000
+00017ef8 add        x9, x9, #0x55c
+00017efc adrp       x10, #0x19000
+00017f00 add        x10, x10, #0xdec
+00017f04 stp        x11, x9, [x8, #0x20]
+00017f08 adrp       x9, #0x19000
+00017f0c add        x9, x9, #0x10c
+00017f10 stp        x9, x10, [x8, #0x30]
+00017f14 adrp       x9, #0x19000
+00017f18 adrp       x10, #0x1a000
+00017f1c add        x9, x9, #0xdf8
+00017f20 add        x10, x10, #0x74
+00017f24 stp        x9, x10, [x8, #0x40]
+00017f28 adrp       x9, #0x1a000
+00017f2c add        x9, x9, #0x118
+00017f30 str        x9, [x8, #0x50]
+00017f34 b          #0x17f5c
+00017f38 adrp       x0, #0x54000
+00017f3c mov        w1, #0x58
+00017f40 add        x0, x0, #0x618
+00017f44 bl         #0x15914
+00017f48 ldp        w2, w3, [sp]
+00017f4c adrp       x1, #0x3f000
+00017f50 mov        w0, wzr
+00017f54 add        x1, x1, #0x684
+00017f58 bl         #0x21550
+00017f5c ldp        x29, x30, [sp, #0x10]
+00017f60 add        sp, sp, #0x20
+00017f64 ret        
+00017f68 adrp       x8, #0x54000
+00017f6c add        x8, x8, #0x618
+00017f70 ldr        x1, [x8, #8]
+00017f74 cbz        x1, #0x17f7c
+00017f78 br         x1
+00017f7c ret        
+
+## DisplayDxe: PHY PLL_CNTRL and CTRL_0 zero writes
+## RVA 0x180a8 .. 0x180e4 (exclusive)
+000180a8 stp        x29, x30, [sp, #-0x10]!
+000180ac mov        x29, sp
+000180b0 bl         #0x15be8
+000180b4 adrp       x8, #0x54000
+000180b8 mov        w10, #0x4424
+000180bc movk       w10, #9, lsl #16
+000180c0 ldr        x9, [x8, #0x670]
+000180c4 add        x9, x0, x9
+000180c8 add        x9, x9, x10
+000180cc str        wzr, [x9, #0x18]
+000180d0 ldr        x8, [x8, #0x670]
+000180d4 add        x8, x0, x8
+000180d8 str        wzr, [x8, x10]
+000180dc ldp        x29, x30, [sp], #0x10
+000180e0 ret        
+
+## DisplayDxe: Host soft reset and timer reset writes
+## RVA 0x15cec .. 0x15d84 (exclusive)
+00015cec cbz        w0, #0x15d00
+00015cf0 cmp        w0, #1
+00015cf4 b.ne       #0x15d08
+00015cf8 mov        w8, #0x2000
+00015cfc b          #0x15d18
+00015d00 mov        x8, xzr
+00015d04 b          #0x15d18
+00015d08 adrp       x9, #0x54000
+00015d0c mov        w10, #1
+00015d10 mov        x8, xzr
+00015d14 str        w10, [x9, #0x610]
+00015d18 adrp       x9, #0x54000
+00015d1c mov        w10, #0x40bc
+00015d20 movk       w10, #9, lsl #16
+00015d24 add        x12, x10, #0x5c
+00015d28 ldr        x11, [x9, #0x670]
+00015d2c orr        x12, x8, x12
+00015d30 ldr        w13, [x12, x11]
+00015d34 orr        w14, w13, #1
+00015d38 and        w13, w13, #0xfffffffe
+00015d3c str        w14, [x12, x11]
+00015d40 mov        w14, #0xea60
+00015d44 ldr        x11, [x9, #0x670]
+00015d48 movk       w14, #4, lsl #16
+00015d4c str        w13, [x12, x11]
+00015d50 orr        x12, x8, x10
+00015d54 ldr        x11, [x9, #0x670]
+00015d58 add        x10, x10, #0x130
+00015d5c orr        x8, x8, x10
+00015d60 mov        w10, #1
+00015d64 ldr        w13, [x12, x11]
+00015d68 bfxil      w13, w14, #0, #0x14
+00015d6c str        w13, [x12, x11]
+00015d70 ldr        x11, [x9, #0x670]
+00015d74 str        w10, [x8, x11]
+00015d78 ldr        x9, [x9, #0x670]
+00015d7c str        wzr, [x8, x9]
+00015d80 ret        
+
+## DisplayDxe: MDPStopPipe top level and polling
+## RVA 0x1f8e4 .. 0x1fb30 (exclusive)
+0001f8e4 cbz        x0, #0x1fb1c
+0001f8e8 sub        sp, sp, #0x160
+0001f8ec stp        x29, x30, [sp, #0x100]
+0001f8f0 add        x29, sp, #0x100
+0001f8f4 stp        x28, x27, [sp, #0x110]
+0001f8f8 stp        x26, x25, [sp, #0x120]
+0001f8fc stp        x24, x23, [sp, #0x130]
+0001f900 stp        x22, x21, [sp, #0x140]
+0001f904 stp        x20, x19, [sp, #0x150]
+0001f908 ldr        w8, [x0, #0x18]
+0001f90c mov        x19, x0
+0001f910 cbz        w8, #0x1f9e4
+0001f914 adrp       x21, #0x41000
+0001f918 adrp       x22, #0x41000
+0001f91c mov        x23, xzr
+0001f920 add        x24, x19, #0xe8
+0001f924 add        x25, sp, #0x30
+0001f928 add        x26, sp, #0x28
+0001f92c add        x27, sp, #0x20
+0001f930 mov        w20, #0x14
+0001f934 add        x28, sp, #8
+0001f938 add        x21, x21, #0xc9c
+0001f93c add        x22, x22, #0xce8
+0001f940 ldr        w8, [x24]
+0001f944 cbz        w8, #0x1f9d0
+0001f948 add        x0, sp, #0x38
+0001f94c mov        w1, #0x70
+0001f950 bl         #0x218f0
+0001f954 add        x0, sp, #0x30
+0001f958 mov        w1, #4
+0001f95c bl         #0x218f0
+0001f960 add        x0, sp, #0x28
+0001f964 mov        w1, #4
+0001f968 bl         #0x218f0
+0001f96c add        x0, sp, #0x20
+0001f970 mov        w1, #8
+0001f974 bl         #0x218f0
+0001f978 add        x0, sp, #8
+0001f97c mov        x1, x20
+0001f980 bl         #0x218f0
+0001f984 stp        x27, x25, [sp, #0x80]
+0001f988 add        x1, sp, #0x38
+0001f98c str        x26, [sp, #0x90]
+0001f990 mov        w2, wzr
+0001f994 str        x28, [sp, #0xa0]
+0001f998 ldr        w0, [x24]
+0001f99c bl         #0x32a94
+0001f9a0 cbz        w0, #0x1f9b0
+0001f9a4 mov        w0, #1
+0001f9a8 mov        x1, x22
+0001f9ac bl         #0x21550
+0001f9b0 ldr        w0, [x24]
+0001f9b4 mov        w1, wzr
+0001f9b8 mov        w2, wzr
+0001f9bc bl         #0x33744
+0001f9c0 cbz        w0, #0x1f9d0
+0001f9c4 mov        w0, #1
+0001f9c8 mov        x1, x21
+0001f9cc bl         #0x21550
+0001f9d0 ldr        w8, [x19, #0x18]
+0001f9d4 add        x23, x23, #1
+0001f9d8 add        x24, x24, #0x18
+0001f9dc cmp        x23, x8
+0001f9e0 b.lo       #0x1f940
+0001f9e4 ldr        w8, [x19, #0x24]
+0001f9e8 mov        w9, #0x3c
+0001f9ec sub        x0, x29, #0x50
+0001f9f0 mov        w1, #0x40
+0001f9f4 stur       w9, [x29, #-0xc]
+0001f9f8 cmp        w8, #0x14
+0001f9fc csel       w20, w8, wzr, lo
+0001fa00 bl         #0x218f0
+0001fa04 sub        x0, x29, #0x58
+0001fa08 mov        w1, #4
+0001fa0c sub        x21, x29, #0x58
+0001fa10 bl         #0x218f0
+0001fa14 mov        w8, #0x18
+0001fa18 adrp       x9, #0x41000
+0001fa1c add        x9, x9, #0x338
+0001fa20 sub        x1, x29, #0xc
+0001fa24 umaddl     x8, w20, w8, x9
+0001fa28 mov        x0, x19
+0001fa2c stur       x21, [x29, #-0x40]
+0001fa30 ldr        w8, [x8, #4]
+0001fa34 stur       w8, [x29, #-0x20]
+0001fa38 bl         #0x1cff0
+0001fa3c mov        w21, #0x11
+0001fa40 cbnz       w0, #0x1fa54
+0001fa44 ldur       w8, [x29, #-0xc]
+0001fa48 cbz        w8, #0x1fa54
+0001fa4c add        w9, w8, #0x3e7
+0001fa50 udiv       w21, w9, w8
+0001fa54 ldr        w8, [x19, #0x18]
+0001fa58 cbz        w8, #0x1fb24
+0001fa5c adrp       x20, #0x41000
+0001fa60 mov        x23, xzr
+0001fa64 mov        w22, #6
+0001fa68 mov        w24, #0x18
+0001fa6c add        x20, x20, #0xebf
+0001fa70 cbz        w21, #0x1facc
+0001fa74 madd       x8, x23, x24, x19
+0001fa78 mov        w25, wzr
+0001fa7c add        x26, x8, #0xe8
+0001fa80 ldr        w0, [x26]
+0001fa84 sub        x1, x29, #0x50
+0001fa88 mov        w2, wzr
+0001fa8c bl         #0x332a8
+0001fa90 cbz        w0, #0x1faa4
+0001fa94 mov        w0, #1
+0001fa98 mov        x1, x20
+0001fa9c bl         #0x21550
+0001faa0 b          #0x1faac
+0001faa4 ldur       w8, [x29, #-0x58]
+0001faa8 cbz        w8, #0x1fac4
+0001faac mov        w0, #1
+0001fab0 bl         #0x21928
+0001fab4 add        w25, w25, #1
+0001fab8 cmp        w25, w21
+0001fabc b.ne       #0x1fa80
+0001fac0 b          #0x1fac8
+0001fac4 mov        w22, wzr
+0001fac8 ldr        w8, [x19, #0x18]
+0001facc add        x23, x23, #1
+0001fad0 cmp        x23, w8, uxtw
+0001fad4 b.lo       #0x1fa70
+0001fad8 cbz        w22, #0x1faec
+0001fadc adrp       x1, #0x41000
+0001fae0 mov        w0, #1
+0001fae4 add        x1, x1, #0xd10
+0001fae8 bl         #0x21550
+0001faec ldr        x0, [x19, #0x518]
+0001faf0 cbz        x0, #0x1faf8
+0001faf4 bl         #0x21924
+0001faf8 ldp        x20, x19, [sp, #0x150]
+0001fafc mov        w0, wzr
+0001fb00 ldp        x22, x21, [sp, #0x140]
+0001fb04 ldp        x24, x23, [sp, #0x130]
+0001fb08 ldp        x26, x25, [sp, #0x120]
+0001fb0c ldp        x28, x27, [sp, #0x110]
+0001fb10 ldp        x29, x30, [sp, #0x100]
+0001fb14 add        sp, sp, #0x160
+0001fb18 ret        
+0001fb1c mov        w0, #2
+0001fb20 ret        
+0001fb24 mov        w22, #6
+0001fb28 cbnz       w22, #0x1fadc
+0001fb2c b          #0x1faec
+
+## DisplayDxe: HAL interface timing enable writer
+## RVA 0x33744 .. 0x33794 (exclusive)
+00033744 cmp        w0, #9
+00033748 b.hi       #0x3378c
+0003374c sub        w8, w0, #1
+00033750 cmp        w8, #8
+00033754 b.ls       #0x33760
+00033758 mov        x8, xzr
+0003375c b          #0x3376c
+00033760 adrp       x8, #0x58000
+00033764 add        x8, x8, #0xc08
+00033768 ldr        x8, [x8, w0, uxtw #3]
+0003376c adrp       x9, #0x54000
+00033770 add        x8, x8, #0x35, lsl #12
+00033774 ldr        x10, [x9, #0x670]
+00033778 str        w1, [x8, x10]
+0003377c ldr        x9, [x9, #0x670]
+00033780 add        x8, x8, x9
+00033784 mov        w9, #1
+00033788 str        w9, [x8, #0x210]
+0003378c mov        w0, wzr
+00033790 ret        
+
+## DisplayDxe: Clock group selector and reverse release
+## RVA 0x1acf0 .. 0x1ae58 (exclusive)
+0001acf0 ldr        x8, [sp, #8]
+0001acf4 cbz        x8, #0x1ac78
+0001acf8 mov        w0, wzr
+0001acfc cmp        w19, #6
+0001ad00 b.hi       #0x1acd4
+0001ad04 adrp       x10, #0x3f000
+0001ad08 mov        w9, w19
+0001ad0c add        x10, x10, #0x917
+0001ad10 adr        x11, #0x1acd4
+0001ad14 ldrb       w12, [x10, x9]
+0001ad18 add        x11, x11, x12, lsl #2
+0001ad1c br         x11
+0001ad20 add        x9, x8, #0x10
+0001ad24 b          #0x1ad4c
+0001ad28 add        x9, x8, #0x18
+0001ad2c b          #0x1ad4c
+0001ad30 add        x9, x8, #0x20
+0001ad34 b          #0x1ad4c
+0001ad38 add        x9, x8, #0x28
+0001ad3c b          #0x1ad4c
+0001ad40 add        x9, x8, #0x30
+0001ad44 b          #0x1ad4c
+0001ad48 add        x9, x8, #0x38
+0001ad4c ldr        x9, [x9]
+0001ad50 cbz        x9, #0x1ae50
+0001ad54 mov        w10, #-1
+0001ad58 mov        w11, #0x58
+0001ad5c add        w10, w10, #1
+0001ad60 umull      x12, w10, w11
+0001ad64 ldrb       w12, [x9, x12]
+0001ad68 cbnz       w12, #0x1ad5c
+0001ad6c tbnz       w10, #0x1f, #0x1ae50
+0001ad70 mov        w8, w10
+0001ad74 umaddl     x20, w10, w11, x9
+0001ad78 mov        w21, #0xf800
+0001ad7c sub        w22, w19, #1
+0001ad80 add        x23, x8, #1
+0001ad84 movk       w21, #0x124, lsl #16
+0001ad88 mov        w24, #0x7fffffff
+0001ad8c mov        w25, #1
+0001ad90 ldrb       w8, [x20, #0x50]
+0001ad94 tbnz       w8, #0, #0x1adb0
+0001ad98 ldr        x0, [sp, #0x10]
+0001ad9c add        x2, x29, #0x18
+0001ada0 mov        x1, x20
+0001ada4 ldr        x8, [x0, #8]
+0001ada8 blr        x8
+0001adac cbz        x0, #0x1adc4
+0001adb0 sub        x23, x23, #1
+0001adb4 sub        x20, x20, #0x58
+0001adb8 cmp        x23, #0
+0001adbc b.gt       #0x1ad90
+0001adc0 b          #0x1ae4c
+0001adc4 cmp        w22, #1
+0001adc8 b.hi       #0x1adec
+0001adcc ldr        x0, [sp, #0x10]
+0001add0 sub        x4, x29, #4
+0001add4 ldr        x1, [x29, #0x18]
+0001add8 mov        w2, w21
+0001addc mov        w3, #3
+0001ade0 stur       wzr, [x29, #-4]
+0001ade4 ldr        x8, [x0, #0x30]
+0001ade8 blr        x8
+0001adec ldr        w8, [x20, #0x54]
+0001adf0 tbnz       w8, #0x1f, #0x1adb0
+0001adf4 subs       w9, w8, #1
+0001adf8 b.ne       #0x1ae30
+0001adfc str        wzr, [x20, #0x54]
+0001ae00 ldr        x0, [sp, #0x10]
+0001ae04 ldr        x1, [x29, #0x18]
+0001ae08 ldr        x8, [x0, #0x18]
+0001ae0c blr        x8
+0001ae10 cbz        x0, #0x1adb0
+0001ae14 ldr        w8, [x20, #0x54]
+0001ae18 tbnz       w8, #0x1f, #0x1adb0
+0001ae1c cmp        w8, w24
+0001ae20 b.eq       #0x1adb0
+0001ae24 cbnz       w8, #0x1ae40
+0001ae28 str        w25, [x20, #0x54]
+0001ae2c b          #0x1adb0
+0001ae30 cmp        w8, #2
+0001ae34 b.lt       #0x1adb0
+0001ae38 str        w9, [x20, #0x54]
+0001ae3c b          #0x1adb0
+0001ae40 add        w8, w8, #1
+0001ae44 str        w8, [x20, #0x54]
+0001ae48 b          #0x1adb0
+0001ae4c ldr        x8, [sp, #8]
+0001ae50 mov        w0, wzr
+0001ae54 cbnz       w19, #0x1acd4
+
+## DisplayDxe: GDSC and common-clock cleanup
+## RVA 0x1ae58 .. 0x1afc8 (exclusive)
+0001ae58 cbz        x8, #0x1acd4
+0001ae5c ldr        x9, [x8]
+0001ae60 cbz        x9, #0x1afbc
+0001ae64 ldrb       w10, [x9]
+0001ae68 cbz        w10, #0x1aed8
+0001ae6c mov        x20, xzr
+0001ae70 mov        w8, #0x44
+0001ae74 ldrb       w10, [x9, x8]
+0001ae78 add        x20, x20, #1
+0001ae7c add        x8, x8, #0x44
+0001ae80 cbnz       w10, #0x1ae74
+0001ae84 sub        x21, x8, #0x48
+0001ae88 ldr        x19, [sp, #0x10]
+0001ae8c add        x1, x9, x21
+0001ae90 add        x2, x29, #0x18
+0001ae94 ldr        w22, [x1], #0xffffffffffffffc0
+0001ae98 ldr        x8, [x19, #0x50]
+0001ae9c mov        x0, x19
+0001aea0 blr        x8
+0001aea4 tbnz       w22, #0, #0x1aebc
+0001aea8 cbnz       x0, #0x1aebc
+0001aeac ldr        x8, [x19, #0x60]
+0001aeb0 mov        x0, x19
+0001aeb4 ldr        x1, [x29, #0x18]
+0001aeb8 blr        x8
+0001aebc ldr        x8, [sp, #8]
+0001aec0 cmp        x20, #2
+0001aec4 b.lt       #0x1aed8
+0001aec8 ldr        x9, [x8]
+0001aecc sub        x20, x20, #1
+0001aed0 sub        x21, x21, #0x44
+0001aed4 b          #0x1ae88
+0001aed8 ldr        x8, [x8, #8]
+0001aedc cbz        x8, #0x1afbc
+0001aee0 mov        w9, #-1
+0001aee4 mov        w10, #0x58
+0001aee8 add        w9, w9, #1
+0001aeec umull      x11, w9, w10
+0001aef0 ldrb       w11, [x8, x11]
+0001aef4 cbnz       w11, #0x1aee8
+0001aef8 tbnz       w9, #0x1f, #0x1afbc
+0001aefc mov        w11, w9
+0001af00 umaddl     x19, w9, w10, x8
+0001af04 adrp       x20, #0x40000
+0001af08 add        x21, x11, #1
+0001af0c mov        w22, #0x7fffffff
+0001af10 mov        w23, #1
+0001af14 add        x20, x20, #0xe
+0001af18 ldrb       w8, [x19, #0x50]
+0001af1c tbnz       w8, #0, #0x1af38
+0001af20 ldr        x0, [sp, #0x10]
+0001af24 add        x2, x29, #0x18
+0001af28 mov        x1, x19
+0001af2c ldr        x8, [x0, #8]
+0001af30 blr        x8
+0001af34 cbz        x0, #0x1af4c
+0001af38 sub        x21, x21, #1
+0001af3c sub        x19, x19, #0x58
+0001af40 cmp        x21, #0
+0001af44 b.gt       #0x1af18
+0001af48 b          #0x1afbc
+0001af4c ldr        w8, [x19, #0x54]
+0001af50 tbnz       w8, #0x1f, #0x1af38
+0001af54 subs       w9, w8, #1
+0001af58 b.ne       #0x1afa0
+0001af5c str        wzr, [x19, #0x54]
+0001af60 ldr        x0, [sp, #0x10]
+0001af64 ldr        x1, [x29, #0x18]
+0001af68 ldr        x8, [x0, #0x18]
+0001af6c blr        x8
+0001af70 cbz        x0, #0x1af38
+0001af74 mov        w0, #-0x80000000
+0001af78 mov        x1, x20
+0001af7c mov        x2, x19
+0001af80 bl         #0x4364
+0001af84 ldr        w8, [x19, #0x54]
+0001af88 tbnz       w8, #0x1f, #0x1af38
+0001af8c cmp        w8, w22
+0001af90 b.eq       #0x1af38
+0001af94 cbnz       w8, #0x1afb0
+0001af98 str        w23, [x19, #0x54]
+0001af9c b          #0x1af38
+0001afa0 cmp        w8, #2
+0001afa4 b.lt       #0x1af38
+0001afa8 str        w9, [x19, #0x54]
+0001afac b          #0x1af38
+0001afb0 add        w8, w8, #1
+0001afb4 str        w8, [x19, #0x54]
+0001afb8 b          #0x1af38
+0001afbc mov        w0, wzr
+0001afc0 bl         #0x1a92c
+0001afc4 b          #0x1ac78
+
+## DisplayDxe: millisecond vs microsecond Stall wrappers
+## RVA 0x21928 .. 0x21968 (exclusive)
+00021928 adrp       x8, #0x58000
+0002192c ldr        w8, [x8, #0x30]
+00021930 cmp        w8, #1
+00021934 b.ne       #0x2193c
+00021938 b          #0x7514
+0002193c adrp       x8, #0x51000
+00021940 mov        w9, #0x3e8
+00021944 mul        w0, w0, w9
+00021948 ldr        x8, [x8, #0xac0]
+0002194c ldr        x1, [x8, #0xf8]
+00021950 br         x1
+00021954 adrp       x8, #0x51000
+00021958 and        x0, x0, #0xffffffff
+0002195c ldr        x8, [x8, #0xac0]
+00021960 ldr        x1, [x8, #0xf8]
+00021964 br         x1
+
+## DisplayDxe: DisplaySplashBufferInfo variable writer
+## RVA 0x21be4 .. 0x21c34 (exclusive)
+00021be4 ldr        w8, [x22, #0xa8]
+00021be8 mov        w9, #1
+00021bec cmp        x0, #0
+00021bf0 mov        w1, w20
+00021bf4 mov        w10, #5
+00021bf8 str        w20, [sp, #0x10]
+00021bfc csel       w21, wzr, w10, eq
+00021c00 mov        w0, w8
+00021c04 stp        w9, w8, [sp, #8]
+00021c08 bl         #0x24a48
+00021c0c ldr        x8, [x24, #0xaa8]
+00021c10 adrp       x0, #0x42000
+00021c14 adrp       x1, #0x48000
+00021c18 add        x0, x0, #0x7c
+00021c1c add        x1, x1, #0x38
+00021c20 add        x4, sp, #8
+00021c24 mov        w2, #6
+00021c28 mov        w3, #0xc
+00021c2c ldr        x8, [x8, #0x58]
+00021c30 blr        x8
+
+## DisplayDxe: MDPExitBoot conditional shutdown flag
+## RVA 0x1ce00 .. 0x1ce9c (exclusive)
+0001ce00 ldr        w8, [x25, x19, lsl #2]
+0001ce04 cbz        w8, #0x1cf28
+0001ce08 ldur       w8, [x24, #-0xd8]
+0001ce0c tst        w8, #0x1000000
+0001ce10 csinc      w23, w23, wzr, ne
+0001ce14 tbz        w8, #0x18, #0x1ce9c
+0001ce18 sub        x8, x24, #0x594
+0001ce1c ldr        w8, [x8]
+0001ce20 cmp        w8, #1
+0001ce24 b.ne       #0x1ce9c
+0001ce28 add        x0, x29, #0x18
+0001ce2c mov        w1, #4
+0001ce30 bl         #0x218f0
+0001ce34 mov        w0, w19
+0001ce38 str        wzr, [x29, #0x18]
+0001ce3c bl         #0x1cb50
+0001ce40 cbz        w0, #0x1ce54
+0001ce44 mov        w2, w0
+0001ce48 mov        w0, #1
+0001ce4c mov        x1, x22
+0001ce50 bl         #0x21550
+0001ce54 add        x1, x29, #0x18
+0001ce58 mov        w0, w19
+0001ce5c mov        w2, wzr
+0001ce60 bl         #0x1b870
+0001ce64 cbz        w0, #0x1ce78
+0001ce68 mov        w2, w0
+0001ce6c mov        w0, #1
+0001ce70 mov        x1, x21
+0001ce74 bl         #0x21550
+0001ce78 add        x1, x29, #0x18
+0001ce7c mov        w0, w19
+0001ce80 mov        w2, #1
+0001ce84 bl         #0x1b870
+0001ce88 cbz        w0, #0x1ce9c
+0001ce8c mov        w2, w0
+0001ce90 mov        w0, #1
+0001ce94 mov        x1, x20
+0001ce98 bl         #0x21550
+
+## DisplayDxe: MDPExitBoot common clocks only when all displays permit
+## RVA 0x1cf28 .. 0x1cf58 (exclusive)
+0001cf28 add        x19, x19, #1
+0001cf2c add        x24, x24, #0x658
+0001cf30 cmp        x19, #3
+0001cf34 b.ne       #0x1ce00
+0001cf38 cbnz       w23, #0x1cf58
+0001cf3c bl         #0x1cc7c
+0001cf40 cbz        w0, #0x1cf58
+0001cf44 adrp       x1, #0x40000
+0001cf48 mov        w2, w0
+0001cf4c add        x1, x1, #0x980
+0001cf50 mov        w0, #1
+0001cf54 bl         #0x21550
