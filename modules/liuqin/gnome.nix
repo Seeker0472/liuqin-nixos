@@ -104,6 +104,9 @@ in
     # The lid policy and keyboard-backlight tile consume UPower's standard
     # system-bus properties/interfaces.
     services.upower.enable = true;
+    # Accepted power-key wakes become KEY_WAKEUP for the compositor's idle
+    # monitor; no arbitrary input injection API is exposed to the session.
+    boot.kernelModules = [ "uinput" ];
 
     # logind's default suspend action is deliberately disabled for every lid
     # context.  It delays closes during its 30-second post-resume holdoff and,
@@ -139,7 +142,7 @@ in
       powerSchemas
     ];
 
-    # The power policy schema (read by liuqin-power-key-action through
+    # The power policy schema (read by the unprivileged controller through
     # GSETTINGS_SCHEMA_DIR, set by the service environment below).
     environment.pathsToLink = [ "/share/gsettings-schemas/liuqin-power" ];
 
@@ -151,34 +154,18 @@ in
         "systemd-logind.service"
       ];
       wants = [ "systemd-logind.service" ];
-      path = with pkgs; [
-        systemd
-        glib # gdbus, gsettings
-        util-linux # setpriv, runuser
-        coreutils
-        getent
-      ];
       environment = {
-        loginctl = "${pkgs.systemd}/bin/loginctl";
-        gdbus = "${pkgs.glib}/bin/gdbus";
-        gsettings = "${pkgs.glib}/bin/gsettings";
-        systemctl = "${pkgs.systemd}/bin/systemctl";
-        systemd_run = "${pkgs.systemd}/bin/systemd-run";
-        power_menu = "${power-keyd}/libexec/liuqin-power-menu";
-        setpriv = "${pkgs.util-linux}/bin/setpriv";
-        getent = "${pkgs.getent}/bin/getent";
-        test_bin = "${pkgs.coreutils}/bin/test";
         GSETTINGS_SCHEMA_DIR = "${powerSchemas}/share/gsettings-schemas/liuqin-power/glib-2.0/schemas";
       };
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${power-keyd}/libexec/liuqin-power-keyd";
+        ExecStart = "${power-keyd}/bin/liuqin-power-keyd";
+        # systemd cleans up across the controller UID; the broker needs no CAP_KILL.
+        KillMode = "control-group";
         Restart = "always";
         RestartSec = 1;
         TimeoutStopSec = 7;
         UMask = "0077";
-        RuntimeDirectory = "liuqin-power-keyd";
-        RuntimeDirectoryMode = "0755";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         # Downstream 20-liuqin-session-runtime.conf: the daemon drives the
@@ -275,22 +262,8 @@ in
       };
     };
 
-    # UPower reports the hall switch immediately, independent of logind's lid
-    # action holdoff.  Keep this in the graphical session so it can use
-    # ScreenSaver.Lock and Mutter's writable PowerSaveMode directly.
-    systemd.user.services.liuqin-lid-policy = {
-      description = "Lock and blank the liuqin panel on folio close";
-      wantedBy = [ "graphical-session.target" ];
-      partOf = [ "graphical-session.target" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${pkgs.liuqinLidPolicy}/bin/liuqin-lid-policy --state-dir %t/liuqin-lid-policy";
-        Restart = "on-failure";
-        RestartSec = 2;
-        RuntimeDirectory = "liuqin-lid-policy";
-        RuntimeDirectoryMode = "0700";
-      };
-    };
+    # The active-session controller also handles lid blanking/restoring.
+    # A second service would introduce competing DPMS transactions.
 
     # Seed ~/.config/monitors.xml for the session user.  `d` with mode `-`
     # leaves the existing ~/.config ownership and mode alone; `C` copies the

@@ -261,7 +261,8 @@
             kernel = demoKernel;
             gawk = pkgsHost.gawk;
           };
-          power-keyd = pkgsArm.liuqinPowerKeyd;
+          # GI and desktop helpers use a native target runtime.
+          power-keyd = pkgsNativeArm.liuqinPowerKeyd;
           mippsd = pkgsArm.liuqinMippsd;
           # Boot image for the DEMO configuration (config/demo). Your own
           # configuration: use lib.mkLiuqinBootImages instead.
@@ -490,6 +491,9 @@
           python3 ${./pkgs/fingerprint/test-runtime-firmware.py} "$PWD/oem_runtime.py"
           touch $out
         '';
+
+      checks.x86_64-linux.liuqin-power-key =
+        pkgsHost.callPackage ./pkgs/power-keyd { };
 
       # Exercise the actual patched battery getter with stock charge units and
       # recorded charging samples, without a tablet or a kernel build.

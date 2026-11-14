@@ -47,11 +47,7 @@ in
   ];
 
   native = {
-    # Cross-building this one substitutes a store path from the build host's
-    # gnome-control-center into its menu script and thereby pulls the entire
-    # cross GNOME closure into the device system; natively it is three files
-    # of C and shell.
-    liuqinPowerKeyd = "cross would pull the cross GNOME closure into the device system";
+    liuqinPowerKeyd = "Python/GI controller and native GNOME menu translations";
     # Session/runtime scripts and data leaves with no cross-built device code.
     liuqinScreenRefresh = "shell script";
     liuqinBacklightDefault = "shell script";

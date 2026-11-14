@@ -3,7 +3,7 @@
 """Show a native desktop chooser; cancellation never requests a power action.
 
 Ported from the downstream liuqin-power-menu; runs inside the user session
-via liuqin-power-key-action.
+via the active session's user service manager.
 """
 import gettext
 import subprocess
