@@ -3,10 +3,11 @@
 `pkgs/kernel/default.nix` applies the patches to a pristine 7.2.5 tree in
 the explicit order recorded in `series`. Evaluation requires that this list
 contains every `*.patch` exactly once. The board DTS additions 0014–0016
-remain at the end.  Each patch carries a prose header above its diff; keep that header
+follow the common board patches; LPASS backports 0024–0026 follow those additions.
+Each patch carries a prose header above its diff; keep that header
 when editing one.
 
-The 23 patches are grouped by subsystem.  The first 14 were merged down from
+The 26 patches are grouped by subsystem.  The first 14 were merged down from
 a 33-patch bring-up series (the merge provenance is in each patch header);
 the merged set produces a byte-identical tree, so that part is a pure
 re-grouping.  0015 adds the WCD9385 SoundWire capture graph on top of the
@@ -47,18 +48,21 @@ patch.
 | 0021 | camera-orientation | declare each camera's `orientation` (s5kjn1 rear, imx596 front, sc202cs rear) so the sensor drivers report the location the camera stack needs |
 | 0022 | usb-dwc3-reset-dump | print `DCTL`/`GCTL`/`GUSB2PHYCFG0`/`GUSB3PIPECTL0`/`GSNPSID`/`revision` when the DWC3 core soft reset times out, so a stuck `CSFRST` names its own cause instead of only "soft reset failed" |
 | 0023 | phy-dp-vendor-state | reviewed DP register tables and sequencing, formerly a whole-file replacement |
+| 0024 | lpass-wsa-pm-clock-framework | upstream WSA PM-clock lifecycle and SoundWire runtime references (`cd054a6e272c`) |
+| 0025 | lpass-va-pm-clock-framework | upstream VA PM-clock lifecycle (`eb667d0fbdd3`) |
+| 0026 | lpass-tx-rx-pm-clock-framework | upstream TX/RX PM-clock lifecycle and fsgen handling (`b9b23e72abef`, `b05482e7ce1b`, `b8ca90fafe6a`) |
 
 0017-0019 are the fingerprint (FPC1264/QSEECOM) series.  0017 and 0018 apply in
 sequence with the rest and 0019 (the board DT node) applies there as well: it
-does not touch the regions the three DT patches applied last rewrite.
+does not touch the regions rewritten by the later board DT additions 0014–0016.
 
-## Why 0014, 0015 and 0016 are applied last
+## Why 0014, 0015 and 0016 follow the common board patches
 
 The board DTS is built up in layers: 0001 creates it, 0011 and 0012 extend
 it, and 0014 adds the USB/Type-C/DP nodes on top.  0015 extends the same file
 with the WCD9385 capture graph, and 0016 appends the amplifier
-`cirrus,subsystem-id` overrides. The `series` file lists all three at the end
-so they are applied after the common series, in that order.
+`cirrus,subsystem-id` overrides. The `series` file applies all three after the
+common board series, in that order. The independent LPASS backports follow them.
 
 ## Adding or regenerating a patch
 
