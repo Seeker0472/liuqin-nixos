@@ -1,0 +1,51 @@
+diff --git a/drivers/i2c/geni_i2c.c b/drivers/i2c/geni_i2c.c
+--- a/drivers/i2c/geni_i2c.c
++++ b/drivers/i2c/geni_i2c.c
+@@ -261,6 +261,25 @@
+ 	return geni_i2c_fifo_rx_drain(geni, msg);
+ }
+ 
++/* A failed transfer must not turn into an unbounded wait for abort itself.
++ * Keep this bounded even if the serial engine no longer completes commands.
++ */
++static int geni_i2c_abort(struct geni_i2c_priv *geni)
++{
++	u32 elapsed, status;
++
++	writel(M_GENI_CMD_ABORT, geni->base + SE_GENI_M_CMD_CTRL_REG);
++	for (elapsed = 0; elapsed < 1000000; elapsed += 10) {
++		status = readl(geni->base + SE_GENI_M_IRQ_STATUS);
++		if (status & M_CMD_ABORT_EN) {
++			writel(status, geni->base + SE_GENI_M_IRQ_CLEAR);
++			return 0;
++		}
++		udelay(10);
++	}
++	return -ETIMEDOUT;
++}
++
+ static int geni_i2c_xfer(struct udevice *bus, struct i2c_msg msgs[], int num)
+ {
+ 	struct geni_i2c_priv *geni = dev_get_priv(bus);
+@@ -284,19 +303,8 @@
+ 	}
+ 
+ 	if (ret) {
+-		if (ret == -ETIMEDOUT) {
+-			u32 status;
+-
+-			writel(M_GENI_CMD_ABORT, geni->base + SE_GENI_M_CMD_CTRL_REG);
+-
+-			/* Wait until Abort has finished */
+-			do {
+-				status = readl(geni->base + SE_GENI_M_IRQ_STATUS);
+-			} while ((status & M_CMD_ABORT_EN) == 0);
+-
+-			writel(status, geni->base + SE_GENI_M_IRQ_STATUS);
+-		}
+-
++		if (ret == -ETIMEDOUT)
++			geni_i2c_abort(geni);
+ 		return ret;
+ 	}
+ 

@@ -17,6 +17,15 @@
  * clock so the UFS stack can resolve its clocks.
  */
 / {
+	/* ABL can replace the root compatible with the generic Cape/MTP list.
+	 * Keep the board's borrowed-display contract in a dedicated node. This
+	 * enables only the liuqin sequence, still guarded by resource/HW checks.
+	 */
+	display-handoff {
+		compatible = "xiaomi,liuqin-abl-display";
+		status = "okay";
+	};
+
 	cxo_19m2: cxo-19m2 {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
@@ -112,6 +121,18 @@
 		vdd18-supply = <&pm8350_s10>;
 		vdd3-supply = <&pm8350_l2>;
 	};
+};
+
+/* The single liuqin KTZ8866 is accessed without a backlight driver: probing
+ * that driver would reset/configure a display still borrowed from ABL. */
+&i2c1 {
+	status = "okay";
+	clock-frequency = <100000>;
+};
+
+&qup_i2c1_data_clk {
+	drive-strength = <2>;
+	bias-pull-up;
 };
 
 /*

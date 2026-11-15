@@ -387,6 +387,36 @@
             touch $out
           '';
 
+      checks.x86_64-linux.liuqin-uboot-display-handoff =
+        pkgsHost.runCommand "liuqin-uboot-display-handoff"
+          {
+            nativeBuildInputs = [ pkgsHost.stdenv.cc pkgsHost.python3 pkgsHost.patch ];
+            buildInputs = [ pkgsHost.dtc ];
+          }
+          ''
+            port=${./pkgs/u-boot}
+            board=$port/files/board/qualcomm/liuqin
+            flags="-std=c11 -Wall -Wextra -Werror -pedantic"
+            cc $flags -I "$board" "$port/tests/test-display-handoff.c" \
+              "$board/display-handoff.c" -o test-core
+            ./test-core
+            cc $flags -I "$board" -I "$port/tests/include" \
+              "$port/tests/test-display-fdt.c" "$board/display-fdt.c" \
+              -Wl,--wrap=malloc -lfdt -o test-fdt
+            ./test-fdt
+            mkdir -p source/arch/arm/lib source/boot source/cmd source/drivers/i2c
+            cp ${pkgsArm.liuqinUboot.uboot.src}/arch/arm/lib/bootm.c source/arch/arm/lib/
+            cp ${pkgsArm.liuqinUboot.uboot.src}/boot/bootm_os.c source/boot/
+            cp ${pkgsArm.liuqinUboot.uboot.src}/cmd/fastboot.c source/cmd/
+            cp ${pkgsArm.liuqinUboot.uboot.src}/drivers/i2c/geni_i2c.c source/drivers/i2c/
+            chmod -R u+w source
+            (cd source; patch -p1 < "$port/patches/0014-checked-linux-handoff.patch")
+            (cd source; patch -p1 < "$port/patches/0015-geni-i2c-bounded-abort.patch")
+            python3 "$port/tests/test-boot-handoff.py" source
+            python3 "$port/tests/test-display-helper.py"
+            touch $out
+          '';
+
       # The classification registry must cover overlay.nix's definitions
       # exactly, and every injected name must exist in the cross set.  A new
       # package fails this check until pkgs/device-packages.nix classifies it

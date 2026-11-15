@@ -1,0 +1,202 @@
+{
+  "DisplayDxe": {
+    "path": "/tmp/liuqin-display-systematic-20261114/abl/DisplayDxe.pe",
+    "sha256": "d6a934cc70f37310984d44757662d5a25ea659f7da84a20425bbdf61260d55b0",
+    "section_rva_equals_raw_offset": true
+  },
+  "major8_table_rva": "0x3fbb8",
+  "minor_dispatch": {
+    "1": {
+      "landing": "0x3017c",
+      "handler": "0x36a10",
+      "resource_pointer": "0x3fb98",
+      "resource_table": "0x3f9b8",
+      "direct_calls": [
+        "0x36d6c"
+      ]
+    },
+    "5": {
+      "landing": "0x301a4",
+      "handler": "0x3746c",
+      "resource_pointer": "0x3fb98",
+      "resource_table": "0x3f9b8",
+      "direct_calls": [
+        "0x36d6c"
+      ]
+    }
+  },
+  "hal_constant_pairs": [
+    {
+      "minor1_rva": "0x47980",
+      "minor5_rva": "0x47b10",
+      "bytes": 16,
+      "value_hex": "00000000040000000400000000000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47990",
+      "minor5_rva": "0x47b20",
+      "bytes": 16,
+      "value_hex": "060000000b0000000400000001000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x479a0",
+      "minor5_rva": "0x47b30",
+      "bytes": 16,
+      "value_hex": "06000000010000000900000006000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x479b0",
+      "minor5_rva": "0x47b40",
+      "bytes": 16,
+      "value_hex": "0e000000010000000100000002000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b50",
+      "minor5_rva": "0x47bb0",
+      "bytes": 8,
+      "value_hex": "0000000002000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b58",
+      "minor5_rva": "0x47bb8",
+      "bytes": 8,
+      "value_hex": "00fdffff00000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b60",
+      "minor5_rva": "0x47bc0",
+      "bytes": 8,
+      "value_hex": "00faffff80ffffff",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b68",
+      "minor5_rva": "0x47bc8",
+      "bytes": 8,
+      "value_hex": "7f00000000000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b70",
+      "minor5_rva": "0x47bd0",
+      "bytes": 8,
+      "value_hex": "80ffffff7f000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b78",
+      "minor5_rva": "0x47bd8",
+      "bytes": 8,
+      "value_hex": "0000000080ffffff",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b80",
+      "minor5_rva": "0x47be0",
+      "bytes": 8,
+      "value_hex": "0100000000fdffff",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b88",
+      "minor5_rva": "0x47be8",
+      "bytes": 8,
+      "value_hex": "050000000c000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b90",
+      "minor5_rva": "0x47bf0",
+      "bytes": 8,
+      "value_hex": "000a000008000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47b98",
+      "minor5_rva": "0x47bf8",
+      "bytes": 8,
+      "value_hex": "0200000000000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47ba0",
+      "minor5_rva": "0x47c00",
+      "bytes": 8,
+      "value_hex": "0000000001000000",
+      "equal": true
+    },
+    {
+      "minor1_rva": "0x47ba8",
+      "minor5_rva": "0x47c08",
+      "bytes": 8,
+      "value_hex": "0400000008000000",
+      "equal": true
+    }
+  ],
+  "shared_layout_initializer": "0x36d6c",
+  "ktz_init_table_rva": "0x46413",
+  "ktz_init_pairs": {
+    "04": "00",
+    "05": "00",
+    "02": "b3",
+    "15": "e9",
+    "0d": "24",
+    "0e": "24",
+    "09": "9f",
+    "03": "cd",
+    "08": "7f"
+  },
+  "historical_readonly_revisions": [
+    {
+      "path": "/tmp/liuqin-power-display-review-20261114/liuqin-display-c3-20261114/first-dmesg.txt",
+      "sha256": "a6c4e10d96995a1621a1b0d6eaf6977bc44adf4df720728e1e68290f5946b567",
+      "excerpts": [
+        {
+          "line": 900,
+          "text": "[    0.983413] [drm:dpu_kms_hw_init:1168] dpu hardware revision:0x80050000"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/liuqin-power-display-review-20261114/liuqin-display-c6-20261114/first-dmesg.txt",
+      "sha256": "d7477dae4311d4a84d8b452c5bdec3142e549626aaa96df5eee29c515db82456",
+      "excerpts": [
+        {
+          "line": 905,
+          "text": "[    0.808228] [drm:dpu_kms_hw_init:1168] dpu hardware revision:0x80050000"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/liuqin-power-display-review-20261114/liuqin-display-c8-20261114/first-dmesg.txt",
+      "sha256": "3b4a632ece2ea8581fde91e27fef7a44510296abdc1ca7422a6d69875431e669",
+      "excerpts": [
+        {
+          "line": 880,
+          "text": "[    0.883324] [drm:dpu_kms_hw_init:1168] dpu hardware revision:0x80050000"
+        }
+      ]
+    },
+    {
+      "path": "/tmp/liuqin-power-display-review-20261114/liuqin-display-c9-20261114/first-dmesg.txt",
+      "sha256": "61f121045a324ccab67d9f6340f9fa35323d91be31ae8f6640cd8a23a4ace7f0",
+      "excerpts": [
+        {
+          "line": 880,
+          "text": "[    0.878586] [drm:dpu_kms_hw_init:1168] dpu hardware revision:0x80050000"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "HAL behavior comparison also uses normalized disassembly; equal constant tables alone do not prove optical shutdown.",
+    "Historical KMS/DSI state was sampled after Linux setup, not the raw ABL handoff.",
+    "Raw DSI HW_VERSION at +0 was not included in the shifted historical KMS dumps."
+  ]
+}

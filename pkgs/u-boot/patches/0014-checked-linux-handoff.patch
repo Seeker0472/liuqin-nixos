@@ -1,0 +1,109 @@
+diff --git a/arch/arm/lib/bootm.c b/arch/arm/lib/bootm.c
+--- a/arch/arm/lib/bootm.c
++++ b/arch/arm/lib/bootm.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include <bootm.h>
++#include <boot-handoff.h>
+ #include <bootstage.h>
+ #include <command.h>
+ #include <cpu_func.h>
+@@ -372,6 +373,18 @@
+ #endif
+ }
+ 
++void __weak board_linux_handoff_returned(void)
++{
++}
++
++static int boot_go_linux(struct bootm_headers *images, int flag)
++{
++	boot_jump_linux(images, flag);
++	if (!(flag & BOOTM_STATE_OS_FAKE_GO))
++		board_linux_handoff_returned();
++	return 0;
++}
++
+ /* Main Entry point for arm bootm implementation
+  *
+  * Modeled after the powerpc implementation
+@@ -392,13 +405,11 @@
+ 	}
+ 
+ 	if (flag & (BOOTM_STATE_OS_GO | BOOTM_STATE_OS_FAKE_GO)) {
+-		boot_jump_linux(images, flag);
+-		return 0;
++		return boot_go_linux(images, flag);
+ 	}
+ 
+ 	boot_prep_linux(images);
+-	boot_jump_linux(images, flag);
+-	return 0;
++	return boot_go_linux(images, flag);
+ }
+ 
+ #if defined(CONFIG_BOOTM_VXWORKS)
+diff --git a/boot/bootm_os.c b/boot/bootm_os.c
+--- a/boot/bootm_os.c
++++ b/boot/bootm_os.c
+@@ -6,6 +6,7 @@
+ 
+ #include <atf_common.h>
+ #include <bootm.h>
++#include <boot-handoff.h>
+ #include <bootstage.h>
+ #include <cpu_func.h>
+ #include <efi_loader.h>
+@@ -599,8 +600,21 @@
+ 	/* please define board specific board_preboot_os() */
+ }
+ 
++int __weak board_linux_handoff(struct bootm_headers *images)
++{
++	return 0;
++}
++
+ int boot_selected_os(int state, struct bootm_info *bmi, boot_os_fn *boot_fn)
+ {
++	/* boot_fn returning after cleanup still requires the usual reset below.
++	 * Reject a handoff BEFORE entering it, while providers and console live.
++	 * Do not leak errno/libfdt values into BOOTM_ERR_RESET's -1 namespace.
++	 */
++	if (state == BOOTM_STATE_OS_GO && bmi->images->os.os == IH_OS_LINUX &&
++	    board_linux_handoff(bmi->images))
++		return 1;
++
+ 	arch_preboot_os();
+ 	board_preboot_os();
+ 
+diff --git a/cmd/fastboot.c b/cmd/fastboot.c
+--- a/cmd/fastboot.c
++++ b/cmd/fastboot.c
+@@ -7,6 +7,7 @@
+  * Rob Herring <robh@kernel.org>
+  */
+ #include <command.h>
++#include <boot-handoff.h>
+ #include <console.h>
+ #include <g_dnl.h>
+ #include <fastboot.h>
+@@ -54,6 +55,10 @@
+ 	}
+ 
+ 	return CMD_RET_SUCCESS;
++}
++
++void __weak board_fastboot_exit(void)
++{
+ }
+ 
+ static int do_fastboot_usb(int argc, char *const argv[],
+@@ -110,6 +115,7 @@
+ 	ret = CMD_RET_SUCCESS;
+ 
+ exit:
++	board_fastboot_exit();
+ 	udc_device_put(udc);
+ 	g_dnl_unregister();
+ 	g_dnl_clear_detach();

@@ -132,6 +132,8 @@ PYEOF
       ./patches/0011-partlog-command.patch
       ./patches/0012-bootmenu-redisplay.patch
       ./patches/0013-pxe-extlinux-key-menu.patch
+      ./patches/0014-checked-linux-handoff.patch
+      ./patches/0015-geni-i2c-bounded-abort.patch
     ];
 
     postPatch = ''
@@ -223,7 +225,7 @@ PYEOF
         -d CMD_EXT4_WRITE -d EXT4_WRITE -d FAT_WRITE -d CMD_DFU -d DFU -d DFU_OVER_USB \
         -d DFU_WRITE_ALT -d DFU_SCSI -d DFU_MMC -d CMD_USB_MASS_STORAGE \
         -d USB_FUNCTION_MASS_STORAGE -d CMD_PARTLOG -d CMD_SCSI -d CMD_MMC -d CMD_UFS -d CMD_USB \
-        -d FASTBOOT_OEM_RUN -d CMD_I2C -d CMD_EEPROM \
+        -d FASTBOOT_OEM_RUN -e FASTBOOT_OEM_BOARD -d CMD_I2C -d CMD_EEPROM \
         -d CMD_NVEDIT_EFI -d EFI_CAPSULE_SUPPORT -d EFI_CAPSULE_ON_DISK \
         -d EFI_CAPSULE_FIRMWARE \
         -d EFI_CAPSULE_FIRMWARE_MANAGEMENT -d EFI_CAPSULE_FIRMWARE_RAW \
@@ -236,6 +238,7 @@ PYEOF
         -e VIDEO -e DM_VIDEO -e DISPLAY -d VIDEO_SIMPLE \
         -e VIDEO_FONT_16X32 -d VIDEO_FONT_8X16 -d VIDEO_FONT_4X6 -d VIDEO_FONT_SUN12X22 \
         -d REQUIRE_SERIAL_CONSOLE \
+        -e DISABLE_CONSOLE \
         -e LIUQIN_EARLY_VIDEO -e PRE_CONSOLE_BUFFER \
         --set-val PRE_CON_BUF_ADDR 0xb9400000 --set-val PRE_CON_BUF_SZ 8192 \
         --set-val SYS_FDT_PAD 0x400000 \
@@ -249,10 +252,11 @@ PYEOF
         -e SYS_I2C_GENI
       make ''${makeFlags} O=$NIX_BUILD_TOP/build olddefconfig
 
-      # The result is not checked against anything: the list above is the
-      # measured one, and a silent drift in it (a renamed or re-gated symbol)
-      # shows up on hardware rather than here. $out/uboot.config is the record of
-      # what this build actually used.
+      # The handoff's terminal console freeze and bounded OEM helper require
+      # these symbols. Do not silently ship an image with either ineffective.
+      grep -qx 'CONFIG_DISABLE_CONSOLE=y' $NIX_BUILD_TOP/build/.config
+      grep -qx 'CONFIG_FASTBOOT_OEM_BOARD=y' $NIX_BUILD_TOP/build/.config
+      grep -qx '# CONFIG_FASTBOOT_OEM_RUN is not set' $NIX_BUILD_TOP/build/.config
 
       runHook postConfigure
     '';
@@ -260,6 +264,10 @@ PYEOF
     buildPhase = ''
       runHook preBuild
       make ''${makeFlags} O=$NIX_BUILD_TOP/build -j$NIX_BUILD_CORES DEVICE_TREE=qcom/sm8450-xiaomi-liuqin
+      # This board-scoped contract survives a firmware rewrite of the root
+      # compatible. An image missing it must fail at build time.
+      test "$(fdtget -t s $NIX_BUILD_TOP/build/dts/upstream/src/arm64/qcom/sm8450-xiaomi-liuqin.dtb \
+        /display-handoff compatible)" = "xiaomi,liuqin-abl-display"
       runHook postBuild
     '';
 

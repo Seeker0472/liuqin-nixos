@@ -21,6 +21,7 @@
  */
 
 #include <cpu_func.h>
+#include <asm/global_data.h>
 #include <dm.h>
 #include <dm/device-internal.h>
 #include <dm/root.h>
@@ -31,6 +32,16 @@
 #include <video_font.h>		/* fonts[], CONFIG_VIDEO_FONT_16X32 data */
 
 #include "liuqin.h"
+
+DECLARE_GLOBAL_DATA_PTR;
+
+static bool video_frozen;
+
+void liuqin_video_freeze(void)
+{
+	video_frozen = true;
+	gd->flags |= GD_FLG_DISABLE_CONSOLE;
+}
 
 #define LIUQIN_FB_BASE		0xb8000000UL
 #define LIUQIN_FB_WIDTH		1800
@@ -203,6 +214,8 @@ static void early_putc(char c)
  */
 void board_pre_console_putc(int ch)
 {
+	if (video_frozen)
+		return;
 	if (!early_font)
 		early_select_font();
 	early_putc((char)ch);
@@ -221,7 +234,7 @@ void board_pre_console_flush(void)
 	struct udevice *dev;
 	struct vidconsole_priv *priv;
 
-	if (!early_font)
+	if (video_frozen || !early_font)
 		return;
 
 	early_wrap();	/* wipe the framebuffer, reset the early cursor */

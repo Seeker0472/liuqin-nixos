@@ -183,6 +183,8 @@ void liuqin_gpt_dump(struct blk_desc *desc, u64 lba, const char *tag);
 /* liuqin.c and the two board hooks it shares. */
 int liuqin_enable_supply(ofnode node, const char *prop, int uv);
 void liuqin_early_video_init(void);
+void liuqin_video_freeze(void);
+void liuqin_stage(const char *what);
 
 /* power.c: the vendor-style hand-off; 0 when SCM cut PS_HOLD, 1 when the
  * reason pair was valid but SCM returned (the caller may fall back to PSCI). */

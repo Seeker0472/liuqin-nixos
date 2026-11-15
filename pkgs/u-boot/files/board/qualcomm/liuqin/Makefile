@@ -8,6 +8,7 @@
 
 obj-y += liuqin.o
 obj-y += video.o
+obj-y += display.o display-handoff.o display-fdt.o
 obj-y += console.o
 obj-y += gpt.o
 obj-y += qbootctl.o

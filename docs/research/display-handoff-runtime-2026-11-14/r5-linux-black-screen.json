@@ -1,0 +1,257 @@
+{
+  "provenance": "SSH read-only capture following owner report that Linux did not light the screen after r5 normal boot; owner confirmed r5 manual quiesce had fully blanked it before reboot.",
+  "remote": "seeker@100.4.1.3",
+  "boot": {
+    "boot_id": "d9596ff0-dba0-4e3f-b88a-61425abaabd0",
+    "uptime": "313.48 2422.27",
+    "system": "/nix/store/6wyapnnkcg9fwg0p1byqkgas4cqh1z9k-nixos-system-Hippogriff-26.11.20261111.d4f25a3",
+    "kernel_image": "/nix/store/kbqp3z1cqqf94ha117mcwva6xz7azpj2-linux-aarch64-unknown-linux-gnu-7.2.5/Image",
+    "cmdline": "init=/nix/store/6wyapnnkcg9fwg0p1byqkgas4cqh1z9k-nixos-system-Hippogriff-26.11.20261111.d4f25a3/init qcom_q6v5_pas.slpi_auto_boot=0 rootwait initcall_blacklist=simplefb_driver_init console=tty0 firmware_class.path=/var/lib/firmware cpuidle.governor=teo root=fstab loglevel=7 lsm=landlock,yama,bpf",
+    "handoff": "quiesced-v1"
+  },
+  "display_events_from_dmesg": [
+    {
+      "line": 470,
+      "text": "[    0.102333] WARNING: drivers/soc/qcom/rpmh-rsc.c:451 at tcs_tx_done+0x88/0x2e0, CPU#0: swapper/0/0"
+    },
+    {
+      "line": 476,
+      "text": "[    0.102468] pc : tcs_tx_done+0x88/0x2e0"
+    },
+    {
+      "line": 490,
+      "text": "[    0.102730]  tcs_tx_done+0x88/0x2e0 (P)"
+    },
+    {
+      "line": 602,
+      "text": "[    0.146296] disp_cc_mdss_mdp_clk_src: rcg didn't update its configuration."
+    },
+    {
+      "line": 943,
+      "text": "[    1.918824] msm_dpu ae01000.display-controller: [drm] fb0: msmdrmfb frame buffer device"
+    },
+    {
+      "line": 963,
+      "text": "[    2.024234] [NVT-ts] nvt_ts_probe 1744: request irq 254 disabled until firmware is ready"
+    },
+    {
+      "line": 965,
+      "text": "[    2.027749] [NVT-ts] panel_prepared 2256: panel prepared"
+    },
+    {
+      "line": 967,
+      "text": "[    2.028705] [NVT-ts] nvt_ts_resume 2137: follower resume #1 start"
+    },
+    {
+      "line": 994,
+      "text": "[    2.313450] [NVT-ts] nvt_update_firmware 886: Update firmware success! <240562 us>"
+    },
+    {
+      "line": 995,
+      "text": "[    2.323700] [NVT-ts] nvt_get_fw_info 670: fw_ver = 0x19, fw_type = 0x01, x_num=38, y_num=60, abs_x_max=1800, abs_y_max=2880"
+    },
+    {
+      "line": 996,
+      "text": "[    2.344053] [NVT-ts] nvt_read_pid 558: PID=5973"
+    },
+    {
+      "line": 1092,
+      "text": "[    3.418747] [NVT-ts] nvt_ts_resume 2156: firmware did not reach ReK: -1"
+    },
+    {
+      "line": 1093,
+      "text": "[    3.419646] [NVT-ts] nvt_ts_resume 2211: resume failed closed: -1 (IRQ off, ESD off)"
+    },
+    {
+      "line": 1094,
+      "text": "[    3.422510] liuqin: stopping/starting the pipeline to light the first modeset"
+    },
+    {
+      "line": 1096,
+      "text": "[    3.611494] [NVT-ts] panel_unpreparing 2276: panel unpreparing"
+    },
+    {
+      "line": 1100,
+      "text": "[    4.454463] [NVT-ts] panel_prepared 2256: panel prepared"
+    },
+    {
+      "line": 1101,
+      "text": "[    4.462816] [NVT-ts] nvt_ts_resume 2137: follower resume #2 start"
+    },
+    {
+      "line": 1121,
+      "text": "[    4.709441] [NVT-ts] nvt_update_firmware 886: Update firmware success! <206796 us>"
+    },
+    {
+      "line": 1122,
+      "text": "[    4.719365] [NVT-ts] nvt_get_fw_info 670: fw_ver = 0x19, fw_type = 0x01, x_num=38, y_num=60, abs_x_max=1800, abs_y_max=2880"
+    },
+    {
+      "line": 1123,
+      "text": "[    4.719519] [NVT-ts] nvt_read_pid 558: PID=5973"
+    },
+    {
+      "line": 1176,
+      "text": "[    5.558210] [NVT-ts] nvt_ts_resume 2156: firmware did not reach ReK: -1"
+    },
+    {
+      "line": 1177,
+      "text": "[    5.564696] [NVT-ts] nvt_ts_resume 2211: resume failed closed: -1 (IRQ off, ESD off)"
+    }
+  ],
+  "display_services": "[    9.930391] Hippogriff systemd[1]: Starting Restore the liuqin normal-desktop backlight default...\n[   10.117903] Hippogriff systemd[1]: Finished Restore the liuqin normal-desktop backlight default.\n[   11.751690] Hippogriff systemd[1]: Starting Display Manager...\n[   11.825194] Hippogriff systemd[1]: Started Display Manager.\n",
+  "sysfs": [
+    {
+      "path": "/sys/class/backlight/ktz8866-backlight/brightness",
+      "value": "1500"
+    },
+    {
+      "path": "/sys/class/backlight/ktz8866-backlight/actual_brightness",
+      "value": "1500"
+    },
+    {
+      "path": "/sys/class/backlight/ktz8866-backlight/max_brightness",
+      "value": "2047"
+    },
+    {
+      "path": "/sys/class/backlight/ktz8866-backlight/bl_power",
+      "value": "0"
+    },
+    {
+      "path": "/sys/class/backlight/ktz8866-backlight/type",
+      "value": "raw"
+    },
+    {
+      "path": "/sys/class/backlight/ktz8866-backlight/power/runtime_status",
+      "value": "unsupported"
+    },
+    {
+      "path": "/sys/class/drm/card0-DSI-1/status",
+      "value": "connected"
+    },
+    {
+      "path": "/sys/class/drm/card0-DSI-1/enabled",
+      "value": "enabled"
+    },
+    {
+      "path": "/sys/class/drm/card0-DSI-1/dpms",
+      "value": "On"
+    },
+    {
+      "path": "/sys/class/drm/card0-DSI-1/modes",
+      "value": "1800x2880"
+    },
+    {
+      "path": "/sys/class/drm/card0-Writeback-1/status",
+      "value": "unknown"
+    },
+    {
+      "path": "/sys/class/drm/card0-Writeback-1/enabled",
+      "value": "disabled"
+    },
+    {
+      "path": "/sys/class/drm/card0-Writeback-1/dpms",
+      "value": "On"
+    },
+    {
+      "path": "/sys/class/drm/card0-Writeback-1/modes",
+      "value": ""
+    },
+    {
+      "path": "/sys/class/drm/card0-DP-1/status",
+      "value": "disconnected"
+    },
+    {
+      "path": "/sys/class/drm/card0-DP-1/enabled",
+      "value": "disabled"
+    },
+    {
+      "path": "/sys/class/drm/card0-DP-1/dpms",
+      "value": "On"
+    },
+    {
+      "path": "/sys/class/drm/card0-DP-1/modes",
+      "value": ""
+    }
+  ],
+  "ktz8866_regmap_readback": {
+    "00": "00",
+    "01": "21",
+    "02": "b3",
+    "03": "bd",
+    "04": "04",
+    "05": "4e",
+    "06": "00",
+    "07": "00",
+    "08": "5f",
+    "09": "9f",
+    "0a": "11",
+    "0b": "00",
+    "0c": "28",
+    "0d": "24",
+    "0e": "24",
+    "0f": "00",
+    "10": "80",
+    "11": "77",
+    "12": "00",
+    "13": "00",
+    "14": "11",
+    "15": "e9"
+  },
+  "tlmm_selected_readback": [
+    "gpio0   : out high func0 8mA no pull",
+    "gpio2   : out high func0 16mA pull up",
+    "gpio6   : out high func0 16mA pull up",
+    "gpio53  : out high func0 16mA pull up",
+    "gpio66  : out high func0 16mA pull up",
+    "gpio93  : out high func0 16mA pull up"
+  ],
+  "drm_atomic_state": "plane[46]: plane-0\n\tcrtc=crtc-0\n\tfb=101\n\t\tallocated by = .gnome-shell-wr\n\t\trefcount=2\n\t\tformat=XR30 little-endian (0x30335258)\n\t\tmodifier=0x500000000000001\n\t\tsize=1800x2880\n\t\tlayers:\n\t\t\tsize[0]=1800x2880\n\t\t\tpitch[0]=7424\n\t\t\toffset[0]=0\n\t\t\tobj[0]:\n\t\t\t\tname=0\n\t\t\t\trefcount=5\n\t\t\t\tstart=00106b94\n\t\t\t\tsize=25165824\n\t\t\t\timported=no\n\tcrtc-pos=1800x2880+0+0\n\tsrc-pos=1800.000000x2880.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=1\n\tsspp[0]=sspp_8\n\tmultirect_mode[0]=parallel\n\tmultirect_index[0]=rect_0\n\tsrc[0]=900x2880+0+0\n\tdst[0]=900x2880+0+0\n\tsspp[1]=sspp_8\n\tmultirect_mode[1]=parallel\n\tmultirect_index[1]=rect_1\n\tsrc[1]=900x2880+900+0\n\tdst[1]=900x2880+900+0\nplane[52]: plane-1\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\nplane[58]: plane-2\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\nplane[64]: plane-3\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\nplane[70]: plane-4\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\nplane[76]: plane-5\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\nplane[82]: plane-6\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\nplane[88]: plane-7\n\tcrtc=(null)\n\tfb=0\n\tcrtc-pos=0x0+0+0\n\tsrc-pos=0.000000x0.000000+0.000000+0.000000\n\trotation=1\n\tnormalized-zpos=0\n\tcolor-encoding=ITU-R BT.601 YCbCr\n\tcolor-range=YCbCr limited range\n\tcolor_mgmt_changed=0\n\tcolor-pipeline=0\n\tstage=0\ncrtc[94]: crtc-0\n\tenable=1\n\tactive=1\n\tself_refresh_active=0\n\tplanes_changed=1\n\tmode_changed=0\n\tactive_changed=0\n\tconnectors_changed=0\n\tcolor_mgmt_changed=0\n\tplane_mask=1\n\tconnector_mask=1\n\tencoder_mask=1\n\tmode: \"1800x2880\": 120 785245 1800 2000 2004 2096 2880 2906 2908 3122 0x48 0x0\n\tbackground_color=ffff000000000000\n\tlm[0]=0\n\tctl[0]=0\n\tdspp[0]=0\n\tlm[1]=1\n\tctl[1]=0\n\tdspp[1]=1\ncrtc[95]: crtc-1\n\tenable=0\n\tactive=0\n\tself_refresh_active=0\n\tplanes_changed=0\n\tmode_changed=0\n\tactive_changed=0\n\tconnectors_changed=0\n\tcolor_mgmt_changed=0\n\tplane_mask=0\n\tconnector_mask=0\n\tencoder_mask=0\n\tmode: \"\": 0 0 0 0 0 0 0 0 0 0 0x0 0x0\n\tbackground_color=ffff000000000000\ncrtc[96]: crtc-2\n\tenable=0\n\tactive=0\n\tself_refresh_active=0\n\tplanes_changed=0\n\tmode_changed=0\n\tactive_changed=0\n\tconnectors_changed=0\n\tcolor_mgmt_changed=0\n\tplane_mask=0\n\tconnector_mask=0\n\tencoder_mask=0\n\tmode: \"\": 0 0 0 0 0 0 0 0 0 0 0x0 0x0\n\tbackground_color=ffff000000000000\nconnector[36]: DSI-1\n\tcrtc=crtc-0\n\tself_refresh_aware=0\n\tinterlace_allowed=0\n\tycbcr_420_allowed=0\n\tmax_requested_bpc=0\n\tcolorspace=Default\nconnector[38]: DP-1\n\tcrtc=(null)\n\tself_refresh_aware=0\n\tinterlace_allowed=0\n\tycbcr_420_allowed=1\n\tmax_requested_bpc=0\n\tcolorspace=Default\nconnector[41]: Writeback-1\n\tcrtc=(null)\n\tself_refresh_aware=0\n\tinterlace_allowed=0\n\tycbcr_420_allowed=0\n\tmax_requested_bpc=0\n\tcolorspace=Default\nresource mapping:\n\tpingpong=94 94 # # # # - - # # - - - \n\tmixer=94 94 # # # # - - \n\tctl=94 # # # # # - - \n\tdspp=94 94 # # - - - - \n\tdsc=94 94 # # - - - - \n\tcdm=# \n\tsspp=# # # # - - - - 94 # # # - - - - \n\tcwb=- - - - \n",
+  "drm_clients": "             command  tgid dev master a   uid      magic                                                             name                   id\n      systemd-logind  1261   0   y    y     0          0                                                          <unset>                    2\n     .gnome-shell-wr  1961 128   n    n 60578          0                                                          <unset>                    3\n            Xwayland  2733 128   n    n 60578          0                                                          <unset>                    4\n     .gnome-shell-wr  1961   0   n    n 60578          0                                                          <unset>                    5\n     .mutter-x11-fra  2799 128   n    n 60578          0                                                          <unset>                    6\n",
+  "interrupt_samples": [
+    {
+      "uptime": "498.84 3881.06",
+      "lines": [
+        " 208:       2026          0          0          0          0          0          0          0  msm_mdss                    0 Edge      msm",
+        " 209:          0          0          0          0          0          0          0          0  msm_mdss                   12 Edge      dp_display_isr",
+        " 210:        404          0          0          0          0          0          0          0  msm_mdss                    5 Edge      dsi_isr",
+        " 215:        400          0          0          0          0          0          0          0  msm_mdss                    4 Edge      dsi_isr",
+        " 254:          0          0          0          0          0          0          0          0  msmgpio                    21 Edge      NVT-ts"
+      ]
+    },
+    {
+      "uptime": "500.84 3897.01",
+      "lines": [
+        " 208:       2026          0          0          0          0          0          0          0  msm_mdss                    0 Edge      msm",
+        " 209:          0          0          0          0          0          0          0          0  msm_mdss                   12 Edge      dp_display_isr",
+        " 210:        404          0          0          0          0          0          0          0  msm_mdss                    5 Edge      dsi_isr",
+        " 215:        400          0          0          0          0          0          0          0  msm_mdss                    4 Edge      dsi_isr",
+        " 254:          0          0          0          0          0          0          0          0  msmgpio                    21 Edge      NVT-ts"
+      ]
+    }
+  ],
+  "previous_boot_kernel": {
+    "path": "/nix/store/6b4s8rl22hafab8wazn3bas15vyvi60m-nixos-system-Hippogriff-26.11.20261111.d4f25a3/kernel",
+    "exists": true,
+    "resolved": "/nix/store/2i3636rgyyin0g02w32f7zada7rdwar5-linux-aarch64-unknown-linux-gnu-7.2.5/Image"
+  },
+  "limits": [
+    "Expected kernel is the committed LPASS-fixed 7.2.5, whereas the preceding Linux boot used the C9 experimental image; this is not an identical-input A/B comparison.",
+    "The chosen marker confirms checked Linux GO/FDT publication. It does not prove optical recovery or panel command acknowledgement.",
+    "Both initial and automatic-cycle touch resumes timed out waiting for ReK, remaining at 0xa0 after firmware transfer success.",
+    "DRM active/framebuffer and backlight register values are software/readback evidence, not proof of light, rail voltages, valid panel reception or actual pixel scanning.",
+    "Zero MDSS/DSI interrupt delta during idle does not by itself prove stopped scanout; vblank interrupts may be disabled.",
+    "The MDP RCG configuration warning and RPMh trace also appear in historical boots and are not unique to r5.",
+    "No display modeset, power cycle, brightness write, GDM restart, raw MMIO, clk_summary read, deployment or reboot was performed in this capture."
+  ],
+  "raw_local_directory": "/tmp/liuqin-r5-linux-20261114",
+  "raw_local_sha256": {
+    "dmesg.txt": "6e3fd21170191269b035bfd7cac0687f70006441440e8f38715436786a36f9e4",
+    "debug-dri-0-state.txt": "0ff4e7dc8b19f358cce4d555f84c407b7669fd04a426ad58af10b8a5ec3f5b63",
+    "debug-regmap-2-0011-registers.txt": "e28ad234ddbe98447c6e29d94701a93519a97340b1d46b7b21b558560143e5fc",
+    "debug-gpio.txt": "a015db305eb8b5fe19562d920cf94dd14305e8766d007bcfde2808dc8c9cac6e",
+    "debug-regulator-regulator_summary.txt": "75080db8f8d5c2b5b547218f469924d0e56b8647c4267e10cdf96ce2e30d4685",
+    "display-services.log": "9c2899fa73e91161f11b156cd7d8cd59829312e4ca21452475f2282b08901ecf",
+    "previous-kernel.log": "bfa39d531d5750b8bcc6a37a3357ba3ea9325da712e73ab8f4e3bc7e0bd124e2"
+  }
+}
