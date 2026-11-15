@@ -11,5 +11,10 @@
       <summary>Power button short-press action</summary>
       <description>Choose screen locking and blanking, system suspend, or no action.</description>
     </key>
+    <key name="resuspend-when-dark" type="b">
+      <default>true</default>
+      <summary>Return to standby after a background wake</summary>
+      <description>On battery, return to standby after a resumed session remains locked and dark for twenty seconds, with no recent input or sleep inhibitor. Visible sessions and accepted power-key or lid wakes retain their normal behavior.</description>
+    </key>
   </schema>
 </schemalist>

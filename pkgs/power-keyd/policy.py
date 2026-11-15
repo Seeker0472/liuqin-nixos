@@ -18,6 +18,7 @@ class Phase(Enum):
     SLEEPING = auto()
     ACTIVATING = auto()
     WAKING = auto()
+    CHECKING_IDLE = auto()
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,10 @@ class PowerPolicy:
     # Covers evdev events queued around logind's post-resume notification.
     # Holding the wake key remains consumed until release, without a timer.
     RESUME_GUARD_MS = 300
+    BACKGROUND_GRACE_MS = 20000
+    # Mutter resets its idle counter on resume too. Give that synthetic reset
+    # time to settle before requiring a complete twenty seconds of idleness.
+    RESUME_SETTLE_MS = 2000
 
     def __init__(self, emit, *, greeter=False):
         self.emit = emit
@@ -62,6 +67,50 @@ class PowerPolicy:
         self.token = 0
         self.deadline = None
         self.suspend_after_blank = False
+        self.background_enabled = True
+        self.background_allowed = False
+        self.quiet_resume = False
+        self.background_deadline = None
+        self.saw_sleep = False
+        self.background_observed = False
+
+    def _cancel_background(self):
+        self.quiet_resume = False
+        self.background_deadline = None
+        self.background_observed = False
+        if self.phase == Phase.CHECKING_IDLE:
+            self.token += 1
+            self.phase = Phase.READY
+            self.deadline = None
+
+    def _background_eligible(self):
+        return (self.quiet_resume and self.background_enabled and self.background_allowed
+                and self.ready and not self.preparing and self.locked is True
+                and (not self.background_observed or self.power == 3)
+                and self.gesture is None
+                and self.phase in (Phase.READY, Phase.CHECKING_IDLE))
+
+    def _update_background(self, now):
+        if not self._background_eligible():
+            self.background_deadline = None
+            if self.phase == Phase.CHECKING_IDLE:
+                self._cancel_background()
+        elif self.phase == Phase.READY and self.background_deadline is None:
+            self.background_deadline = now + self.BACKGROUND_GRACE_MS
+            if not self.background_observed:
+                self.background_deadline += self.RESUME_SETTLE_MS
+
+    def user_activity(self):
+        self._cancel_background()
+
+    def background(self, *, now, enabled=None, allowed=None):
+        if enabled is not None:
+            self.background_enabled = enabled is True
+            if not self.background_enabled:
+                self._cancel_background()
+        if allowed is not None:
+            self.background_allowed = allowed is True
+        self._update_background(now)
 
     def _effect(self, kind, value=None):
         self.emit(Effect(kind, self.token, value))
@@ -72,6 +121,7 @@ class PowerPolicy:
         self.deadline = now + self.OPERATION_TIMEOUT_MS
 
     def _fail(self, message):
+        self._cancel_background()
         self.token += 1
         self.phase = Phase.SLEEPING if self.preparing else Phase.READY
         self.deadline = None
@@ -80,6 +130,7 @@ class PowerPolicy:
     def available(self, ready):
         self.ready = ready
         if not ready:
+            self._cancel_background()
             self.gesture = None
             self.ignore_release = True
             self.token += 1
@@ -91,8 +142,11 @@ class PowerPolicy:
             self.power = power
         if locked is not None:
             self.locked = locked
+        if self.quiet_resume and self.locked is False:
+            self._cancel_background()
         if self.phase == Phase.LOCKING and (self.locked or self.greeter):
             self._blank(now)
+        self._update_background(now)
 
     def reset_key(self, down):
         self.gesture = None
@@ -101,6 +155,7 @@ class PowerPolicy:
     def wake(self, now):
         if self.lid_closed or not self.ready:
             return
+        self._cancel_background()
         if self.preparing or self.phase in (Phase.SUSPENDING, Phase.SLEEPING):
             self.wake_requested = True
             return
@@ -113,6 +168,7 @@ class PowerPolicy:
     def off(self, now, *, suspend):
         if not self.ready or self.preparing:
             return
+        self._cancel_background()
         self.suspend_after_blank = suspend
         self.wake_requested = False
         self._begin(Phase.LOCKING, now)
@@ -133,11 +189,30 @@ class PowerPolicy:
             return
         expected = {'lock': Phase.LOCKING, 'activity': Phase.ACTIVATING, 'power':
                     Phase.WAKING if value == 0 else Phase.BLANKING,
-                    'suspend': Phase.SUSPENDING}
+                    'suspend': Phase.SUSPENDING, 'check-idle': Phase.CHECKING_IDLE}
         if self.phase != expected.get(kind):
             return
         if error:
             self._fail(f'{kind}: {error}')
+        elif kind == 'check-idle':
+            eligible = self._background_eligible()
+            if eligible and type(value) is int and value >= self.BACKGROUND_GRACE_MS:
+                self.background_observed = True
+                if self.power != 3:
+                    # GNOME may have enabled the panel on its own. Keep the
+                    # activity watch, and wait for GNOME to blank it naturally.
+                    self.phase = Phase.READY
+                    self.deadline = None
+                    return
+                self._cancel_background()
+                # The desktop already owns the locked, dark state. Preserve it;
+                # a background resume never sends a lock, blank or wake command.
+                self.token += 1
+                self.phase = Phase.SUSPENDING
+                self.deadline = None
+                self._effect('suspend')
+            else:
+                self._cancel_background()
         elif kind == 'lock':
             # A successful logind Lock request can precede LockedHint.
             if self.locked or self.greeter:
@@ -160,11 +235,14 @@ class PowerPolicy:
 
     def sleep(self, preparing, *, at, now, initial=False, down=False):
         if initial:
+            self._cancel_background()
             self.preparing = preparing
             self.phase = Phase.SLEEPING if preparing else Phase.READY
             self.reset_key(down)
             return
         if preparing:
+            self._cancel_background()
+            self.saw_sleep = True
             if self.phase != Phase.SUSPENDING:
                 self.wake_requested = False
             self.ignore_release |= self.gesture is not None
@@ -182,9 +260,12 @@ class PowerPolicy:
             self.ignore_release |= down
             self.resume_until = at + self.RESUME_GUARD_MS
             self.resume_wake_sent = self.wake_requested
+            self.quiet_resume = self.saw_sleep and not self.wake_requested and not down
+            self.saw_sleep = False
             if self.wake_requested:
                 self.wake(now)
             self.wake_requested = False
+            self._update_background(now)
 
     def lid(self, closed, *, now, initial=False):
         previous = self.lid_closed
@@ -205,6 +286,8 @@ class PowerPolicy:
     def key(self, value, *, at, now):
         if value == 2 or not self.ready:
             return
+        if value == 1:
+            self._cancel_background()
         if self.preparing or self.phase in (Phase.SUSPENDING, Phase.SLEEPING):
             if value == 1:
                 self.wake_requested = True
@@ -251,10 +334,17 @@ class PowerPolicy:
             gesture.long_fired = True
             if not self.greeter:
                 self._effect('menu')
+        if self.background_deadline is not None and now >= self.background_deadline:
+            self.background_deadline = None
+            if self._background_eligible():
+                self._begin(Phase.CHECKING_IDLE, now)
+                self._effect('check-idle')
 
     @property
     def next_deadline(self):
         deadlines = [] if self.deadline is None else [self.deadline]
+        if self.background_deadline is not None:
+            deadlines.append(self.background_deadline)
         if (self.gesture is not None and not self.gesture.long_fired and
                 not self.preparing and not self.lid_closed):
             deadlines.append(self.gesture.pressed_at+self.LONG_PRESS_MS)

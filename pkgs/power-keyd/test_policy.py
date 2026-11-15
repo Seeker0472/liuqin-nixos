@@ -233,3 +233,148 @@ class PolicyTests(unittest.TestCase):
         self.p.key(1, at=2000, now=2000)
         self.p.tick(4000)
         self.assertFalse(any(e.kind == 'menu' for e in self.effects))
+
+
+class BackgroundResumeTests(unittest.TestCase):
+    """A firmware wake may continue sleep, but must never claim a user wake."""
+
+    emit = PolicyTests.emit
+    press = PolicyTests.press
+    finish = PolicyTests.finish
+    commands = PolicyTests.commands
+
+    def setUp(self):
+        PolicyTests.setUp(self)
+        self.p.facts(now=0, power=3)
+        self.p.background(now=0, allowed=True)
+
+    def resume(self):
+        self.p.sleep(True, at=1000, now=1000)
+        self.p.sleep(False, at=2000, now=2000)
+
+    def idle_reply(self, milliseconds=20000, error=None):
+        request = self.effects[-1]
+        self.assertEqual(request.kind, 'check-idle')
+        self.p.done(request.kind, request.token, now=24001,
+                    value=milliseconds, error=error)
+
+    def test_background_resume_checks_fresh_idle_then_only_suspends(self):
+        self.resume()
+        self.p.tick(23999)
+        self.assertEqual(self.effects, [])
+        self.p.tick(24000)
+        self.assertEqual(self.commands(), [('check-idle', None)])
+        self.idle_reply()
+        self.p.tick(100000)
+        self.assertEqual(self.commands(), [('check-idle', None), ('suspend', None)])
+        self.assertEqual(self.p.phase, Phase.SUSPENDING)
+
+    def test_startup_snapshot_cannot_invent_background_sleep(self):
+        self.p.sleep(False, at=2000, now=2000, initial=True)
+        self.p.tick(100000)
+        self.assertEqual(self.effects, [])
+
+    def test_recent_touch_unknown_idle_or_error_keeps_awake(self):
+        for value, error in [(19999, None), (None, None), (True, None), (20000, 'API gone')]:
+            with self.subTest(value=value, error=error):
+                self.setUp()
+                self.resume()
+                self.p.tick(24000)
+                self.idle_reply(value, error)
+                self.p.tick(100000)
+                self.assertFalse(any(e.kind == 'suspend' for e in self.effects))
+                self.assertEqual(self.p.phase, Phase.READY)
+
+    def test_inhibitor_battery_or_setting_prevents_automatic_suspend(self):
+        for changes in [{'allowed': False}, {'enabled': False}]:
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.resume()
+                self.p.background(now=10000, **changes)
+                self.p.tick(100000)
+                self.assertEqual(self.effects, [])
+
+    def test_unlock_returns_control_to_desktop_idle_policy(self):
+        for changes in [{'locked': False}]:
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.resume()
+                self.p.facts(now=3000, **changes)
+                self.p.facts(now=10000, power=3, locked=True)
+                self.p.tick(100000)
+                self.assertEqual(self.effects, [])
+
+    def test_power_press_during_grace_cancels_resuspend(self):
+        self.resume()
+        self.press(5000)
+        self.finish(now=5200)
+        self.p.tick(100000)
+        self.assertEqual(self.commands(), [('power', 0)])
+
+    def test_automatic_light_waits_for_natural_blank_then_rechecks_idle(self):
+        self.resume()
+        self.p.facts(now=3000, power=0)
+        self.p.tick(24000)
+        self.idle_reply()
+        self.assertEqual(self.p.phase, Phase.READY)
+        self.assertTrue(self.p.quiet_resume)
+        self.p.tick(80000)
+        self.assertFalse(any(e.kind == 'suspend' for e in self.effects))
+        self.p.facts(now=81000, power=3)
+        self.p.tick(101000)
+        request = self.effects[-1]
+        self.p.done(request.kind, request.token, now=101001, value=100000)
+        self.assertEqual([e.kind for e in self.effects], ['check-idle', 'check-idle', 'suspend'])
+
+    def test_power_wake_before_resume_never_arms_background_sleep(self):
+        self.p.sleep(True, at=1000, now=1000)
+        self.press(1500)
+        self.p.sleep(False, at=2000, now=2000)
+        self.finish(now=2200)
+        self.p.tick(100000)
+        self.assertEqual(self.commands(), [('power', 0)])
+
+    def test_lid_opening_cancels_background_sleep(self):
+        self.p.lid(True, now=500)
+        self.effects.clear()
+        self.resume()
+        self.p.lid(False, now=5000)
+        self.finish(now=5200)
+        self.p.tick(100000)
+        self.assertEqual(self.commands(), [('power', 0)])
+
+    def test_pending_idle_reply_loses_to_wake_or_changed_facts(self):
+        for cancel in [lambda p: p.wake(24001),
+                       lambda p: p.background(now=24001, allowed=False),
+                       lambda p: p.facts(now=24001, power=0),
+                       lambda p: p.facts(now=24001, locked=False),
+                       lambda p: p.available(False)]:
+            with self.subTest(cancel=cancel):
+                self.setUp()
+                self.resume()
+                self.p.tick(24000)
+                request = self.effects[-1]
+                cancel(self.p)
+                self.p.done(request.kind, request.token, now=24002, value=20000)
+                self.assertFalse(any(e.kind == 'suspend' for e in self.effects))
+
+    def test_idle_timeout_does_not_retry_or_commit_late_reply(self):
+        self.resume()
+        self.p.tick(24000)
+        request = self.effects[-1]
+        self.p.tick(29000)
+        self.p.done(request.kind, request.token, now=30000, value=20000)
+        self.p.tick(100000)
+        self.assertFalse(any(e.kind == 'suspend' for e in self.effects))
+
+    def test_repeated_background_sleep_cycles_are_independent(self):
+        self.resume()
+        self.p.tick(24000)
+        self.idle_reply()
+        self.p.sleep(True, at=25000, now=25000)
+        self.p.sleep(False, at=26000, now=26000)
+        self.p.tick(48000)
+        request = self.effects[-1]
+        self.p.done(request.kind, request.token, now=48001, value=20000)
+        self.assertEqual([e.kind for e in self.effects],
+                         ['check-idle', 'suspend', 'check-idle', 'suspend'])

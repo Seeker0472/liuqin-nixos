@@ -19,6 +19,8 @@ from transport import receive_packet, send_packet
 DISPLAY_NAME = 'org.gnome.Mutter.DisplayConfig'
 DISPLAY_PATH = '/org/gnome/Mutter/DisplayConfig'
 SESSION_INTERFACE = 'org.freedesktop.login1.Session'
+IDLE_NAME = 'org.gnome.Mutter.IdleMonitor'
+IDLE_PATH = '/org/gnome/Mutter/IdleMonitor/Core'
 
 
 def now_ms():
@@ -41,10 +43,16 @@ class DesktopBackend:
     can wait forever for a lock-screen-shown event that will not occur again.
     """
     def __init__(self, session_path, *, greeter, on_facts, on_ready, on_lid,
+                 on_background=None, on_activity=None,
                  session_connection=None, system_connection=None):
         self.greeter = greeter
         self.session_path = session_path
         self.on_facts, self.on_ready, self.on_lid = on_facts, on_ready, on_lid
+        self.on_background = on_background
+        self.on_activity = on_activity
+        self.activity_watch = None
+        self.activity_serial = 0
+        self.activity_pending = False
         self.proxies = {}
         self.calls = set()
         self.closed = False
@@ -87,6 +95,14 @@ class DesktopBackend:
             ('upower', self.system_connection, 'org.freedesktop.UPower',
              '/org/freedesktop/UPower', 'org.freedesktop.UPower'),
         ]
+        if self.on_background is not None:
+            definitions.extend([
+                ('session-policy', self.session_connection, 'org.gnome.SessionManager',
+                 '/org/gnome/SessionManager', 'org.gnome.SessionManager'),
+                ('sleep-policy', self.system_connection, 'org.freedesktop.login1',
+                 '/org/freedesktop/login1', 'org.freedesktop.login1.Manager'),
+                ('idle', self.session_connection, IDLE_NAME, IDLE_PATH, IDLE_NAME),
+            ])
         for key, connection, name, path, interface in definitions:
             Gio.DBusProxy.new(connection, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None,
                               name, path, interface, None, self.proxy_ready, (key, self.generation))
@@ -104,6 +120,7 @@ class DesktopBackend:
         if connection is self.system_connection:
             self.system_connection = None
         self.generation += 1
+        self.clear_activity_watch()
         for proxy, handler in self.proxy_handlers:
             proxy.disconnect(handler)
         self.proxy_handlers.clear()
@@ -121,12 +138,17 @@ class DesktopBackend:
         try:
             proxy = Gio.DBusProxy.new_finish(result)
         except GLib.Error as error:
-            self.on_ready(False)
+            if key in ('session-policy', 'sleep-policy', 'idle'):
+                self.on_background(False)
+            else:
+                self.on_ready(False)
             print(f'liuqin-power-session: {key} unavailable: {error}', flush=True)
             return
         self.proxies[key] = proxy
         self.proxy_handlers.extend((proxy, proxy.connect(signal, self.sync))
                                    for signal in ('g-properties-changed', 'notify::g-name-owner'))
+        if key == 'idle':
+            self.proxy_handlers.append((proxy, proxy.connect('g-signal', self.idle_signal)))
         self.sync()
 
     def sync(self, *_):
@@ -141,6 +163,35 @@ class DesktopBackend:
         closed = prop(self.proxies.get('upower'), 'LidIsClosed')
         if type(closed) is bool:
             self.on_lid(closed)
+        if self.on_background is not None:
+            battery = prop(self.proxies.get('upower'), 'OnBattery')
+            actions = prop(self.proxies.get('session-policy'), 'InhibitedActions')
+            blocked = prop(self.proxies.get('sleep-policy'), 'BlockInhibited')
+            # SessionManager flags 4/8 inhibit suspend/idle. Delay inhibitors
+            # remain logind's responsibility when it executes Suspend().
+            allowed = (battery is True and type(actions) is int and not actions & 12
+                       and type(blocked) is str and 'sleep' not in blocked.split(':')
+                       and bool(self.proxies.get('idle') and self.proxies['idle'].get_name_owner()))
+            self.on_background(allowed)
+
+    def idle_signal(self, _proxy, _sender, name, parameters):
+        if name != 'WatchFired' or self.closed:
+            return
+        watch = parameters.unpack()[0]
+        if self.activity_pending or watch == self.activity_watch:
+            self.clear_activity_watch()
+            if self.on_activity is not None:
+                self.on_activity()
+
+    def clear_activity_watch(self):
+        watch, self.activity_watch = self.activity_watch, None
+        self.activity_serial += 1
+        self.activity_pending = False
+        if watch is not None and self.session_connection is not None:
+            self.session_connection.call(
+                IDLE_NAME, IDLE_PATH, IDLE_NAME, 'RemoveWatch',
+                GLib.Variant('(u)', (watch,)), None, Gio.DBusCallFlags.NO_AUTO_START,
+                2000, None, None)
 
     def perform(self, effect, done):
         cancellable = Gio.Cancellable()
@@ -152,10 +203,12 @@ class DesktopBackend:
                 return
             error = None
             try:
-                connection.call_finish(result)
+                reply = connection.call_finish(result)
+                value = reply.unpack()[0] if effect.kind == 'check-idle' else effect.value
             except GLib.Error as failure:
                 error = str(failure)
-            done(effect.kind, effect.token, now=now_ms(), value=effect.value, error=error)
+                value = None
+            done(effect.kind, effect.token, now=now_ms(), value=value, error=error)
 
         if effect.kind == 'lock':
             proxy = self.proxies['login']
@@ -168,10 +221,49 @@ class DesktopBackend:
                 GLib.Variant('(ssv)', (DISPLAY_NAME, 'PowerSaveMode',
                                       GLib.Variant('i', effect.value))),
                 None, Gio.DBusCallFlags.NONE, 2000, cancellable, finished)
+        elif effect.kind == 'check-idle':
+            def query_idle():
+                self.session_connection.call(
+                    IDLE_NAME, IDLE_PATH, IDLE_NAME, 'GetIdletime', None,
+                    GLib.VariantType.new('(t)'), Gio.DBusCallFlags.NO_AUTO_START,
+                    2000, cancellable, finished)
+
+            if self.activity_watch is not None:
+                query_idle()
+            else:
+                serial = self.activity_serial
+                self.activity_pending = True
+
+                def armed(connection, result, *_):
+                    try:
+                        watch = connection.call_finish(result).unpack()[0]
+                    except GLib.Error as failure:
+                        self.calls.discard(cancellable)
+                        if not self.closed and serial == self.activity_serial:
+                            self.activity_pending = False
+                            done(effect.kind, effect.token, now=now_ms(), error=str(failure))
+                        return
+                    if self.closed or serial != self.activity_serial:
+                        connection.call(IDLE_NAME, IDLE_PATH, IDLE_NAME, 'RemoveWatch',
+                                        GLib.Variant('(u)', (watch,)), None,
+                                        Gio.DBusCallFlags.NO_AUTO_START, 2000, None, None)
+                        self.calls.discard(cancellable)
+                        return
+                    self.activity_pending = False
+                    self.activity_watch = watch
+                    query_idle()
+
+                # Arm before querying: input during the method round trip
+                # invalidates the decision as well as input after its reply.
+                self.session_connection.call(
+                    IDLE_NAME, IDLE_PATH, IDLE_NAME, 'AddUserActiveWatch', None,
+                    GLib.VariantType.new('(u)'), Gio.DBusCallFlags.NO_AUTO_START,
+                    2000, None, armed)
         else:
             raise ValueError(effect.kind)
 
     def close(self):
+        self.clear_activity_watch()
         self.closed = True
         for connection, handler in self.connection_handlers:
             connection.disconnect(handler)
@@ -209,10 +301,12 @@ class SessionController:
             raise RuntimeError('Missing liuqin power settings schema')
         self.settings = Gio.Settings.new_full(schema, None, None)
         self.settings.connect('changed::short-press-action', self.settings_changed)
+        self.settings.connect('changed::resuspend-when-dark', self.settings_changed)
         self.settings_changed()
         self.backend = DesktopBackend(
             session_path, greeter=kind == 'greeter', on_facts=self.facts_changed,
-            on_ready=self.available, on_lid=self.lid_changed)
+            on_ready=self.available, on_lid=self.lid_changed,
+            on_background=self.background_changed, on_activity=self.user_activity)
         self.watch = GLib.io_add_watch(
             channel.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.input_ready)
 
@@ -221,8 +315,25 @@ class SessionController:
 
     def settings_changed(self, *_):
         self.policy.short_action = self.settings.get_string('short-press-action')
+        self.policy.background(now=now_ms(),
+                               enabled=self.settings.get_boolean('resuspend-when-dark'))
+        self.sync_timer()
+
+    def background_changed(self, allowed):
+        if allowed != self.policy.background_allowed:
+            self.log(f'background sleep allowed={allowed}')
+        self.policy.background(now=now_ms(), allowed=allowed)
+        self.sync_timer()
+
+    def user_activity(self):
+        if self.policy.quiet_resume:
+            self.log('background sleep cancelled by desktop activity')
+        self.policy.user_activity()
+        self.sync_timer()
 
     def facts_changed(self, power, locked):
+        if (power, locked) != (self.policy.power, self.policy.locked):
+            self.log(f'desktop power={power} locked={locked}')
         self.policy.facts(now=now_ms(), power=power, locked=locked)
         self.sync_timer()
 
@@ -252,7 +363,7 @@ class SessionController:
 
     def effect(self, effect):
         self.log(f'effect={effect.kind} token={effect.token} value={effect.value}')
-        if effect.kind in ('lock', 'power'):
+        if effect.kind in ('lock', 'power', 'check-idle'):
             self.backend.perform(effect, self.done)
         elif effect.kind == 'suspend':
             self.send({'action': 'suspend', 'token': effect.token})
@@ -276,6 +387,16 @@ class SessionController:
             self.log(f'power menu: {error}')
 
     def done(self, kind, token, **result):
+        if kind == 'check-idle':
+            # Physical wake packets queued while D-Bus was replying must win
+            # over this optional, automatic sleep decision.
+            try:
+                self.read_input()
+            except (OSError, ValueError, EOFError, KeyError):
+                self.stop()
+                return
+            if self.stopping:
+                return
         self.policy.done(kind, token, **result)
         self.sync_timer()
 
@@ -311,6 +432,8 @@ class SessionController:
         return GLib.SOURCE_CONTINUE
 
     def sync_timer(self):
+        if not self.policy.quiet_resume and hasattr(self, 'backend'):
+            self.backend.clear_activity_watch()
         deadline = self.policy.next_deadline
         if deadline == self.timer_deadline:
             return
