@@ -51,18 +51,31 @@ patch.
 | 0024 | lpass-wsa-pm-clock-framework | upstream WSA PM-clock lifecycle and SoundWire runtime references (`cd054a6e272c`) |
 | 0025 | lpass-va-pm-clock-framework | upstream VA PM-clock lifecycle (`eb667d0fbdd3`) |
 | 0026 | lpass-tx-rx-pm-clock-framework | upstream TX/RX PM-clock lifecycle and fsgen handling (`b9b23e72abef`, `b05482e7ce1b`, `b8ca90fafe6a`) |
+| 0027 | clk-qcom-preserve-running-ole-pll | preserve enabled OLE PLL before configure writes (`eb34e2804ce4`) |
+| 0028 | clk-qcom-preserve-mdp-registration-rate | preserve inherited MDP frequency at registration (`8464e2284fec`) |
 
 0017-0019 are the fingerprint (FPC1264/QSEECOM) series.  0017 and 0018 apply in
 sequence with the rest and 0019 (the board DT node) applies there as well: it
 does not touch the regions rewritten by the later board DT additions 0014–0016.
 
-The 2026-11-14 workspace display changes in 0001/0003 are still a candidate:
-resource rollback and power-off were checked, but first-image acceptance failed.
-The installed normal fallback retains the earlier display recovery while keeping
-the verified LPASS backports. C6–C9 diagnostic reads, tracing, DTB overrides and
-long-packet switches were not added to this series. See
-[the current display status](../../../docs/TODO/DISPLAY-HANDOFF.md) before deploying
-the workspace display candidate.
+The unaccepted 2026-11-14 display experiments in 0001/0003 were stashed
+before the U-Boot handoff refactor. C6-C9 diagnostic reads, DTB overrides and
+long-packet switches are not part of this series. The verified LPASS
+backports and the earlier display recovery code remain.
+
+0027 and 0028 backport upstream commits `eb34e2804ce4` and `8464e2284fec`.
+They preserve a running OLE PLL before any configuration writes and preserve
+the MDP RCG's inherited frequency during registration. Existing shared
+runtime enable/disable/rate operations remain unchanged; neither patch adds
+an always-on clock vote.
+
+Both diffs match upstream and apply to Linux 7.2.5 with zero fuzz. The c1
+configuration, using passive instrumentation and explicitly disabled early
+OFF/ON recovery, displayed normally on two reboots confirmed by the owner.
+First touchscreen ReK passed on both boots. An RTC deep-suspend test spent
+about 24.6 seconds asleep and resumed with owner-confirmed display and touch.
+This verifies the tested handoff paths; the legacy OFF/ON recovery code has
+not been removed from the normal kernel, and standby drain remains open.
 
 ## Why 0014, 0015 and 0016 follow the common board patches
 

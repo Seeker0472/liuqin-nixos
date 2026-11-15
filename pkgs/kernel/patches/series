@@ -25,3 +25,5 @@
 0024-lpass-wsa-pm-clock-framework.patch
 0025-lpass-va-pm-clock-framework.patch
 0026-lpass-tx-rx-pm-clock-framework.patch
+0027-clk-qcom-preserve-running-ole-pll.patch
+0028-clk-qcom-preserve-mdp-registration-rate.patch
